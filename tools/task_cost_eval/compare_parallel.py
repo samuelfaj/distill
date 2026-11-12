@@ -20,6 +20,7 @@ import uuid
 from collections import Counter
 from pathlib import Path
 
+from . import decision_quality
 from .acp_driver import EXECUTION_MODES, OwnedTree, run_acp
 from .compare_codex import LOCAL_TOOLS, distill_accounting, distill_config, subscription_account
 from .evaluate import _sha256_file, _sha256_tree
@@ -415,6 +416,10 @@ def run_one(binary, variant, case, repetition, work_root, profile, timeout, *,
     accounting = (distill_accounting(home, session, strict=True) if clean and session and sanitize else
                   distill_accounting(home, session) if clean and session else
                   {'accounting_complete': False, 'reason': 'no session or unverified inference cleanup'})
+    # Decision and outcome events of the root session, passing runs too; read only after a verified cleanup.
+    timeline = (acp or {}).get('effective_mode_timeline') or [None if mode == 'auto' else mode]
+    decisions = decision_quality.run_record(
+        decision_quality.session_events_path(home, session) if clean else None, initial_mode=timeline[0])
     jev_ticks = [call.get('cost_usd_ticks') for call in accounting.get('call_usage', []) if call.get('role') == 'jev']
     jev_priced = all(type(ticks) is int and ticks >= 0 for ticks in jev_ticks)
     jev_usd = sum(jev_ticks) / 1e10 if jev_priced else None
@@ -445,7 +450,7 @@ def run_one(binary, variant, case, repetition, work_root, profile, timeout, *,
             **call_summary(accounting.get('call_usage', [])),
             **{key: (acp or {}).get(key) for key in ('effective_mode_mix', 'mode_switches', 'effective_mode_timeline')},
             'accounting_evidence': evidence,
-            'call_usage': accounting.get('call_usage', []),
+            'call_usage': accounting.get('call_usage', []), **decisions,
             'exit_code': exit_code, 'timed_out': timed_out, 'session': session, 'grader': grade,
             'acp': acp, 'accounting_reason': accounting.get('reason'),
             'settings': settings, 'ultracode_activation_confirmed': mode == 'ultracode' and activation_confirmed,
@@ -481,7 +486,8 @@ def aggregate(runs):
                      'effective_mode_mix': dict(sorted(modes.items())),
                      'mode_switches': sum(r.get('mode_switches') or 0 for r in rows),
                      **{f: sum(r.get(f) or 0 for r in rows)
-                        for f in ('model_time_ms', 'jev_time_ms', 'root_rounds', 'child_calls', 'jev_failed_calls')}}
+                        for f in ('model_time_ms', 'jev_time_ms', 'root_rounds', 'child_calls', 'jev_failed_calls')},
+                     'decision_quality': decision_quality.quality_block(rows)}
     return out
 
 

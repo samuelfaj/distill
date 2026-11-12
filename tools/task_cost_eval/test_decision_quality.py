@@ -284,5 +284,121 @@ class DecisionsReportTest(unittest.TestCase):
         self.assertTrue(dq.compare_expected({'x': 0.10}, {'x': 0.14})['x']['flagged'])
 
 
+def run_home(root, events, session='runtime-session'):
+    """An isolated run home as compare_parallel leaves it: sessions/<project>/<session>/events.jsonl."""
+    folder = Path(root) / 'distill-home' / 'sessions' / 'project' / session
+    folder.mkdir(parents=True)
+    (folder / 'events.jsonl').write_text(''.join(json.dumps(event) + '\n' for event in events))
+    (folder.parent / 'child-session').mkdir()
+    (folder.parent / 'child-session' / 'events.jsonl').write_text(
+        json.dumps(pick('ultracode')) + '\n')
+    return Path(root) / 'distill-home'
+
+
+AUTO_RUN = flat(start(), pick('ultrasave', applied=True), switch('normal', 'ultrasave', 'request_start'),
+                loop('read_file'), ev('mode_policy', seq=2, mode='ultrasave', rule='effort_ceiling'),
+                ev('jev_no_answer', seq=3, lever='c4_diff_risk', kind='timeout', latency_ms=900),
+                ev('check_recorded', outcome='failed', command_hash='2' * 12),
+                outcome(failed=1, escalations=0, policy={'ultrasave:effort_ceiling': 1}), ev('turn_ended'),
+                start(2), pick('normal', applied=False), loop(),
+                outcome(failed=0, escalations=2, policy={'ultrasave:effort_ceiling': 2}), ev('turn_ended'))
+
+
+class RunRecordTest(unittest.TestCase):
+    def test_run_row_carries_turn_outcomes_policy_counts_decisions_and_verdict_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = run_home(directory, AUTO_RUN)
+            record = dq.run_record(dq.session_events_path(home, 'runtime-session'), initial_mode='normal')
+        self.assertTrue(record['decision_events_found'])
+        self.assertEqual([item['escalations'] for item in record['turn_outcomes']], [0, 2])
+        self.assertNotIn('type', record['turn_outcomes'][0])
+        self.assertEqual(record['policy_counts'], {'ultrasave:effort_ceiling': 3}, 'summed from the turn receipts')
+        self.assertEqual(record['decision_events']['b8_execution_mode'],
+                         {'asked': 2, 'answered': 2, 'no_answer': {}, 'applied': {'ultrasave': 1},
+                          'labels': {'ultrasave': 1, 'normal': 1}})
+        self.assertEqual(record['decision_events']['c4_diff_risk']['no_answer'], {'timeout': 1})
+        self.assertEqual((record['escalations'], record['failed_check_facts']), (2, 1))
+        self.assertEqual(record['decision_labels']['mode.lean_ended_failing'], 1)
+        self.assertEqual(record['first_mode_pick'], 'ultrasave', 'the root session, not the child')
+
+    def test_without_outcome_records_the_optional_verdict_fields_stay_absent(self):
+        # Absent means unknown to the verdicts; a zero would claim "no escalation".
+        with tempfile.TemporaryDirectory() as directory:
+            home = run_home(directory, flat(start(), pick('normal'), loop(), ev('turn_ended')))
+            record = dq.run_record(dq.session_events_path(home, 'runtime-session'))
+            self.assertNotIn('escalations', record)
+            self.assertNotIn('failed_check_facts', record)
+            home = run_home(Path(directory) / 'two', flat(start(), ev('check_recorded', outcome='passed'),
+                                                          ev('turn_ended')))
+            record = dq.run_record(dq.session_events_path(home, 'runtime-session'))
+            self.assertEqual(record['failed_check_facts'], 0, 'recorded checks, none failed')
+            self.assertNotIn('escalations', record)
+            self.assertFalse(record['decision_events_found'])
+
+    def test_missing_session_folder_gives_an_empty_record(self):
+        record = dq.run_record(None)
+        self.assertEqual((record['decision_events_found'], record['turn_outcomes'], record['decision_events'],
+                          record['first_mode_pick']), (False, [], {}, None))
+        policy_only = flat(start(), ev('mode_policy', seq=1, mode='ultrafast', rule='no_wait'), ev('turn_ended'))
+        with tempfile.TemporaryDirectory() as directory:
+            record = dq.run_record(turns_path(directory, policy_only))
+        self.assertEqual(record['policy_counts'], {'ultrafast:no_wait': 1}, 'policy events without receipts')
+
+    def test_first_pick_prefers_the_request_start_switch_then_the_first_decision(self):
+        cases = ((flat(start(), pick('normal'), switch('normal', 'ultrafast', 'request_start'), ev('turn_ended')),
+                  None, 'ultrafast'),
+                 (flat(start(), pick('keep'), ev('turn_ended'), start(2), switch('normal', 'ultracode', 'request_start'),
+                       ev('turn_ended')), 'normal', 'normal'),
+                 (flat(start(), loop(), ev('turn_ended'), start(2), pick('ultrasave'), ev('turn_ended')), None,
+                  'ultrasave'),
+                 (flat(start(), decision('b8_execution_mode', 'defer'), ev('turn_ended')), None, None))
+        for events, initial, expected in cases:
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as directory:
+                self.assertEqual(dq.first_mode_pick(turns_of(events, directory), initial), expected)
+
+
+def turns_path(directory, events):
+    path = Path(directory) / 'events.jsonl'
+    path.write_text(''.join(json.dumps(event) + '\n' for event in events))
+    return path
+
+
+def bench_row(passed, labels, levers=None, found=True):
+    return {'variant': 'auto', 'grader': {'exit_code': 0 if passed else 1}, 'passed': passed,
+            'decision_events_found': found, 'decision_labels': labels, 'decision_events': levers or {}}
+
+
+class QualityBlockTest(unittest.TestCase):
+    def test_block_sums_levers_and_outcome_labels_per_group(self):
+        lever = {'asked': 3, 'answered': 2, 'no_answer': {'error': 1}, 'applied': {'normal': 1},
+                 'labels': {'normal': 1, 'keep': 1}}
+        unknown = {'asked': 1, 'answered': 1, 'no_answer': {}, 'applied': None, 'labels': {'ultrafast': 1}}
+        rows = [bench_row(True, {'mode.picks': 2, 'mode.held': 2, 'mode.labelled': 2}, {'b8_execution_mode': lever}),
+                bench_row(False, {'mode.picks': 1, 'mode.abandoned': 1, 'mode.labelled': 1},
+                          {'b8_execution_mode': unknown}),
+                {'variant': 'auto', 'passed': True}]
+        block = dq.quality_block(rows)
+        self.assertEqual((block['runs'], block['runs_with_decision_events']), (2, 2), 'rows without records skipped')
+        self.assertEqual(block['levers']['b8_execution_mode'],
+                         {'asked': 4, 'answered': 3, 'applied': {'normal': 1},
+                          'labels': {'normal': 1, 'keep': 1, 'ultrafast': 1}})
+        self.assertAlmostEqual(block['rates']['mode.abandoned_rate'], 1 / 3)
+        self.assertEqual(block['coverage']['mode'], 1.0)
+
+    def test_label_agreement_with_the_hidden_grader_discards_a_label_under_point_eight(self):
+        # lean_ended_failing claims a bad end: 4 of 5 labelled runs failed the grader (0.8, kept);
+        # false_alarm claims a good end: 3 of 4 passed (0.75, discarded but still reported).
+        rows = ([bench_row(False, {'mode.lean_ended_failing': 1})] * 4 + [bench_row(True, {'mode.lean_ended_failing': 1})]
+                + [bench_row(True, {'final_check.false_alarm': 1})] * 3
+                + [bench_row(False, {'final_check.false_alarm': 1})])
+        agreement = dq.quality_block(rows)['label_agreement']
+        self.assertEqual(agreement['mode.lean_ended_failing'],
+                         {'claim': 'bad', 'labelled': 5, 'agreed': 4, 'agreement': 0.8, 'discarded': False})
+        self.assertEqual(agreement['final_check.false_alarm'],
+                         {'claim': 'good', 'labelled': 4, 'agreed': 3, 'agreement': 0.75, 'discarded': True})
+        self.assertEqual(agreement['mode.lean_ended_clean'],
+                         {'claim': 'good', 'labelled': 0, 'agreed': 0, 'agreement': None, 'discarded': False})
+
+
 if __name__ == '__main__':
     unittest.main()

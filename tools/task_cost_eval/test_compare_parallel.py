@@ -1082,5 +1082,63 @@ class CaseOptionsTest(unittest.TestCase):
         self.assertEqual(replies[5]['error']['code'], -32601)
 
 
+class DecisionRecordRunTest(unittest.TestCase):
+    """S-029/S-030: every run row carries its root session's decision and outcome records."""
+
+    def run_auto(self, root, passed):
+        from .test_decision_quality import AUTO_RUN
+        case = plain_case()
+        peer = fake_peer(root)
+        (root / 'profile').mkdir()
+        (root / 'profile' / 'codex-auth.json').write_text('{}')
+
+        def accounting(home, session, **_):
+            folder = home / 'sessions' / 'project' / session
+            folder.mkdir(parents=True)
+            (folder / 'events.jsonl').write_text(''.join(json.dumps(event) + '\n' for event in AUTO_RUN))
+            return ACCOUNTED
+        with mock.patch.object(compare_parallel, 'distill_accounting', side_effect=accounting), \
+                mock.patch.object(compare_parallel, 'run_grader', return_value={
+                    'exit_code': 0 if passed else 1, 'timed_out': False, 'wall_time_s': .01}):
+            return compare_parallel.run_one(peer, 'auto', case, 1, root / 'runs', root / 'profile', 3,
+                frozen_inputs=compare_parallel.case_hashes(case), binary_hash=compare_parallel._sha256_file(peer),
+                transport='acp', execution_mode='auto', worker_model='')
+
+    def test_passing_and_failing_runs_carry_outcomes_policy_and_decisions(self):
+        for passed in (True, False):
+            with self.subTest(passed=passed), tempfile.TemporaryDirectory() as directory:
+                row = self.run_auto(Path(directory), passed)
+                self.assertEqual(row['passed'], passed)
+                self.assertTrue(row['decision_events_found'])
+                self.assertEqual(len(row['turn_outcomes']), 2)
+                self.assertEqual(row['policy_counts'], {'ultrasave:effort_ceiling': 3})
+                self.assertEqual(row['decision_events']['b8_execution_mode']['asked'], 2)
+                self.assertEqual((row['escalations'], row['failed_check_facts']), (2, 1))
+                self.assertEqual(row['first_mode_pick'], 'ultrasave')
+                block = compare_parallel.aggregate([row])['auto/all']['decision_quality']
+                self.assertEqual(block['levers']['b8_execution_mode']['applied'], {'ultrasave': 1})
+                self.assertEqual(block['outcomes']['mode.lean_ended_failing'], 1)
+                agreement = block['label_agreement']['mode.lean_ended_failing']
+                self.assertEqual(agreement['agreement'], 0.0 if passed else 1.0)
+
+    def test_a_run_without_events_keeps_unknown_fields_absent(self):
+        case = plain_case()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            peer = fake_peer(root)
+            (root / 'profile').mkdir()
+            (root / 'profile' / 'codex-auth.json').write_text('{}')
+            with mock.patch.object(compare_parallel, 'distill_accounting', return_value=ACCOUNTED), \
+                    mock.patch.object(compare_parallel, 'run_grader', return_value={
+                        'exit_code': 1, 'timed_out': False, 'wall_time_s': .01}):
+                row = compare_parallel.run_one(peer, 'normal', case, 1, root / 'runs', root / 'profile', 3,
+                    frozen_inputs=compare_parallel.case_hashes(case), binary_hash=compare_parallel._sha256_file(peer),
+                    transport='acp', execution_mode='normal', worker_model='')
+        self.assertFalse(row['decision_events_found'])
+        self.assertEqual((row['turn_outcomes'], row['policy_counts'], row['decision_events']), ([], {}, {}))
+        self.assertNotIn('escalations', row, 'unknown, so the silent-failure count stays unknown')
+        self.assertNotIn('failed_check_facts', row)
+
+
 if __name__ == '__main__':
     unittest.main()

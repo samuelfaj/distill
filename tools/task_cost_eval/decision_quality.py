@@ -36,6 +36,10 @@ Outcome labels, each a rule over the events of one session:
 - Effort: only `escalated_after_low`: an `effort_floor_raised` later in the
   turn, or a turn outcome with escalations, after a low effort pick
   (EFFORT_LOW_LABELS) or a capping policy row (CAP_RULES) in the same turn.
+
+Labels that claim a good or bad end state (LABEL_CLAIMS) are checked against
+the hidden grader on benchmark runs; agreement under AGREEMENT_FLOOR marks the
+label `discarded` (reported, not used by any gate).
 """
 from __future__ import annotations
 
@@ -85,6 +89,9 @@ C4_VERDICT_LABELS = C4_NOTE_LABELS | {'review:ok'}
 ACTED_LABELS = {'d4_compaction_timing': frozenset({'compact'}), 'p2_read_shortlist': frozenset({'select'})}
 EFFORT_LOW_LABELS = frozenset({'effort:none', 'effort:minimal', 'effort:low'})
 CAP_RULES = frozenset({'effort_ceiling'})
+# Labels whose claim is about the end state the hidden grader judges.
+LABEL_CLAIMS = {'mode.lean_ended_failing': 'bad', 'mode.lean_ended_clean': 'good', 'final_check.false_alarm': 'good'}
+AGREEMENT_FLOOR = 0.8
 COVERAGE_TARGET = 0.8
 TOP_LABELS = 12
 EXPECT_TOLERANCE = 0.03
@@ -461,3 +468,107 @@ def decisions_report(sessions, expect=None, excluded=()):
     if expect:
         report['expect'] = compare_expected(measured, expect)
     return report
+
+
+# ---------------------------------------------------------------- benchmark runs
+
+def session_events_path(home, session):
+    """events.jsonl of the run's root session inside an isolated home; None when absent."""
+    if not session:
+        return None
+    for path in sorted((home / 'sessions').rglob('events.jsonl')):
+        if path.parent.name == session:
+            return path
+    return None
+
+
+def first_mode_pick(turns, initial_mode=None):
+    """Auto's first pick: in the first turn that picks, the request-start switch's target, else the first
+    b8 decision (keep resolves to the mode at that point); None when no turn picks."""
+    current = initial_mode
+    for turn in turns or ():
+        switches = _of(turn, E['switch'])
+        starts = [event.get(F['to']) for _, _, event in switches
+                  if event.get(F['trigger']) == NAMES['triggers']['request_start']]
+        picks = [(pos, event.get(F['label'])) for pos, _, event in _of(turn, E['decision'])
+                 if event.get(F['lever']) == MODE_LEVER and event.get(F['label']) in (*MODES, KEEP_LABEL)]
+        if starts:
+            return safe_label(starts[0])
+        if picks:
+            pos, label = picks[0]
+            mode = label if label in MODES else _mode_at(pos, switches, current)
+            return safe_label(mode) if mode is not None else None
+        if switches:
+            current = switches[-1][2].get(F['to'])
+    return None
+
+
+def run_record(events_path, initial_mode=None):
+    """Fields attached to a benchmark run row; optional verdict fields only when derivable."""
+    turns = read_turns(events_path)
+    outcomes = [{key: value for key, value in event.items() if key != F['type']}
+                for turn in turns or () for _, _, event in _of(turn, E['outcome'])]
+    policy = Counter()
+    for outcome in outcomes:
+        if isinstance(outcome.get(F['policy']), dict):
+            policy.update({safe_label(key): value for key, value in outcome[F['policy']].items()
+                           if _int(value) is not None})
+    if not outcomes:
+        for turn in turns or ():
+            for _, _, event in _of(turn, E['policy']):
+                policy[safe_label(f'{event.get(F["mode"])}:{event.get(F["rule"])}')] += 1
+    record = {'decision_events_found': has_decision_events(turns), 'turn_outcomes': outcomes,
+              'policy_counts': dict(policy), 'decision_events': compact_levers(lever_stats(turns)),
+              'decision_labels': dict(outcome_facts(turns, initial_mode)),
+              'first_mode_pick': first_mode_pick(turns, initial_mode)}
+    escalations = [_int(outcome.get(F['escalations'])) for outcome in outcomes]
+    if outcomes and all(value is not None for value in escalations):
+        record['escalations'] = sum(escalations)
+    failed = [_int((outcome.get(F['checks']) or {}).get(F['failed'])) if isinstance(outcome.get(F['checks']), dict)
+              else None for outcome in outcomes]
+    checks = [event for turn in turns or () for _, _, event in _of(turn, E['check'])]
+    if outcomes and all(value is not None for value in failed):
+        record['failed_check_facts'] = sum(failed)
+    elif checks:
+        record['failed_check_facts'] = sum(event.get(F['outcome']) == 'failed' for event in checks)
+    return record
+
+
+def _grader_passed(row):
+    return (row.get('grader') or {}).get('exit_code') == 0
+
+
+def label_agreement(rows):
+    """Per claiming label: share of labelled decisions whose run the hidden grader judged as claimed."""
+    out = {}
+    for label, claim in LABEL_CLAIMS.items():
+        labelled = agreed = 0
+        for row in rows:
+            count = (row.get('decision_labels') or {}).get(label, 0)
+            labelled += count
+            agreed += count if _grader_passed(row) == (claim == 'good') else 0
+        agreement = agreed / labelled if labelled else None
+        out[label] = {'claim': claim, 'labelled': labelled, 'agreed': agreed, 'agreement': agreement,
+                      'discarded': agreement is not None and agreement < AGREEMENT_FLOOR}
+    return out
+
+
+def quality_block(rows):
+    """decision_quality for one group of run rows: per lever and the outcome labels of their events."""
+    rows = [row for row in rows if 'decision_events' in row]
+    levers, facts = {}, Counter()
+    for row in rows:
+        facts.update(row.get('decision_labels') or {})
+        for lever, item in (row.get('decision_events') or {}).items():
+            entry = levers.setdefault(lever, {'asked': 0, 'answered': 0, 'applied': None, 'labels': Counter()})
+            entry['asked'] += item.get('asked', 0)
+            entry['answered'] += item.get('answered', 0)
+            entry['labels'].update(item.get('labels') or {})
+            if item.get('applied') is not None:
+                entry['applied'] = (entry['applied'] or Counter()) + Counter(item['applied'])
+    return {'runs': len(rows), 'runs_with_decision_events': sum(bool(row.get('decision_events_found')) for row in rows),
+            'levers': {lever: {**entry, 'labels': _top(entry['labels']),
+                               'applied': dict(entry['applied']) if entry['applied'] is not None else None}
+                       for lever, entry in sorted(levers.items())},
+            'outcomes': dict(sorted(facts.items())), 'rates': rates(facts), 'coverage': coverage(facts),
+            'label_agreement': label_agreement(rows)}

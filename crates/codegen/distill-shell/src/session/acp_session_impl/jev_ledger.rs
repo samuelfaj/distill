@@ -97,6 +97,9 @@ pub(crate) struct JevTurnLedger {
     /// Catalog slug of the non-main tier model the turn route runs on, so a
     /// kept route resumes that exact entry rather than a wire-id lookalike.
     pub(crate) tier_route_slug: Option<String>,
+    /// The client was already told why tier routing is not running.
+    /// Session-scoped: the turn drain keeps it, so the notice comes once.
+    pub(crate) tier_block_notified: bool,
     /// A model switch that needed an account handoff while a turn ran; applied
     /// when the turn ends. Session-scoped: the turn drain keeps it.
     pub(crate) deferred_model_switch: DeferredModelSwitch,

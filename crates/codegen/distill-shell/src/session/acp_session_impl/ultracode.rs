@@ -96,6 +96,20 @@ impl SessionActor {
         }
     }
 
+    /// A mid-turn mode change. With `b8_up_only`, when the tools array did
+    /// not change and the live history already ends on this mode's
+    /// directive, the switch changes only what the harness enforces and
+    /// appends nothing; otherwise the directive is stated.
+    pub(super) async fn inject_execution_mode_reminder_on_switch(&self, same_tools: bool) {
+        if !same_tools
+            || !crate::jev::lever_active(distill_workspace::jev::flags::JevLever::B8UpOnly)
+        {
+            self.inject_execution_mode_reminder();
+            return;
+        }
+        self.inject_execution_mode_reminder_at_turn_start().await;
+    }
+
     fn execution_mode_reminder(&self) -> ConversationItem {
         use distill_tool_types::ExecutionMode;
         let owned;

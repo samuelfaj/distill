@@ -366,13 +366,17 @@ fn stalled_rounds_fire_after_quiet_rounds_and_a_change_resets_them() {
 }
 
 /// With `[modes] escalation` empty (the default) the triggers are only
-/// recorded: no effort, mode, model or tier changes, and Auto's review moves
-/// the mode down as freely as it does without the ratchet.
+/// recorded: no effort, mode, model or tier changes, and Auto's free review
+/// (`b8_up_only` off) moves the mode down as freely as it does without the
+/// ratchet.
 #[test]
 fn with_no_live_trigger_only_the_shadow_rows_change() {
     run(async {
         let _overrides = Overrides::live(&[]);
-        crate::jev::set_test_flags(distill_workspace::jev::JevFlags::harness_default());
+        crate::jev::set_test_flags(distill_workspace::jev::JevFlags {
+            b8_up_only: false,
+            ..distill_workspace::jev::JevFlags::harness_default()
+        });
         let actor = actor_in_mode(ExecutionMode::Ultrafast).await;
         effort_model(&actor);
         report_prompt_tokens(&actor, 200_000);
@@ -557,13 +561,17 @@ fn ultrafast_second_climb_restores_normal_effort_policy() {
     });
 }
 
-/// Under Auto a climb is one mode up, decided without Jev, and the review
-/// cannot bring the mode down again inside the request; the next request's
-/// pick can.
+/// Under Auto a climb is one mode up, decided without Jev, and the free
+/// review (`b8_up_only` off) cannot bring the mode down again inside the
+/// request; the next request's pick can.
 #[test]
 fn under_auto_a_climb_moves_the_mode_up_until_the_next_request() {
     run(async {
         let _overrides = Overrides::live(&[CheckFailedTwice, IdenticalCalls]);
+        crate::jev::set_test_flags(distill_workspace::jev::JevFlags {
+            b8_up_only: false,
+            ..distill_workspace::jev::JevFlags::harness_default()
+        });
         let actor = plain_actor().await;
         actor.execution_mode.store_auto(ExecutionMode::Ultrasave);
         actor.note_escalation(CheckFailedTwice);

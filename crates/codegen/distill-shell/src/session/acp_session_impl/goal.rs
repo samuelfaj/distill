@@ -3038,11 +3038,25 @@ impl SessionActor {
             && !self.goal_tracker.lock().is_active()
     }
 
+    /// Under Auto with `b8_up_only` a turn may climb to UltraCode after its
+    /// first edits, and the review at its end must see those edits too, so
+    /// the snapshot is also taken in Normal and UltraSave. Not in UltraFast,
+    /// which waits for nothing but the model and checks: a climb from it is
+    /// reviewed from the first tool round after the climb.
+    fn ultracode_snapshot_before_a_climb(&self) -> bool {
+        crate::session::goal_classifier::turn_review::contract_v2_configured()
+            && !self.startup_hints.is_subagent
+            && self.execution_mode.is_auto()
+            && self.execution_mode.load() != distill_tool_types::ExecutionMode::Ultrafast
+            && crate::jev::lever_active(distill_workspace::jev::flags::JevLever::B8UpOnly)
+            && !self.goal_tracker.lock().is_active()
+    }
+
     /// Before the first tool call of `prompt_id`: snapshot the tree, so the
     /// turn-end review sees this turn's changes and not earlier ones.
     pub(super) async fn ultracode_turn_snapshot(&self, prompt_id: &str) {
         use crate::session::goal_classifier::turn_review::{SNAPSHOT_BUDGET, TurnReviewState};
-        if !self.ultracode_turn_review_applies()
+        if !(self.ultracode_turn_review_applies() || self.ultracode_snapshot_before_a_climb())
             || self
                 .jev_ledger
                 .borrow()
@@ -4123,5 +4137,79 @@ mod ultracode_turn_review_tests {
         assert_eq!(turn.spawns, 0);
         assert!(!turn.chunks.iter().any(|chunk| chunk.contains("Verification:")));
         assert_eq!(turn.model_requests, 2, "tool round, first answer");
+    }
+
+    /// Auto reaches UltraCode by its request-start pick or by a climb inside
+    /// the request; either way the turn ends through the review, and a
+    /// climb's review also sees the edits made before it. With `b8_up_only`
+    /// off a Normal turn takes no snapshot, as before.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_auto_ultracode_turn_ends_through_the_review() {
+        use distill_tool_types::ExecutionMode::{Normal, Ultracode};
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let _contract = Contract::set(true);
+                let flags = |up_only| distill_workspace::jev::JevFlags {
+                    b8_up_only: up_only,
+                    ..distill_workspace::jev::JevFlags::harness_default()
+                };
+                crate::jev::set_test_flags(flags(true));
+                let ultracode = distill_workspace::jev::JevAnswerSet {
+                    model: "test-jev".to_owned(),
+                    answers: [(
+                        "execution_mode".to_owned(),
+                        distill_workspace::jev::Answer::Choice {
+                            choice: "ultracode".to_owned(),
+                            probabilities: [("ultracode".to_owned(), 0.9)].into(),
+                            confidence: Some(0.9),
+                        },
+                    )]
+                    .into(),
+                    usage: Default::default(),
+                    request_id: None,
+                    latency_ms: 0,
+                };
+
+                let repo = dirty_repo();
+                let (actor, _seen) = actor_in(repo.path(), Some(vec![PASS])).await;
+                actor.execution_mode.store_auto(Normal);
+                crate::jev::set_test_decision_answers([Some(ultracode)]);
+                actor
+                    .jev_auto_pick_mode("make the cache safe for concurrent writers")
+                    .await;
+                crate::jev::clear_test_decision_answers();
+                assert_eq!(actor.execution_mode.load(), Ultracode);
+                actor.ultracode_turn_snapshot("picked").await;
+                std::fs::write(repo.path().join("src/c.rs"), "fn c() { picked(); }\n").unwrap();
+                assert_eq!(review(&actor, "picked").await, None);
+                assert_eq!(status(&actor, "picked"), Some(TurnStatus::Reviewed));
+
+                let repo = dirty_repo();
+                let (actor, seen) = actor_in(repo.path(), Some(vec![PASS])).await;
+                actor.execution_mode.store_auto(Normal);
+                actor.ultracode_turn_snapshot("climbed").await;
+                std::fs::write(repo.path().join("src/c.rs"), "fn c() { before_climb(); }\n")
+                    .unwrap();
+                assert_eq!(actor.escalate_auto_mode(), Some(Ultracode));
+                assert_eq!(review(&actor, "climbed").await, None);
+                assert_eq!(status(&actor, "climbed"), Some(TurnStatus::Reviewed));
+                assert!(seen.borrow().patches[0].contains("before_climb"));
+
+                crate::jev::set_test_flags(flags(false));
+                let repo = dirty_repo();
+                let (actor, _seen) = actor_in(repo.path(), None).await;
+                actor.execution_mode.store_auto(Normal);
+                actor.ultracode_turn_snapshot("first-auto").await;
+                assert!(
+                    !actor
+                        .jev_ledger
+                        .borrow()
+                        .ultracode_review
+                        .started_for("first-auto")
+                );
+                crate::jev::clear_test_flags();
+                drain_gateway_turns().await;
+            })
+            .await;
     }
 }

@@ -2880,7 +2880,6 @@ impl SessionActor {
             let execution_mode = self.execution_mode.load();
             self.note_mode_round(execution_mode);
             if execution_mode != prepared_execution_mode {
-                self.inject_execution_mode_reminder();
                 let next_tools = self.prepare_tool_definitions_timed().await.0;
                 let same_tools = tool_definitions.len() == next_tools.len()
                     && tool_definitions.iter().zip(&next_tools).all(|(before, after)| {
@@ -2888,6 +2887,7 @@ impl SessionActor {
                             && before.function.description == after.function.description
                             && before.function.parameters == after.function.parameters
                     });
+                Box::pin(self.inject_execution_mode_reminder_on_switch(same_tools)).await;
                 if !same_tools {
                     self.jev_ledger.borrow_mut().invalidate_cached_prompt();
                 }

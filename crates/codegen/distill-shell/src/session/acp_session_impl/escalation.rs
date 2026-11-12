@@ -209,7 +209,7 @@ const fn mode_id(mode: ExecutionMode) -> &'static str {
 }
 
 /// Lean modes, then Normal, then UltraCode.
-const fn mode_rank(mode: ExecutionMode) -> u8 {
+pub(super) const fn mode_rank(mode: ExecutionMode) -> u8 {
     match mode {
         ExecutionMode::Ultrasave | ExecutionMode::Ultrafast => 0,
         ExecutionMode::Normal => 1,

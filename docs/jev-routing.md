@@ -502,6 +502,41 @@ The other rows are `climb:effort`, `climb:review`, `climb:normal_effort`,
 `review:refuted`, `review:not_refuted`, `review:unavailable` or
 `review:skip-prose`.
 
+## Decision policy by mode
+
+Each mode's row in the [mode policy table](mode-policy.md) also decides how
+the harness asks Jev, not only what the prompt says. These rules are on by
+default for UltraFast, UltraSave and UltraCode; `[modes] v2 = []` turns them
+off (every mode back on its today row), and listing modes keeps them only for
+those. Normal does not change. None of this has been benchmarked yet.
+
+| Mode | What its v2 row enforces | Policy rows |
+|---|---|---|
+| UltraFast | No Jev question is awaited before a main request: the turn-start skill ranking runs detached and its line is appended as a reminder before the turn's second request if it is in, else dropped; one effort decision per turn, about the request, asked detached (rounds run at the silent level until it is in, and a later round takes it only where switching effort is free); effort capped at medium; C4 waits at most 800 ms; no utility-model selection of tool results (the deterministic reducers stay) | `jev_wait_skipped`, `effort_ceiling`, `c4_deadline`, `utility_selection_skipped` |
+| UltraSave | Every decision awaited within the 4 s deadline; effort chosen per round at the 0.4 quantile, from a menu that stops at high | `effort_ceiling` |
+| UltraCode | Effort read at the 0.75 quantile; no effort-lowering pass; high at least on the round after a failed tool or a failed recorded check; with Jev silent, the turn's last answered level, else medium | `effort_floor` |
+| All three | A round whose only tool calls wait on background work, and the round that answers the final-check reminder, ask no effort question and keep the last level | `effort_kept` |
+
+The ceiling filters the levels the effort question offers, and a level still
+above it (an effort configured for the session, a redo floor) is lowered and
+recorded as `effort_ceiling`. The escalation ratchet's level is applied after
+the ceiling, so a climb is never capped; UltraFast's second climb hands the
+rest of the turn to Normal's effort rules. Where the prompt cache is keyed by
+effort, the ceiling and the floor act only on a round that sets the turn's
+route, so they never force an uncached re-read in the middle of a turn. An
+explicit effort turns every effort rule off (the turn outcome record shows
+`effort_pinned`). Under Auto the request-start mode pick is still awaited, and
+the rules of the mode it picks apply from then on; the turn-start skill line
+follows the mode in force when the request arrives. Three waits are outside
+these rules: tier routing, where it runs (a worker or utility model is
+configured), still asks before the round that sets the turn's route; the skill
+descriptors of a session's first prompt are still ranked before it is sent;
+and the first-turn memory ranking still runs when memory is on.
+
+`[modes.ultrafast] effort_per_round = true` is a benchmark control arm: it puts
+UltraFast back on today's per-round effort decision and keeps the rest of its
+v2 row.
+
 ## Changing a question or a threshold
 
 A new wording, a new question or a moved floor goes through three steps, in

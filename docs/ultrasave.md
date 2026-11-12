@@ -35,6 +35,13 @@ failure, and skips the second model-tier effort decision. Explicit effort pins
 and the existing retry effort floor remain authoritative. These mechanisms
 target token economy; the benchmark below determines their observed effect.
 
+By default UltraSave also awaits every Jev decision within the 4 s deadline,
+reads the per-round effort answer at the 0.4 quantile, and never runs above
+high unless the escalation ratchet raised the turn. Rounds that only wait on
+background work, and the round that answers the final-check reminder, keep the
+last level without asking. `[modes] v2 = []` turns this off; it has not been
+benchmarked. See [Decision policy by mode](jev-routing.md#decision-policy-by-mode).
+
 ## Model and provider path (opt-in)
 
 These settings apply only to a session pinned to UltraSave (`/ultrasave on`,

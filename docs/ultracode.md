@@ -21,6 +21,13 @@ its delegation rules described above and in [Hierarchy and
 limits](#hierarchy-and-limits). No campaign has measured the new directive
 yet; see [Mode policy table](mode-policy.md#directives).
 
+By default UltraCode also reads the effort answer at the 0.75 quantile, skips
+the pass that may only lower effort, runs at least at high on the round after
+a failed tool or a failed recorded check, and, when Jev is silent, keeps the
+turn's last answered level (else medium). `[modes] v2 = []` turns this off; it
+has not been benchmarked. See
+[Decision policy by mode](jev-routing.md#decision-policy-by-mode).
+
 ## Activate the real mode
 
 In the interactive UI, use `/ultracode on`, `/ultracode off`, or `/ultracode`

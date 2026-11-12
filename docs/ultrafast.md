@@ -22,6 +22,13 @@ finishing. It gives no delegation advice. `[modes] v2 = []` restores the
 previous directive. No campaign has measured the new directive yet; see
 [Mode policy table](mode-policy.md#directives).
 
+By default UltraFast also waits for nothing but the model and the checks: no
+Jev question is awaited before a main request, the effort is decided once per
+turn without waiting and capped at medium, the after-edit review waits at most
+800 ms, and the utility model does not select tool results. `[modes] v2 = []`
+turns this off; it has not been benchmarked. See
+[Decision policy by mode](jev-routing.md#decision-policy-by-mode).
+
 ## Model and provider path (opt-in)
 
 These keys apply only to a session pinned to UltraFast (`/ultrafast on`,

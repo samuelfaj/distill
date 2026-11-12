@@ -141,6 +141,98 @@ class ModesVerdictTest(unittest.TestCase):
         self.assertEqual(report['verdict'], 'FAIL')
         self.assertIn('ultracode: NO_GO', report['reasons'])
 
+    def test_ultrasave_pays_for_money_with_at_most_one_point_five_times_normal_time(self):
+        arms = ('normal', 'normal_aa', 'ultrasave')
+        slower = verdict(campaign(arms, profile='tiered', values=per_arm(ultrasave={'credits': 4.0, 'wall': 140.0})))
+        self.assertEqual(slower['claims']['ultrasave']['status'], 'PASS', slower['claims'])
+        too_slow = verdict(campaign(arms, profile='tiered', values=per_arm(ultrasave={'credits': 4.0, 'wall': 160.0})))
+        self.assertEqual(too_slow['claims']['ultrasave']['status'], 'no claim yet')
+        self.assertIn({'gate': 'charged time <= 1.5x Normal', 'passed': False}, too_slow['claims']['ultrasave']['checks'])
+
+    def test_ultrafast_may_spend_two_point_five_times_normal_credits_only_on_a_fast_provider_path(self):
+        data = campaign(('normal', 'normal_aa', 'ultrafast'), values=per_arm(ultrafast={'wall': 50.0, 'credits': 20.0}))
+        same_path = verdict(data)
+        self.assertEqual(same_path['claims']['ultrafast']['status'], 'no claim yet')
+        self.assertIn({'gate': 'credits <= 1.15x Normal', 'passed': False}, same_path['claims']['ultrafast']['checks'])
+        data['ultrafast_provider_tier'] = 'fast'
+        fast_path = verdict(data)
+        self.assertEqual(fast_path['claims']['ultrafast']['status'], 'PASS', fast_path['claims'])
+        self.assertIn({'gate': 'credits <= 2.5x Normal on the fast provider path', 'passed': True},
+                      fast_path['claims']['ultrafast']['checks'])
+
+    def ultracode_campaign(self, ultracode, normal_fails='a', aa_fails=(('c', 1), ('d', 1)), wall=900.0):
+        """Normal fails `normal_fails` and the A/A arm also fails `aa_fails`, so accepted runs deviate by 2 in 12
+        by default. A Normal run lasting the whole timeout keeps the A/A time ratio at 1 either way."""
+        def values(arm, case, rep):
+            if arm == 'ultracode':
+                return ultracode(case, rep)
+            return {'wall': wall,
+                    'passed': not (case in normal_fails or (arm == 'normal_aa' and (case, rep) in aa_fails))}
+        data = campaign(('normal', 'normal_aa', 'ultracode'), values=values)
+        data['ultracode_cases'] = {'substantial': ['a', 'b'], 'control': ['c', 'd']}
+        return data
+
+    def test_ultracode_gain_must_clear_twice_the_aa_deviation_of_accepted_runs(self):
+        clear = verdict(self.ultracode_campaign(lambda case, rep: {'credits': 20.0, 'wall': 200.0}))
+        self.assertAlmostEqual(clear['aa_margins']['accepted'], 4 / 12)
+        self.assertEqual(clear['claims']['ultracode']['status'], 'PASS', clear['claims'])
+        # One substantial run more than Normal: 1/6 of the runs, inside the 4/12 margin.
+        noise = verdict(self.ultracode_campaign(lambda case, rep: {
+            'credits': 20.0, 'wall': 200.0, 'passed': not (case == 'a' and rep < 3)}))
+        self.assertEqual(noise['claims']['ultracode']['status'], 'no claim yet')
+        self.assertIn({'gate': 'substantial accepted gain beyond the A/A margin of accepted runs', 'passed': False},
+                      noise['claims']['ultracode']['checks'])
+
+    def test_ultracode_losses_stay_under_three_times_credits_and_two_point_five_times_time(self):
+        dear = verdict(self.ultracode_campaign(lambda case, rep: {'credits': 35.0, 'wall': 200.0}))
+        self.assertIn({'gate': 'substantial credits <= 3x Normal', 'passed': False}, dear['claims']['ultracode']['checks'])
+        slow = verdict(self.ultracode_campaign(lambda case, rep: {'credits': 20.0, 'wall': 300.0},
+                                               normal_fails='', aa_fails=(), wall=100.0))
+        self.assertIn({'gate': 'substantial charged time <= 2.5x Normal', 'passed': False},
+                      slow['claims']['ultracode']['checks'])
+        undeclared = self.ultracode_campaign(lambda case, rep: {'credits': 20.0, 'wall': 200.0})
+        del undeclared['ultracode_cases']
+        report = verdict(undeclared)
+        self.assertEqual(report['claims']['ultracode']['status'], 'no claim yet')
+        self.assertIn({'gate': 'substantial credits <= 3x Normal', 'passed': None}, report['claims']['ultracode']['checks'])
+
+    # A/A reads 1.05 on credits and time: the merge rule's deviation is 0.05 on both.
+    NOISY_AA = {'credits': 10.5, 'wall': 105.0}
+
+    def test_a_lean_mode_beaten_on_credits_and_time_is_reported_as_dominated(self):
+        arms = ('normal', 'normal_aa', 'ultrasave', 'ultrafast')
+        report = verdict(campaign(arms, profile='tiered', values=per_arm(
+            normal_aa=self.NOISY_AA, ultrasave={'credits': 4.0, 'wall': 60.0}, ultrafast={'credits': 10.0, 'wall': 80.0})))
+        self.assertEqual(report['merge'], ['MERGE: ultrafast is dominated by ultrasave'])
+        self.assertEqual(report['claims']['ultrafast']['status'], 'no claim yet')
+        self.assertEqual(report['claims']['ultrafast']['merge'], ['MERGE: ultrafast is dominated by ultrasave'])
+        self.assertIn('MERGE: ultrafast is dominated by ultrasave', report['reasons'])
+        # Slower by less than the A/A deviation: not dominated.
+        close = verdict(campaign(arms, profile='tiered', values=per_arm(
+            normal_aa=self.NOISY_AA, ultrasave={'credits': 4.0, 'wall': 60.0}, ultrafast={'credits': 10.0, 'wall': 62.0})))
+        self.assertEqual(close['merge'], [])
+
+    def test_modes_inside_the_aa_deviation_on_all_three_metrics_are_reported_as_duplicates(self):
+        arms = ('normal', 'normal_aa', 'ultrasave', 'ultrafast', 'ultracode')
+        report = verdict(campaign(arms, values=per_arm(
+            normal_aa=self.NOISY_AA, ultracode={'credits': 10.3, 'wall': 103.0},
+            ultrasave={'credits': 7.0, 'wall': 70.0}, ultrafast={'credits': 7.2, 'wall': 68.0})))
+        self.assertEqual(sorted(report['merge']), ['MERGE: ultracode duplicates normal',
+                                                   'MERGE: ultrafast duplicates ultrasave'])
+        for mode in ('ultracode', 'ultrafast'):
+            self.assertEqual(report['claims'][mode]['status'], 'no claim yet')
+        self.assertNotIn('merge', report['claims']['ultrasave'])
+
+    def test_distinct_modes_report_no_merge_and_their_signature(self):
+        arms = ('normal', 'normal_aa', 'ultrasave', 'ultrafast')
+        report = verdict(campaign(arms, profile='tiered', values=per_arm(
+            normal_aa=self.NOISY_AA, ultrasave={'credits': 4.0, 'wall': 120.0}, ultrafast={'credits': 11.0, 'wall': 60.0})))
+        self.assertEqual(report['merge'], [])
+        self.assertEqual(report['verdict'], 'PASS', report['reasons'])
+        self.assertEqual(set(report['mode_signature']), {'ultrasave', 'ultrafast'})
+        # Synthetic rows carry no policy rows or per-call effort: nothing to check, never a pass.
+        self.assertEqual(report['mode_signature']['ultrafast']['status'], 'NO DATA')
+
     def test_fewer_than_three_repetitions_is_a_smoke(self):
         report = verdict(campaign(('normal', 'normal_aa'), repetitions=1))
         self.assertEqual((report['verdict'], report['smoke_verdict']), ('SMOKE', 'PASS'))

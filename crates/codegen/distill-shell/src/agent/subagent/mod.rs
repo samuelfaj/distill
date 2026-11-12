@@ -1355,6 +1355,8 @@ async fn read_parent_sampling_config(
                 doom_loop_recovery: ctx.sampling_config.doom_loop_recovery,
                 reasoning_shape: ctx.sampling_config.reasoning_shape,
                 openrouter_variant: ctx.sampling_config.openrouter_variant.clone(),
+                // The serving path belongs to the pinned root session's own requests.
+                provider_tier: None,
                 header_injector: ctx.sampling_config.header_injector.clone(),
             };
             if inherited

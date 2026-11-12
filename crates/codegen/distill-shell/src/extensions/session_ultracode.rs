@@ -40,6 +40,16 @@ struct SetSessionUltracodeResponse {
 }
 
 pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
+    let config = crate::config::load_effective_config().ok();
+    handle_with_config(agent, args, config.as_ref()).await
+}
+
+/// [`handle`] with the effective config `root` that pinned-mode settings are read from.
+pub(crate) async fn handle_with_config(
+    agent: &MvpAgent,
+    args: &acp::ExtRequest,
+    root: Option<&toml::Value>,
+) -> ExtResult {
     let (session_id, requested_mode, enabled) = match args.method.as_ref() {
         MODE_SET_METHOD => {
             let request: SetModeRequest = parse_params(args)?;
@@ -99,6 +109,9 @@ pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
         handle.execution_mode.store_auto(mode);
     } else {
         handle.execution_mode.store(mode);
+    }
+    if choice != current_choice {
+        change_pinned_mode(agent, &handle.info, choice, root).await;
     }
     if requested_mode.is_some() {
         to_raw_response(&ModeState {
@@ -169,4 +182,141 @@ pub(crate) fn persist_mode(
     })
     .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     crate::session::storage::write_bytes_atomic(&dir.join("execution_mode.json"), &bytes)
+}
+
+const PINNED_MODE_FILE: &str = "pinned_mode.json";
+
+/// What a pinned mode changed in the session, so leaving it can undo that. Absent when the mode
+/// changed nothing, which is always the case with no `[modes.*]` key and no worker set.
+#[derive(Default, Serialize, Deserialize)]
+struct PinnedModeState {
+    /// The session's model before the mode's model; `auto` when account Auto routing chose it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    previous_model: Option<String>,
+    /// The mode's model as applied. A different session model on leave is the user's own later
+    /// pick, which stays.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    applied_model: Option<String>,
+    /// Decided once when the session is pinned: changing it mid-session would invalidate the
+    /// provider prompt cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider_tier: Option<distill_sampler::ProviderTier>,
+}
+
+fn load_pinned_state(info: &crate::session::info::Info) -> Option<PinnedModeState> {
+    let path = crate::session::persistence::session_dir(info).join(PINNED_MODE_FILE);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            tracing::warn!(session_id = %info.id.0, %error, "pinned mode state unreadable");
+            return None;
+        }
+    };
+    serde_json::from_slice(&bytes)
+        .inspect_err(|error| {
+            tracing::warn!(session_id = %info.id.0, %error, "pinned mode state invalid");
+        })
+        .ok()
+}
+
+fn save_pinned_state(
+    info: &crate::session::info::Info,
+    state: &PinnedModeState,
+) -> std::io::Result<()> {
+    let path = crate::session::persistence::session_dir(info).join(PINNED_MODE_FILE);
+    let changes_nothing = state.previous_model.is_none()
+        && state.applied_model.is_none()
+        && state.provider_tier.is_none();
+    if changes_nothing {
+        return match std::fs::remove_file(&path) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+            _ => Ok(()),
+        };
+    }
+    let dir = crate::session::persistence::ensure_owner_only_session_dir(info)?;
+    let bytes = serde_json::to_vec(state)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    crate::session::storage::write_bytes_atomic(&dir.join(PINNED_MODE_FILE), &bytes)
+}
+
+/// The serving path of a session pinned to a mode with `[modes.<mode>] provider_tier`.
+pub(crate) fn pinned_provider_tier(
+    info: &crate::session::info::Info,
+) -> Option<distill_sampler::ProviderTier> {
+    load_pinned_state(info)?.provider_tier
+}
+
+/// Whether this session was already told UltraSave has no cheaper model.
+fn first_no_cheaper_model_notice(session_id: &str) -> bool {
+    static NOTIFIED: std::sync::LazyLock<parking_lot::Mutex<std::collections::HashSet<String>>> =
+        std::sync::LazyLock::new(Default::default);
+    NOTIFIED.lock().insert(session_id.to_owned())
+}
+
+/// Leaving a pinned mode restores the model it replaced, unless the user picked another model
+/// since; entering one applies its model as a session-scoped explicit pick (account routing
+/// state on disk is never written) and decides its serving path. Auto applies nothing. A model
+/// that cannot be applied leaves the session on its model.
+async fn change_pinned_mode(
+    agent: &MvpAgent,
+    info: &crate::session::info::Info,
+    choice: ExecutionModeChoice,
+    root: Option<&toml::Value>,
+) {
+    let session_model = || {
+        agent
+            .resident_handle(&info.id)
+            .map(|handle| handle.model_id.0.to_string())
+    };
+    if let Some(left) = load_pinned_state(info)
+        && let (Some(previous), Some(applied)) = (left.previous_model, left.applied_model)
+        && session_model().as_deref() == Some(applied.as_str())
+    {
+        switch_session_model(agent, info, &previous).await;
+    }
+    let mut state = PinnedModeState::default();
+    if let Some(mode) = choice.fixed() {
+        let settings = crate::agent::config::pinned_mode_settings(root, mode);
+        state.provider_tier = settings.provider_tier;
+        if mode == ExecutionMode::Ultrasave
+            && settings.model.is_none()
+            && first_no_cheaper_model_notice(&info.id.0)
+        {
+            tracing::info!(session_id = %info.id.0,
+                "UltraSave has no cheaper model configured; the session keeps its model");
+        }
+        if let Some(model) = settings.model
+            && let Some(current) = session_model().filter(|current| *current != model)
+        {
+            let previous = if crate::agent::account_routing::session_auto_route(info).is_some() {
+                "auto".to_owned()
+            } else {
+                current
+            };
+            if switch_session_model(agent, info, &model).await {
+                state.previous_model = Some(previous);
+                state.applied_model = Some(model);
+            }
+        }
+    }
+    if let Err(error) = save_pinned_state(info, &state) {
+        tracing::warn!(session_id = %info.id.0, %error, "pinned mode state not saved");
+    }
+}
+
+async fn switch_session_model(
+    agent: &MvpAgent,
+    info: &crate::session::info::Info,
+    model: &str,
+) -> bool {
+    let request = acp::SetSessionModelRequest::new(info.id.clone(), acp::ModelId::new(model));
+    match Box::pin(agent.set_model_gated(request)).await {
+        Ok(_) => true,
+        Err(error) => {
+            tracing::warn!(session_id = %info.id.0, model, ?error,
+                "pinned mode model not applied; the session keeps its model");
+            false
+        }
+    }
 }

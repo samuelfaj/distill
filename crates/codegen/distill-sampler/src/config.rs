@@ -32,6 +32,17 @@ pub enum RequestCompression {
     Zstd,
 }
 
+/// A provider serving path asked for on every request of a client: the session that set
+/// it decides it once, because a change mid-session invalidates the provider prompt cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderTier {
+    /// Responses `service_tier: "priority"`, Messages `speed: "fast"`.
+    Fast,
+    /// Responses `service_tier: "flex"`; the Messages API has no economy path.
+    Economy,
+}
+
 /// All knobs that control a single sampling request.
 /// Auth is selected separately via `auth_scheme`, while `api_backend` controls only the request/response protocol shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,6 +99,10 @@ pub struct SamplerConfig {
     /// OpenRouter routing suffix (`floor`, `nitro`, `exacto`) appended to the wire model slug; `None` sends the slug as is.
     #[serde(default)]
     pub openrouter_variant: Option<String>,
+    /// Serving path field sent to Responses and Messages endpoints (not OpenRouter, which
+    /// takes `openrouter_variant`); `None` sends no such field.
+    #[serde(default)]
+    pub provider_tier: Option<ProviderTier>,
 
     // Client identity
     pub origin_client: Option<OriginClientInfo>,
@@ -158,6 +173,7 @@ impl Default for SamplerConfig {
             reasoning_shape: ReasoningShape::default(),
             reasoning_summary: None,
             openrouter_variant: None,
+            provider_tier: None,
             origin_client: None,
             client_identifier: None,
             deployment_id: None,

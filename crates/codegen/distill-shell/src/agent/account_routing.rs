@@ -544,6 +544,12 @@ fn model_config_for_route(
     config.header_injector = previous.header_injector.clone();
     config.idle_timeout_secs = previous.idle_timeout_secs;
     config.doom_loop_recovery = previous.doom_loop_recovery;
+    // A pinned mode's serving path (its tier and the OpenRouter variant it defaulted) stays
+    // with the session model it was decided for.
+    if previous.model == config.model && previous.provider_tier.is_some() {
+        config.provider_tier = previous.provider_tier;
+        config.openrouter_variant = previous.openrouter_variant.clone();
+    }
     if previous.model == config.model
         && let Some(effort) = previous.reasoning_effort
         && model

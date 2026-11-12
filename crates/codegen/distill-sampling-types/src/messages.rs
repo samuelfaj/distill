@@ -34,6 +34,9 @@ pub struct MessagesRequest {
     pub output_config: Option<OutputConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Metadata>,
+    /// Serving speed (`"fast"`); absent asks for the standard speed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speed: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

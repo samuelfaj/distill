@@ -1057,6 +1057,58 @@ pub struct ModelsConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_tool_calls: Option<bool>,
 }
+/// What a session pinned to a mode runs on: `[modes.ultrasave]` and `[modes.ultrafast]`
+/// `model` and `provider_tier`. Unset keys change nothing.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PinnedModeSettings {
+    /// The model that leads the pinned session; `None` keeps the session model.
+    pub model: Option<String>,
+    /// The serving path asked of the provider; `None` sends no such field.
+    pub provider_tier: Option<distill_sampler::ProviderTier>,
+}
+/// Settings for a session pinned to `mode`, from the effective config `root`. UltraSave leads on
+/// `[modes.ultrasave] model`, else `[models] worker`, never on the utility model; UltraFast keeps
+/// the session model unless `[modes.ultrafast] model` names one. No model is ranked automatically.
+pub(crate) fn pinned_mode_settings(
+    root: Option<&toml::Value>,
+    mode: distill_tool_types::ExecutionMode,
+) -> PinnedModeSettings {
+    use distill_tool_types::ExecutionMode;
+    let section = match mode {
+        ExecutionMode::Ultrasave => "ultrasave",
+        ExecutionMode::Ultrafast => "ultrafast",
+        ExecutionMode::Normal | ExecutionMode::Ultracode => return PinnedModeSettings::default(),
+    };
+    let text = |value: &toml::Value| {
+        Some(value.as_str()?.trim().to_owned()).filter(|value| !value.is_empty())
+    };
+    let mode_key = |key: &str| text(root?.get("modes")?.get(section)?.get(key)?);
+    let mut model = mode_key("model");
+    if mode == ExecutionMode::Ultrasave {
+        model = model.or_else(|| text(root?.get("models")?.get("worker")?));
+    }
+    let provider_tier = mode_key("provider_tier").and_then(|value| {
+        match value.to_ascii_lowercase().as_str() {
+            "fast" => Some(distill_sampler::ProviderTier::Fast),
+            "economy" => Some(distill_sampler::ProviderTier::Economy),
+            _ => {
+                tracing::warn!(mode = section, %value, "unknown provider_tier; sending none");
+                None
+            }
+        }
+    });
+    PinnedModeSettings {
+        model,
+        provider_tier,
+    }
+}
+/// UltraSave has no cheaper model to lead on: neither `[modes.ultrasave] model` nor
+/// `[models] worker` is set, so a pinned UltraSave session keeps its own model.
+pub(crate) fn ultrasave_has_no_cheaper_model(root: Option<&toml::Value>) -> bool {
+    pinned_mode_settings(root, distill_tool_types::ExecutionMode::Ultrasave)
+        .model
+        .is_none()
+}
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HarnessConfig {
@@ -5421,6 +5473,8 @@ pub(crate) fn sampling_config_for_account(
         reasoning_summary: info.reasoning_summary,
         // The main session sets it per turn; the worker path sets it where it spawns.
         openrouter_variant: None,
+        // Only a session pinned to a mode sets it, per turn (`reconstruct_full_config`).
+        provider_tier: None,
         force_http1: false,
         max_retries: info.max_retries,
         rate_limit_retry_threshold: info.rate_limit_retry_threshold,

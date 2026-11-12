@@ -941,6 +941,12 @@ impl SessionActor {
             } else {
                 None
             };
+        // Set when a root session was pinned to a mode with a tier; constant until it leaves.
+        let provider_tier = if self.startup_hints.is_subagent || self.execution_mode.is_auto() {
+            None
+        } else {
+            crate::extensions::session_ultracode::pinned_provider_tier(&self.session_info)
+        };
         let mut restored = SamplingConfig {
             api_key,
             base_url: cfg.base_url,
@@ -991,8 +997,9 @@ impl SessionActor {
             openrouter_variant: if self.startup_hints.is_subagent {
                 crate::jev::worker_variant()
             } else {
-                crate::jev::main_variant()
+                crate::jev::main_variant_for_tier(provider_tier)
             },
+            provider_tier,
             header_injector: Some(std::sync::Arc::new(TraceContextInjector)),
         };
         let store = crate::accounts::AccountStore::default();
@@ -1358,6 +1365,11 @@ impl SessionActor {
         // A tier-routed round runs on another of the user's models by Jev's choice;
         // account Auto must not claim it or persist its config as the session's.
         let tier_routed = self.jev_ledger.borrow().tier_route_active;
+        // The pinned serving path belongs to the session model; another model's endpoint may
+        // not offer it.
+        if tier_routed && sampler_config.provider_tier.take().is_some() {
+            sampler_config.openrouter_variant = crate::jev::main_variant();
+        }
         let auto_allowed = (!self.startup_hints.is_subagent || !self.model_routing_locked.get())
             && !tier_routed
             && !sampler_config

@@ -854,6 +854,8 @@ struct ClientDefaults {
     doom_loop_recovery: Option<distill_sampling_types::DoomLoopRecoveryPolicy>,
     /// OpenRouter routing suffix (`floor`, `nitro`, `exacto`) appended to the wire model slug.
     openrouter_variant: Option<String>,
+    /// See [`SamplerConfig::provider_tier`].
+    provider_tier: Option<crate::config::ProviderTier>,
 }
 
 /// Endpoint URL builder, resolved once at client construction so each request only appends its path.
@@ -1180,6 +1182,7 @@ impl SamplingClient {
             extra_response_includes: config.extra_response_includes,
             doom_loop_recovery: config.doom_loop_recovery,
             openrouter_variant: config.openrouter_variant,
+            provider_tier: config.provider_tier,
         };
 
         let endpoint = EndpointTemplate::new(&config.base_url, &config.query_params);
@@ -1898,6 +1901,13 @@ impl SamplingClient {
             request.inner.store = Some(false);
         }
 
+        if request.inner.service_tier.is_none() {
+            request.inner.service_tier = self.provider_tier().map(|tier| match tier {
+                crate::config::ProviderTier::Fast => rs::ServiceTier::Priority,
+                crate::config::ProviderTier::Economy => rs::ServiceTier::Flex,
+            });
+        }
+
         if let Some(summary) = self.defaults.reasoning_summary {
             let summary = summary.to_responses_api();
             match request.inner.reasoning.as_mut() {
@@ -2339,7 +2349,20 @@ impl SamplingClient {
             prepend_claude_code_identity(&mut request.inner.system);
         }
 
+        if request.inner.speed.is_none()
+            && self.provider_tier() == Some(crate::config::ProviderTier::Fast)
+        {
+            request.inner.speed = Some("fast".to_owned());
+        }
+
         Ok(())
+    }
+
+    /// The configured serving path, except on OpenRouter, where the model variant carries it.
+    fn provider_tier(&self) -> Option<crate::config::ProviderTier> {
+        self.defaults
+            .provider_tier
+            .filter(|_| !is_openrouter_base_url(&self.base_url))
     }
 
     /// True when the request carries the Anthropic beta flag that accepts a
@@ -3377,6 +3400,54 @@ mod tests {
             .apply_defaults(ChatCompletionRequest::new("a/b", vec![]))
             .expect("defaults apply");
         assert_eq!(payload.model.as_deref(), Some("a/b:floor"));
+    }
+
+    /// A provider may reject an unknown serving-path field, so a body carries one only when the
+    /// session configured a tier, and never on OpenRouter, whose path is the model variant.
+    #[test]
+    fn provider_tier_fields_reach_the_body_only_when_configured() {
+        use crate::config::ProviderTier;
+        let bodies = |base_url: &str, tier: Option<ProviderTier>| {
+            let client = SamplingClient::new(SamplerConfig {
+                base_url: base_url.to_owned(),
+                provider_tier: tier,
+                ..minimal_config()
+            })
+            .expect("client constructs without I/O");
+            let mut responses = CreateResponseWrapper::new(rs::CreateResponse::default());
+            client
+                .apply_response_defaults(&mut responses)
+                .expect("defaults apply");
+            let mut messages = MessagesRequestWrapper::new(messages::MessagesRequest::default());
+            client
+                .apply_message_defaults(&mut messages)
+                .expect("defaults apply");
+            (
+                serde_json::to_value(&responses.inner).unwrap(),
+                serde_json::to_value(&messages.inner).unwrap(),
+            )
+        };
+        let direct = "https://example.test";
+
+        let (responses, messages) = bodies(direct, None);
+        assert!(responses.get("service_tier").is_none(), "{responses}");
+        assert!(messages.get("speed").is_none(), "{messages}");
+
+        let (responses, messages) = bodies(direct, Some(ProviderTier::Fast));
+        assert_eq!(responses["service_tier"], "priority");
+        assert_eq!(messages["speed"], "fast");
+
+        let (responses, messages) = bodies(direct, Some(ProviderTier::Economy));
+        assert_eq!(responses["service_tier"], "flex");
+        assert!(
+            messages.get("speed").is_none(),
+            "the Messages API has no economy speed: {messages}"
+        );
+
+        let (responses, messages) =
+            bodies("https://openrouter.ai/api/v1", Some(ProviderTier::Fast));
+        assert!(responses.get("service_tier").is_none(), "{responses}");
+        assert!(messages.get("speed").is_none(), "{messages}");
     }
 
     /// The shipped path from a model's configured shape to the wire body: the

@@ -751,6 +751,8 @@ pub fn build_messages_request_with(
         thinking,
         output_config,
         metadata: None,
+        // The sampler sets it from the client's provider tier.
+        speed: None,
     };
     if cache.extended_ttl && req.long_cache_ttl {
         request.set_cache_ttl(Some(crate::messages::EXTENDED_CACHE_TTL));

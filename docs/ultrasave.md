@@ -26,6 +26,42 @@ failure, and skips the second model-tier effort decision. Explicit effort pins
 and the existing retry effort floor remain authoritative. These mechanisms
 target token economy; the benchmark below determines their observed effect.
 
+## Model and provider path (opt-in)
+
+These settings apply only to a session pinned to UltraSave (`/ultrasave on`,
+`--ultrasave`, `/mode ultrasave`). Under Auto they never apply, whatever mode
+Auto picks.
+
+```toml
+[modes.ultrasave]
+model = "<model id>"        # optional; unset falls back to [models] worker
+provider_tier = "economy"   # optional; unset sends no serving-path field
+```
+
+- `model`: when the session is pinned, this model becomes the session's model
+  as a session-only explicit pick (the account Auto routing setting on disk is
+  not changed). With no `model`, a configured `[models] worker` is used; the
+  utility model is never used, and models are not ranked automatically.
+  Leaving UltraSave restores the previous model, unless you picked another
+  model with `/model` in the meantime. Compaction and other auxiliary requests
+  run on the session's model, as before.
+- With neither `model` nor `[models] worker` set, UltraSave has no cheaper model
+  and keeps the session's model; the session log records this once.
+- `provider_tier = "economy"`: decided once when the session is pinned and kept
+  until the session leaves the mode, because changing it mid-session
+  invalidates the provider's prompt cache. It applies to the session's model
+  only (a round routed to another model goes without it):
+  - Responses API endpoints: `service_tier: "flex"`.
+  - Anthropic Messages endpoints: nothing is sent.
+  - OpenRouter: the model variant stays `floor` when `[models] main_variant`
+    is unset, which is already the default.
+
+Whether an endpoint accepts `service_tier` depends on the endpoint, the model
+and your plan; a flex tier may also answer more slowly. If requests start
+failing after you set `provider_tier`, remove the key. No cost or speed claim is
+made for these settings until a provider probe and a paired benchmark have been
+run.
+
 ## Predeclared paired evaluation
 
 The initial UltraSave comparison is fixed before live provider calls:

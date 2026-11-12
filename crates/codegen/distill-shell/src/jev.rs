@@ -162,6 +162,51 @@ mod tests {
         assert_eq!(resolve_openrouter_variant(Some("bogus")).as_deref(), Some("floor"));
     }
 
+    /// A pinned mode's tier only fills an unset `main_variant`: the user's own variant wins,
+    /// and with no tier the resolution is today's.
+    #[test]
+    fn a_provider_tier_defaults_only_an_unset_main_variant() {
+        use distill_sampler::ProviderTier::{Economy, Fast};
+        for raw in [
+            None,
+            Some(""),
+            Some("none"),
+            Some("nitro"),
+            Some("exacto"),
+            Some("bogus"),
+        ] {
+            assert_eq!(
+                resolve_main_variant_for_tier(raw, None),
+                resolve_openrouter_variant(raw),
+                "{raw:?}"
+            );
+        }
+        assert_eq!(
+            resolve_main_variant_for_tier(None, Some(Fast)).as_deref(),
+            Some("nitro")
+        );
+        assert_eq!(
+            resolve_main_variant_for_tier(Some(" "), Some(Fast)).as_deref(),
+            Some("nitro")
+        );
+        assert_eq!(
+            resolve_main_variant_for_tier(None, Some(Economy)).as_deref(),
+            Some("floor")
+        );
+        assert_eq!(
+            resolve_main_variant_for_tier(Some("exacto"), Some(Fast)).as_deref(),
+            Some("exacto")
+        );
+        assert_eq!(
+            resolve_main_variant_for_tier(Some("none"), Some(Fast)),
+            None
+        );
+        assert_eq!(
+            resolve_main_variant_for_tier(Some("nitro"), Some(Economy)).as_deref(),
+            Some("nitro")
+        );
+    }
+
     #[tokio::test]
     async fn telemetry_scope_isolates_turns_and_numbers_rounds() {
         let first = with_session_scope("one", async {
@@ -2266,16 +2311,37 @@ pub(crate) fn resolve_openrouter_variant(raw: Option<&str>) -> Option<String> {
 }
 
 fn models_variant(key: &str) -> Option<String> {
+    resolve_openrouter_variant(models_variant_setting(key).as_deref())
+}
+
+fn models_variant_setting(key: &str) -> Option<String> {
     let config = crate::config::load_effective_config().ok();
-    let raw = config
+    config
         .as_ref()
-        .and_then(|c| c.get("models")?.get(key)?.as_str().map(str::to_owned));
-    resolve_openrouter_variant(raw.as_deref())
+        .and_then(|c| c.get("models")?.get(key)?.as_str().map(str::to_owned))
 }
 
 /// The main model's OpenRouter routing suffix (`[models].main_variant`), read per call.
 pub fn main_variant() -> Option<String> {
     models_variant("main_variant")
+}
+
+/// [`main_variant`] for a session whose pinned mode asks for a provider tier.
+pub(crate) fn main_variant_for_tier(tier: Option<distill_sampler::ProviderTier>) -> Option<String> {
+    resolve_main_variant_for_tier(models_variant_setting("main_variant").as_deref(), tier)
+}
+
+/// An explicit `main_variant` wins; unset, `fast` defaults to `nitro` and `economy` to `floor`
+/// (the unset default already), and no tier keeps today's resolution.
+fn resolve_main_variant_for_tier(
+    raw: Option<&str>,
+    tier: Option<distill_sampler::ProviderTier>,
+) -> Option<String> {
+    let unset = raw.is_none_or(|value| value.trim().is_empty());
+    if unset && tier == Some(distill_sampler::ProviderTier::Fast) {
+        return Some("nitro".to_owned());
+    }
+    resolve_openrouter_variant(raw)
 }
 
 /// The worker model's OpenRouter routing suffix (`[models].worker_variant`), read per call.

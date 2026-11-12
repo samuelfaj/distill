@@ -206,8 +206,15 @@ def readme_claim(summary, summary_path, mode):
         what = (f'Distill took **{span(ratios(claims, "reference_cost_usd"), x)} the estimated cost** and '
                 f'**{span(ratios(claims, "wall_time_s"), x)} the wall time of Normal**')
     else:
-        headline = f'{passes}/{runs} passed'
+        # UltraCode sells correctness. Passing as often as Normal is not a gain, so the headline
+        # says so and the sentence gives the price where every arm has one.
+        gained = passes / runs - normal_passes / normal_runs
+        headline = f'{100 * gained:.0f} points more runs passed' if gained > 0 else 'No quality gain measured'
         what = f'UltraCode passed **{passes}/{runs} runs against Normal\'s {normal_passes}/{normal_runs}**'
+        priced = all(arm.get('reference_cost_usd') and normal.get('reference_cost_usd') for _, arm, normal in claims)
+        if priced:
+            what += (f' at **{span(ratios(claims, "reference_cost_usd"), x)} the estimated cost** and '
+                     f'**{span(ratios(claims, "wall_time_s"), x)} the wall time of Normal**')
     families = ', '.join(f'{FAMILIES[f]["label"]} ({FAMILIES[f]["models"]})' for f, _, _ in claims)
     versions = ', '.join(sorted({v for _, arm, _ in claims for v in arm.get('versions') or []})) or 'version not recorded'
     passed = '' if mode == 'ultracode' else f'; {passes}/{runs} runs passed against Normal\'s {normal_passes}/{normal_runs}'

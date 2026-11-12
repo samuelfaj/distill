@@ -30,14 +30,14 @@ slash command in the TUI, or pass a flag to headless prompts.
 ### UltraSave
 
 <!-- benchmarks:ultrasave:begin -->
+# 94–99% cheaper
+
+UltraSave cost **0.0105x–0.0571x the estimated cost of Normal** with the mode pinned on the requested cohort: Astra (GPT-6 Astra + GPT-6 Luna), Sol (GPT-6.1 Sol + GPT-6 Luna), Opus (Opus 5.5 + Haiku 5.5); 27/27 runs passed against Normal's 27/27. Source: [summary](tools/task_cost_eval/results/requested-20261112-summary.json), 2026-11-12; distill 2.0.9 (39f1c6fe0bf8).
 <!-- benchmarks:ultrasave:end -->
-# 93% cheaper
 
-UltraSave cost **0.069x the credits of Normal** on our 20-case benchmark,
-and all 20 tasks still passed.
-
-It works directly: narrow searches, small reads, short reports. Required checks
-still run before a task counts as done.
+It leads on your cheaper worker model when you have one, keeps effort at high
+or lower, and compacts a long session early. Required checks still run before
+a task counts as done.
 
 `/ultrasave on` or `--ultrasave`
 
@@ -47,14 +47,14 @@ still run before a task counts as done.
 ### UltraFast
 
 <!-- benchmarks:ultrafast:begin -->
+# 19–59% less time
+
+UltraFast took **0.411x–0.814x the wall time of Normal** with the mode pinned on the requested cohort: Astra (GPT-6 Astra + GPT-6 Luna), Sol (GPT-6.1 Sol + GPT-6 Luna), Opus (Opus 5.5 + Haiku 5.5); 27/27 runs passed against Normal's 27/27. Source: [summary](tools/task_cost_eval/results/requested-20261112-summary.json), 2026-11-12; distill 2.0.9 (39f1c6fe0bf8).
 <!-- benchmarks:ultrafast:end -->
-# ~2x faster
 
-UltraFast finished in **0.509x the wall time of Normal**, about half,
-and all 20 tasks still passed.
-
-It skips planning and delegation rounds and goes straight to the work. Your
-model, effort and verification steps stay the same.
+It goes straight to the work on your own model: no subagent, no waiting on
+side decisions, effort set once per turn at medium or lower. Verification
+steps stay.
 
 `/ultrafast on` or `--ultrafast`
 
@@ -64,15 +64,16 @@ model, effort and verification steps stay the same.
 ### UltraCode
 
 <!-- benchmarks:ultracode:begin -->
+# No quality gain measured
+
+UltraCode passed **27/27 runs against Normal's 27/27** at **2.19x–3.17x the estimated cost** and **1.5x–2.02x the wall time of Normal** with the mode pinned on the requested cohort: Astra (GPT-6 Astra + GPT-6 Luna), Sol (GPT-6.1 Sol + GPT-6 Luna), Opus (Opus 5.5 + Haiku 5.5). Source: [summary](tools/task_cost_eval/results/requested-20261112-summary.json), 2026-11-12; distill 2.0.9 (39f1c6fe0bf8).
 <!-- benchmarks:ultracode:end -->
-# Extra care
 
-UltraCode means extra care: higher effort and verification discipline. With
-automatic effort it leans one level higher than Normal, and it asks for the
-root cause before an edit and a check of the changed behavior after it.
-
-Delegation is optional and has no speed or cost claim yet. Your model and
-permissions stay the same.
+It puts correctness first: effort is never lowered for a routine round, file
+reads stay whole, and after a turn that changed code an independent reviewer
+checks the patch. The final message ends with `Verification: REVIEWED` or
+`UNVERIFIED`. The cohort above is made of tasks every mode already passes, so
+it shows what the review costs, not what it catches.
 
 `/ultracode on` or `--ultracode`
 
@@ -82,17 +83,15 @@ permissions stay the same.
 ### Auto
 
 <!-- benchmarks:auto:begin -->
+# 51–59% cheaper, 0.833x–1.18x Normal's time
+
+Distill took **0.414x–0.491x the estimated cost** and **0.833x–1.18x the wall time of Normal** under Auto on the requested cohort: Astra (GPT-6 Astra + GPT-6 Luna), Sol (GPT-6.1 Sol + GPT-6 Luna), Opus (Opus 5.5 + Haiku 5.5); 27/27 runs passed against Normal's 27/27. Source: [summary](tools/task_cost_eval/results/requested-20261112-summary.json), 2026-11-12; distill 2.0.9 (39f1c6fe0bf8).
 <!-- benchmarks:auto:end -->
-# Balanced
 
-Auto used **57% less total time** and **77% fewer estimated LLM credits**
-than Normal; both passed **20/20 tasks** in our paired benchmark.
-
-It switches modes as work changes. Subagents inherit Auto and adapt independently.
+It picks a mode for each request and only moves up inside it, when the work
+turns out harder. Subagents inherit Auto and adapt independently.
 
 `/mode auto` or `--mode auto`
-
-[Results and tradeoffs](https://github.com/samuelfaj/distill/pull/45).
 
 </td>
 </tr>
@@ -104,10 +103,12 @@ Details:
 
 ## Benchmarks
 
-[![Distill benchmarks: same quality at up to 87% lower cost and up to 76% less time versus native GPT-6 Astra, GPT-6.1 Sol, Claude Opus 5.5 and DeepSeek V4.1 max baselines](docs/images/benchmarks.webp)](BENCHMARKS.md)
+[![Distill benchmarks of 2026-10-16 (Distill 2.0.46): same quality at up to 87% lower cost and up to 76% less time versus native GPT-6 Astra, GPT-6.1 Sol, Claude Opus 5.5 and DeepSeek V4.1 max baselines](docs/images/benchmarks.webp)](BENCHMARKS.md)
 
-See [BENCHMARKS.md](BENCHMARKS.md) for the full results tables, definitions,
-methodology, cost bounds, reproduction commands, and source JSON.
+The image shows the 2026-10-16 campaign on Distill 2.0.46. See
+[BENCHMARKS.md](BENCHMARKS.md) for the current tables, including one row per
+execution mode, with definitions, methodology, cost bounds, reproduction
+commands, and source JSON.
 
 ## Install
 

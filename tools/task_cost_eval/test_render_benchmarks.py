@@ -1,4 +1,3 @@
-import hashlib
 import io
 import json
 import re
@@ -15,20 +14,9 @@ from .requested_summary import build
 from .test_requested_summary import family, run, synthetic
 
 REPO = Path(__file__).resolve().parents[2]
-SUMMARY = REPO / 'tools/task_cost_eval/results/requested-20261016-summary.json'
-SUMMARY_LINK = 'tools/task_cost_eval/results/requested-20261016-summary.json'
-# SHA-256 of both documents before the markers existed.
-README_SHA = 'd847f8b197c6ce1d00e258de0eaae23e53a85c78bcdfc09c2881881cf8181a8a'
-BENCHMARKS_SHA = '7703493baf5c96481a54e60f261b258c0d81dabc9d312dff98aeb55c161a2170'
-MARKER = re.compile(r'<!-- benchmarks:[a-z]*:?(begin|end) -->\n')
-# Reproduction lines added with the per-mode tooling (the only visible additions allowed).
-ADDED = ('requested_cohort', 'requested_summary', 'render_benchmarks', ' --mode ', '# Per-mode cohorts',
-         '# --mode and ran Normal', '# The cohort driver', '# alternating arm order')
-
-
-def strip(text, added=()):
-    return ''.join(line for line in text.splitlines(True)
-                   if not MARKER.fullmatch(line) and not any(token in line for token in added))
+# The summary the committed documents are rendered from: the latest published campaign.
+SUMMARY = REPO / 'tools/task_cost_eval/results/requested-20261112-summary.json'
+SUMMARY_LINK = 'tools/task_cost_eval/results/requested-20261112-summary.json'
 
 
 def region(text, begin, end):
@@ -50,16 +38,15 @@ class RoundTripTest(unittest.TestCase):
         summary = json.loads(SUMMARY.read_text())
         benchmarks, readme = (REPO / 'BENCHMARKS.md').read_text(), (REPO / 'README.md').read_text()
         self.assertEqual(render(summary, SUMMARY_LINK, benchmarks, readme), (benchmarks, readme))
-        self.assertIn('| DeepSeek |', region(benchmarks, BEGIN, END))
+        self.assertIn('| Opus |', region(benchmarks, BEGIN, END))
         self.assertEqual(main(['--summary', str(SUMMARY), '--benchmarks', str(REPO / 'BENCHMARKS.md'),
                                '--readme', str(REPO / 'README.md'), '--check']), 0)
 
-    def test_markers_change_no_visible_character(self):
-        # Hidden comments only; BENCHMARKS.md also gains the per-mode reproduction commands.
-        readme, benchmarks = (REPO / 'README.md').read_text(), (REPO / 'BENCHMARKS.md').read_text()
-        self.assertEqual(hashlib.sha256(strip(readme).encode()).hexdigest(), README_SHA)
-        self.assertEqual(hashlib.sha256(strip(benchmarks, ADDED).encode()).hexdigest(), BENCHMARKS_SHA)
-        self.assertEqual(len(MARKER.findall(readme)), 2 * len(README_MODES))
+    def test_every_readme_mode_cell_has_one_marker_pair(self):
+        readme = (REPO / 'README.md').read_text()
+        for mode in README_MODES:
+            begin, end = readme_markers(mode)
+            self.assertEqual((readme.count(begin), readme.count(end)), (1, 1), mode)
 
     def test_check_fails_on_drift_and_a_render_restores_only_the_regions(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -68,7 +55,9 @@ class RoundTripTest(unittest.TestCase):
             shutil.copyfile(REPO / 'BENCHMARKS.md', benchmarks)
             shutil.copyfile(REPO / 'README.md', readme)
             original = benchmarks.read_text()
-            drifted = original.replace('$1.00374', '$0.90374').replace('## Cohort interpretation', '## Cohorts')
+            # Any rendered cost will do: the test must not depend on one campaign's numbers.
+            cell = re.search(r'\$\d+\.\d{5}', region(original, BEGIN, END)).group(0)
+            drifted = original.replace(cell, '$9.99999', 1).replace('## Cohort interpretation', '## Cohorts')
             benchmarks.write_text(drifted)
             argv = ['--summary', str(SUMMARY), '--benchmarks', str(benchmarks), '--readme', str(readme)]
             with redirect_stderr(io.StringIO()) as err:
@@ -130,7 +119,10 @@ class PerModeTest(unittest.TestCase):
             self.assertIn('distill 1.0 (abc123)', text)
         self.assertTrue(readme['ultrasave'].startswith('# 50% cheaper\n'))
         self.assertIn('**0.5x the estimated cost of Normal**', readme['ultrasave'])
-        self.assertTrue(readme['ultracode'].startswith('# 3/3 passed\n'))  # only Astra has an UltraCode arm
+        # Only Astra has an UltraCode arm. It passed as often as Normal, which is not a gain: the
+        # cell must not read as a quality claim, and it states what the extra care cost.
+        self.assertTrue(readme['ultracode'].startswith('# No quality gain measured\n'), readme['ultracode'])
+        self.assertIn("3/3 runs against Normal's 3/3", readme['ultracode'])
         self.assertIn('No claim for DeepSeek: no result', readme['ultracode'])
 
     def test_numbers_follow_the_summary_and_nothing_claims_every_task_passed(self):

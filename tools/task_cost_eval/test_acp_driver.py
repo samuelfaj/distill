@@ -180,13 +180,17 @@ def fake_peer(root, scenario='success'):
 
 
 def drive(root, scenario='success', timeout=3, ultracode=True, effort='medium', stop_feedback=None,
-          before_stop_feedback=None, execution_mode=None):
+          before_stop_feedback=None, execution_mode=None, followup_prompt=None):
     peer = fake_peer(root, scenario)
     return acp_driver.run_acp([str(peer)], cwd=root, environment=os.environ.copy(), prompt='Change fixture',
                              model='chatgpt/gpt-6.1-sol', effort=effort, ultracode=ultracode,
                              execution_mode=execution_mode,
                              timeout=timeout, output=root, stop_feedback=stop_feedback,
-                             before_stop_feedback=before_stop_feedback)
+                             before_stop_feedback=before_stop_feedback, followup_prompt=followup_prompt)
+
+
+def transcript_rows(root):
+    return [json.loads(line) for line in (root / 'acp-transcript.jsonl').read_text().splitlines()]
 
 
 class AcpDriverTest(unittest.TestCase):
@@ -563,6 +567,51 @@ class AcpDriverTest(unittest.TestCase):
                 last = pulse.read_text()
                 time.sleep(.06)
                 self.assertEqual(pulse.read_text(), last, 'owned writer survived cleanup')
+
+
+class FollowupPromptTest(unittest.TestCase):
+    # Two-prompt benchmark cases measure a session whose second request changes
+    # tool class; the second prompt must reach the same session only after the
+    # first turn has fully ended, or the cases would measure one merged request.
+    def test_followup_is_a_second_turn_in_the_same_session_after_the_first_ends(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result = drive(root, ultracode=False, execution_mode='auto', followup_prompt='Now implement it')
+            self.assertTrue(result['completed'] and result['cleanup_complete'], result)
+            rows = transcript_rows(root)
+            prompts = [(index, row['message']) for index, row in enumerate(rows)
+                       if row['direction'] == 'sent' and row['message'].get('method') == 'session/prompt']
+            self.assertEqual([m['params']['prompt'][0]['text'] for _, m in prompts], ['Change fixture', 'Now implement it'])
+            self.assertEqual({m['params']['sessionId'] for _, m in prompts}, {'runtime-session'})
+            first_id = prompts[0][1]['id']
+            first_done = next(index for index, row in enumerate(rows)
+                              if row['direction'] == 'received' and row['message'].get('id') == first_id)
+            self.assertLess(first_done, prompts[1][0], 'second prompt sent before the first turn ended')
+            # The first turn's tool completed before the second prompt was written.
+            completed = next(index for index, row in enumerate(rows) if row['direction'] == 'received'
+                             and row['message'].get('params', {}).get('update', {}).get('status') == 'completed')
+            self.assertLess(completed, prompts[1][0])
+            self.assertEqual(result['prompt_receipt']['id'], first_id)
+            self.assertEqual(result['followup_prompt_receipt']['id'], prompts[1][1]['id'])
+            self.assertEqual(result['followup_prompt_receipt']['result'], {'stopReason': 'end_turn'})
+            self.assertEqual((root / 'prompt-seen').read_text(), 'Now implement it')
+
+    def test_followup_is_never_sent_when_the_first_turn_does_not_end_normally(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result = drive(root, 'negative-stop', followup_prompt='Now implement it')
+            self.assertFalse(result['completed'])
+            sent = [row['message'] for row in transcript_rows(root)
+                    if row['direction'] == 'sent' and row['message'].get('method') == 'session/prompt']
+            self.assertEqual(len(sent), 1)
+            self.assertEqual(result['prompt_receipt']['result'], {'stopReason': 'refusal'})
+            self.assertIsNone(result['followup_prompt_receipt'])
+
+    def test_single_prompt_runs_report_no_followup_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result = drive(Path(directory))
+        self.assertTrue(result['completed'], result)
+        self.assertNotIn('followup_prompt_receipt', result)
 
 
 if __name__ == '__main__':

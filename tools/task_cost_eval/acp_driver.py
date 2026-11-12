@@ -1,4 +1,4 @@
-"""One-turn, line-delimited ACP client for paired local Distill binaries (POSIX).
+"""One-turn (optionally two-turn), line-delimited ACP client for paired local Distill binaries (POSIX).
 
 Wire contracts: agent-client-protocol 0.10.4 and Distill's headless.rs,
 model_switch.rs and session_ultracode.rs. Extension methods have a wire `_` prefix.
@@ -364,8 +364,11 @@ def mode_mix(activation_receipt, changes, session):
 
 def run_acp(command, *, cwd, environment, prompt, model, effort, ultracode=False, execution_mode=None,
             timeout, output, stop_feedback=None,
-            before_stop_feedback=None):
+            before_stop_feedback=None, followup_prompt=None):
     """Return receipts and failure state; optionally deny one root Stop with feedback.
+
+    followup_prompt, when given, is sent as a second prompt in the same session
+    once the first turn ends with end_turn; one timeout covers both turns.
 
     before_stop_feedback(params, deadline) observes only the first eligible feedback
     before transmission. Trusted controller code may read/copy bounded local files;
@@ -378,7 +381,7 @@ def run_acp(command, *, cwd, environment, prompt, model, effort, ultracode=False
     activation_method = EXECUTION_MODE_METHOD if execution_mode is not None else ULTRACODE_METHOD
     result = {'session': None, 'setup_confirmed': False, 'completed': False, 'timed_out': False, 'error': None,
               'exit_code': None, 'cleanup_complete': False}
-    process = client = tree = None
+    process = client = tree = first_receipt = None
     deadline = time.monotonic() + timeout
     inference_deadline = deadline - min(SHUTDOWN_GRACE, timeout / 2)
     with (output / 'stdout.jsonl').open('wb') as stdout, (output / 'stderr.txt').open('w') as stderr, \
@@ -423,18 +426,23 @@ def run_acp(command, *, cwd, environment, prompt, model, effort, ultracode=False
                 if activation.get('enabled') is not ultracode:
                     raise AcpError(f'UltraCode activation did not confirm enabled={ultracode}')
             result['setup_confirmed'] = True
-            response = client.request('session/prompt', {'sessionId': session,
-                'prompt': [{'type': 'text', 'text': prompt}], '_meta': {'screenMode': 'headless'}})
-            if response.get('stopReason') != 'end_turn':
-                raise AcpError(f'Prompt did not finish with end_turn: {response.get("stopReason")}')
-            # Drain buffered notifications too: a prompt response can precede tool completion.
-            while True:
-                message = client.receive(block=bool(client.pending))
-                if message is None:
-                    break
-                if 'method' not in message:
-                    raise AcpError('Unexpected response after prompt completion')
-                client.handle(message)
+            # A follow-up prompt is a second user turn in the same session, sent only
+            # after the first turn ended and its tools and children settled.
+            for turn, text in enumerate((prompt,) if followup_prompt is None else (prompt, followup_prompt)):
+                if turn:
+                    first_receipt = client.receipts.get('session/prompt')
+                response = client.request('session/prompt', {'sessionId': session,
+                    'prompt': [{'type': 'text', 'text': text}], '_meta': {'screenMode': 'headless'}})
+                if response.get('stopReason') != 'end_turn':
+                    raise AcpError(f'Prompt did not finish with end_turn: {response.get("stopReason")}')
+                # Drain buffered notifications too: a prompt response can precede tool completion.
+                while True:
+                    message = client.receive(block=bool(client.pending))
+                    if message is None:
+                        break
+                    if 'method' not in message:
+                        raise AcpError('Unexpected response after prompt completion')
+                    client.handle(message)
             tree.refresh(force=True, deadline=inference_deadline)
             process.stdin.close()
             while process.poll() is None:
@@ -458,7 +466,11 @@ def run_acp(command, *, cwd, environment, prompt, model, effort, ultracode=False
                         pass
                 result['model_receipt'] = client.receipts.get('session/set_model')
                 result['activation_receipt'] = client.receipts.get(activation_method)
-                result['prompt_receipt'] = client.receipts.get('session/prompt')
+                receipt = client.receipts.get('session/prompt')
+                if followup_prompt is not None:
+                    result['followup_prompt_receipt'] = receipt if first_receipt is not None else None
+                    receipt = first_receipt if first_receipt is not None else receipt
+                result['prompt_receipt'] = receipt
                 result['observed_subagent_attempts'] = len(client.observed_subagents)
                 result['observed_peak_live_subagents'] = client.peak_live_subagents
                 result['mode_changes'] = client.mode_changes

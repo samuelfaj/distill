@@ -46,6 +46,9 @@ JEV_DECISIONS_URL = 'https://openrouter.ai/api/alpha/decisions'
 JEV_MODEL = '~typesafe/jev-latest'
 # Never copied with a kept failing run folder.
 CREDENTIAL_FILES = ('codex-auth.json', 'openrouter-auth.json')
+WORKSPACE_PROFILES = ('plain', 'realistic')
+REALISTIC_PROFILE = ROOT / 'profiles' / 'realistic'
+REALISTIC_MCP_NAME = 'team_notes'
 
 
 def plan_runs(cohort, repetitions, order_seed=None, variants=VARIANTS):
@@ -183,14 +186,50 @@ def call_summary(calls):
 
 
 def case_hashes(case):
-    return (_sha256_tree(ROOT / case['fixture_ref']), _sha256_file(ROOT / case['grader']['script_ref']),
-            _sha256_file(ROOT / case['prompt_ref']))
+    hashes = (_sha256_tree(ROOT / case['fixture_ref']), _sha256_file(ROOT / case['grader']['script_ref']),
+              _sha256_file(ROOT / case['prompt_ref']))
+    if case.get('followup_prompt_ref'):
+        hashes += (_sha256_file(ROOT / case['followup_prompt_ref']),)
+    return hashes
 
 
-def comparison_hashes(cohort, binaries, cohort_path=None):
+def case_timeout(case, default):
+    """A case's own timeout_s (long tasks) wins over the campaign --timeout."""
+    return case.get('timeout_s', default)
+
+
+def cohort_timeout_error(cases):
+    """Verdicts require one timeout over all runs, so a cohort may not mix case budgets."""
+    values = {case.get('timeout_s') for case in cases}
+    for value in values - {None}:
+        if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+            return f'timeout_s must be a positive finite number, got {value!r}'
+    if len(values) > 1:
+        return 'every selected case must declare the same timeout_s (or none): verdicts compare one timeout'
+    return None
+
+
+def seed_realistic_profile(home, worktree):
+    """Synthetic prefix of a typical user: home skills, project AGENTS.md, one local MCP stub.
+
+    AGENTS.md is written before the frozen commit so it is task input, not an
+    agent change; the returned TOML is appended to the run config.
+    """
+    shutil.copytree(REALISTIC_PROFILE / 'skills', home / 'skills')
+    shutil.copyfile(REALISTIC_PROFILE / 'AGENTS.md', worktree / 'AGENTS.md')
+    server = home / 'mcp' / 'notes_server.py'
+    server.parent.mkdir()
+    shutil.copyfile(REALISTIC_PROFILE / 'notes_server.py', server)
+    return (f'[mcp_servers.{REALISTIC_MCP_NAME}]\ncommand = "python3"\n'
+            f'args = [{json.dumps(str(server))}]\nstartup_timeout_sec = 10\n')
+
+
+def comparison_hashes(cohort, binaries, cohort_path=None, workspace_profile='plain'):
     # Freeze the small harness module set and whole grader source directories.
     # This covers local helper imports without executing graders to discover them.
     sources = set(Path(__file__).resolve().parent.glob('*.py'))
+    if workspace_profile == 'realistic':
+        sources.update(path for path in REALISTIC_PROFILE.rglob('*') if path.is_file())
     for case in cohort['cases']:
         sources.update((ROOT / case['grader']['script_ref']).parent.rglob('*.py'))
     if cohort_path is not None:
@@ -226,9 +265,13 @@ def run_one(binary, variant, case, repetition, work_root, profile, timeout, *,
             ultracode=False, max_depth=None, model=MODEL, effort=None, transport='cli',
             worker_model='chatgpt/gpt-6-luna', worker_effort='auto', utility_effort='auto', order_seed=None,
             execution_mode=None, max_concurrent=None, enable_jev=False, utility_model=UTILITY_MODEL,
-            ultrasave_model=None):
+            ultrasave_model=None, workspace_profile='plain'):
     if execution_mode is not None and (execution_mode not in EXECUTION_MODES or ultracode):
         raise ValueError('Use one execution_mode or the legacy ultracode flag')
+    if case.get('followup_prompt_ref') and transport != 'acp':
+        raise ValueError('A case with followup_prompt_ref needs the ACP transport (one session, two prompts)')
+    if workspace_profile not in WORKSPACE_PROFILES:
+        raise ValueError(f'workspace_profile must be one of {", ".join(WORKSPACE_PROFILES)}')
     mode = execution_mode or ('ultracode' if ultracode else 'normal')
     output = work_root / f'{variant}-{case["id"]}-{repetition}'
     output.mkdir(parents=True, exist_ok=False)
@@ -236,6 +279,9 @@ def run_one(binary, variant, case, repetition, work_root, profile, timeout, *,
     target = worktree / 'tools/task_cost_eval' / case['fixture_ref']
     target.parent.mkdir(parents=True)
     shutil.copytree(ROOT / case['fixture_ref'], target)
+    home = output / 'distill-home'
+    home.mkdir()
+    profile_config = seed_realistic_profile(home, worktree) if workspace_profile == 'realistic' else ''
     subprocess.run(['git', 'init', '-q', str(worktree)], check=True)
     subprocess.run(['git', 'add', '.'], cwd=worktree, check=True)
     subprocess.run(['git', '-c', 'user.name=Benchmark', '-c', 'user.email=benchmark@localhost',
@@ -244,12 +290,14 @@ def run_one(binary, variant, case, repetition, work_root, profile, timeout, *,
     prompt += '\nWork only in this repository. Finish the code change autonomously. Do not commit.'
     prompt += '\nThe available Python interpreter is python3.'
     (output / 'prompt.txt').write_text(prompt)
-    home = output / 'distill-home'
-    home.mkdir()
+    followup = None
+    if case.get('followup_prompt_ref'):
+        followup = (ROOT / case['followup_prompt_ref']).read_text()
+        (output / 'followup-prompt.txt').write_text(followup)
     auth = home / 'codex-auth.json'
     config_text = distill_config(main_model=model, worker_model=worker_model, worker_effort=worker_effort,
                                  utility_effort=utility_effort, enable_jev=enable_jev, utility_model=utility_model,
-                                 ultrasave_model=ultrasave_model)
+                                 ultrasave_model=ultrasave_model) + profile_config
     (home / 'config.toml').write_text(config_text)
     configured = tomllib.loads(config_text)
     session = str(uuid.uuid4()) if transport == 'cli' else None
@@ -300,6 +348,7 @@ def run_one(binary, variant, case, repetition, work_root, profile, timeout, *,
                 'jev_enabled': bool(enable_jev), 'utility_model': utility_model,
                 'configured_modes': configured.get('modes'),
                 'order_seed': order_seed, 'timeout_s': timeout,
+                'followup_prompt': followup is not None, 'workspace_profile': workspace_profile,
                 'environment_policy': 'remove inherited model/effort/depth overrides' if sanitize else 'historical inheritance',
                 'accounting_audit': 'strict study evidence' if sanitize else 'historical ledger reconciliation',
                 'removed_environment_keys': removed,
@@ -328,7 +377,7 @@ def run_one(binary, variant, case, repetition, work_root, profile, timeout, *,
         if transport == 'acp':
             acp = run_acp(command, cwd=worktree, environment=environment, prompt=prompt,
                           model=model, effort=effort, ultracode=ultracode, execution_mode=execution_mode,
-                          timeout=timeout, output=output)
+                          timeout=timeout, output=output, followup_prompt=followup)
             session, timed_out = acp['session'], acp['timed_out']
             settings['model_receipt'] = acp.get('model_receipt')
             settings['activation_receipt'] = acp.get('activation_receipt')
@@ -491,7 +540,12 @@ def main(argv=None):
     parser.add_argument('--work-root', type=Path, help='required except for an --arms dry run')
     parser.add_argument('--output', type=Path, help='required except for an --arms dry run')
     parser.add_argument('--distill-profile', type=Path, default=Path.home() / '.grok')
-    parser.add_argument('--timeout', type=float, default=300)
+    parser.add_argument('--timeout', type=float, default=300,
+                        help='per-run budget in seconds; a case with its own timeout_s uses that instead')
+    parser.add_argument('--workspace-profile', choices=WORKSPACE_PROFILES, default='plain',
+                        help='realistic seeds each run with a synthetic skills catalog in the isolated home, an '
+                             'AGENTS.md at the workspace root and one local stdio MCP stub, so prompts carry the '
+                             'prefix real users have; plain (default) seeds nothing')
     parser.add_argument('--aa-arm', action='store_true',
                         help='add an A/A arm (the baseline binary and settings again); the campaign is INVALID '
                              'when its ratio of totals leaves 0.90-1.10 on credits or time')
@@ -548,6 +602,13 @@ def main(argv=None):
         if unknown:
             parser.error(f'unknown case IDs: {", ".join(sorted(unknown))}')
         cohort = {**cohort, 'cases': [c for c in cohort['cases'] if c['id'] in args.cases]}
+    timeout_error = cohort_timeout_error(cohort['cases'])
+    if timeout_error:
+        parser.error(timeout_error)
+    if args.execute and args.transport != 'acp':
+        two_prompt = [c['id'] for c in cohort['cases'] if c.get('followup_prompt_ref')]
+        if two_prompt:
+            parser.error(f'two-prompt cases need --transport acp: {", ".join(two_prompt)}')
     split = {'substantial': args.substantial or [], 'control': args.control or []}
     if set(split['substantial'] + split['control']) - {c['id'] for c in cohort['cases']}:
         parser.error('--substantial/--control name cases outside the selected cohort')
@@ -556,7 +617,8 @@ def main(argv=None):
               'worker_model': worker_model, 'worker_effort': args.worker_effort,
               'utility_effort': args.utility_effort,
               'utility_model': args.utility_model, 'enable_jev': args.enable_jev,
-              'order_seed': args.order_seed, 'ultrasave_model': args.ultrasave_model}
+              'order_seed': args.order_seed, 'ultrasave_model': args.ultrasave_model,
+              'workspace_profile': args.workspace_profile}
     settings = {variant: {'ultracode': getattr(args, f'{variant}_ultracode'),
                           'execution_mode': getattr(args, f'{variant}_mode'),
                           'max_depth': getattr(args, f'{variant}_max_depth'), **common} for variant in VARIANTS}
@@ -578,8 +640,11 @@ def main(argv=None):
                else plan_runs(cohort, args.repetitions, args.order_seed, variants))
     if not args.execute:
         for variant, case, rep in planned:
+            extra = f' timeout_s={case_timeout(case, args.timeout):g}'
+            if case.get('followup_prompt_ref'):
+                extra += f' followup={case["followup_prompt_ref"]}'
             print(f'plan: {variant} {case["id"]} ({case["kind"]}) rep {rep} -> '
-                  f'{binaries[variant] or "<--binary>"} {json.dumps(settings[variant], sort_keys=True)}')
+                  f'{binaries[variant] or "<--binary>"} {json.dumps(settings[variant], sort_keys=True)}{extra}')
         if labels:
             print(f'dry run: {len(planned)} runs planned over {len(labels)} arms ({", ".join(labels)}), '
                   f'model profile {"tiered" if args.ultrasave_model else "single"}, nothing executed; '
@@ -591,7 +656,7 @@ def main(argv=None):
         if not binary.expanduser().resolve().is_file():
             parser.error(f'binary not found: {binary}')
     binaries = {variant: binary.expanduser().resolve() for variant, binary in binaries.items()}
-    frozen = comparison_hashes(cohort, binaries, args.cohort)
+    frozen = comparison_hashes(cohort, binaries, args.cohort, args.workspace_profile)
     if paired_mode and not args.compare_versions and len(set(frozen['binaries'].values())) != 1:
         parser.error(f'{args.verdict} verdict requires the same binary SHA-256 for both variants')
     if frozen['support_files'][str(args.cohort.resolve())] != hashlib.sha256(cohort_bytes).hexdigest():
@@ -616,12 +681,12 @@ def main(argv=None):
     work_root.mkdir(parents=True, exist_ok=True)
     runs = []
     for variant, case, rep in planned:
-        if comparison_hashes(cohort, binaries, args.cohort) != frozen:
+        if comparison_hashes(cohort, binaries, args.cohort, args.workspace_profile) != frozen:
             raise RuntimeError('Frozen comparison inputs or binaries changed before execution')
         run = run_one(binaries[variant], variant, case, rep, work_root, profile,
-                      args.timeout, frozen_inputs=frozen['inputs'][case['id']],
+                      case_timeout(case, args.timeout), frozen_inputs=frozen['inputs'][case['id']],
                       binary_hash=frozen['binaries'][variant], **settings[variant])
-        if comparison_hashes(cohort, binaries, args.cohort) != frozen:
+        if comparison_hashes(cohort, binaries, args.cohort, args.workspace_profile) != frozen:
             raise RuntimeError('Frozen comparison inputs or binaries changed after execution')
         if not run['passed'] and args.keep_failed_runs is not None and run.get('output_dir'):
             args.keep_failed_runs.mkdir(parents=True, exist_ok=True)

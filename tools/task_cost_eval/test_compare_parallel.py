@@ -915,5 +915,172 @@ class MatrixCampaignTest(unittest.TestCase):
                     self.assertEqual(report['auto']['verdict'], 'PASS')
 
 
+ACCOUNTED = {'accounting_complete': True, 'credit_estimate': 1.0, 'calls': 1,
+             'call_usage': [{'complete': True}], 'accounting_evidence': {'complete': True},
+             **{field: 1 for field in compare_parallel.TOKEN_FIELDS}}
+
+
+def plain_case():
+    return next(c for c in COHORT['cases'] if c['id'] == 'seq-rename-en')
+
+
+def two_prompt_case(**extra):
+    return {**plain_case(), 'id': 'two-prompt', 'followup_prompt_ref': 'prompts/par-bugs-en.txt', **extra}
+
+
+class CaseOptionsTest(unittest.TestCase):
+    """Optional case fields of the newer cohorts: follow-up prompt, own timeout, realistic profile."""
+
+    def run_case(self, root, case, **kwargs):
+        peer = fake_peer(root)
+        profile = root / 'profile'
+        profile.mkdir(exist_ok=True)
+        (profile / 'codex-auth.json').write_text('{}')
+        with mock.patch.object(compare_parallel, 'distill_accounting', return_value=ACCOUNTED), \
+                mock.patch.object(compare_parallel, 'run_grader', return_value={
+                    'exit_code': 0, 'timed_out': False, 'wall_time_s': .01}):
+            return compare_parallel.run_one(peer, 'normal', case, 1, root / 'runs', profile, 3,
+                frozen_inputs=compare_parallel.case_hashes(case), binary_hash=compare_parallel._sha256_file(peer),
+                transport='acp', execution_mode='auto', **kwargs)
+
+    def write_cohort(self, directory, cases):
+        path = Path(directory) / 'cohort.json'
+        path.write_text(json.dumps({'schema_version': 1, 'cohort_id': 'options-test', 'cases': cases}))
+        return path
+
+    def test_followup_case_sends_its_second_prompt_in_the_same_acp_session(self):
+        case = two_prompt_case()
+        with tempfile.TemporaryDirectory() as directory:
+            result = self.run_case(Path(directory), case)
+            self.assertTrue(result['passed'], result['acp'])
+            self.assertTrue(result['settings']['followup_prompt'])
+            output = Path(result['output_dir'])
+            followup = (ROOT / 'prompts/par-bugs-en.txt').read_text()
+            self.assertEqual((output / 'followup-prompt.txt').read_text(), followup)
+            sent = [json.loads(line)['message'] for line in (output / 'acp-transcript.jsonl').read_text().splitlines()]
+            prompts = [m['params']['prompt'][0]['text'] for m in sent if m.get('method') == 'session/prompt']
+            self.assertEqual(len(prompts), 2)
+            self.assertTrue(prompts[0].startswith((ROOT / case['prompt_ref']).read_text()))
+            self.assertEqual(prompts[1], followup)
+            self.assertEqual(result['acp']['followup_prompt_receipt']['result'], {'stopReason': 'end_turn'})
+
+    def test_followup_needs_acp_and_is_part_of_the_frozen_inputs(self):
+        case = two_prompt_case()
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(subprocess, 'Popen') as popen, \
+                self.assertRaisesRegex(ValueError, 'ACP'):
+            compare_parallel.run_one(Path(sys.executable), 'normal', case, 1, Path(directory), Path(directory), 3,
+                                     frozen_inputs=None, binary_hash=None, transport='cli')
+        popen.assert_not_called()
+        self.assertEqual(len(compare_parallel.case_hashes(plain_case())), 3)
+        self.assertEqual(compare_parallel.case_hashes(case)[:3], compare_parallel.case_hashes(plain_case()))
+        self.assertEqual(compare_parallel.case_hashes(case)[3],
+                         compare_parallel._sha256_file(ROOT / 'prompts/par-bugs-en.txt'))
+
+    def test_case_timeout_replaces_the_campaign_timeout_and_mixed_budgets_are_rejected(self):
+        from .test_modes_verdict import row as arm_row
+        long_cases = [{**plain_case(), 'id': 'long-a', 'timeout_s': 5400},
+                      {**plain_case(), 'id': 'long-b', 'timeout_s': 5400}]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'profile').mkdir()
+            (root / 'profile' / 'codex-auth.json').write_text('{}')
+            seen = []
+
+            def recorded(binary, variant, case, repetition, work_root, profile, timeout, **kwargs):
+                seen.append(timeout)
+                return arm_row(variant, case['id'], repetition, credits=10, wall=100.0)
+
+            with mock.patch.object(compare_parallel, 'run_one', side_effect=recorded), \
+                    mock.patch.object(compare_parallel, 'subscription_account'), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                compare_parallel.main(['--arms', 'normal,auto', '--binary', sys.executable, '--transport', 'acp',
+                                       '--cohort', str(self.write_cohort(directory, long_cases)), '--repetitions', '1',
+                                       '--timeout', '300', '--distill-profile', str(root / 'profile'),
+                                       '--work-root', str(root / 'runs'), '--output', str(root / 'r.json'), '--execute'])
+            self.assertEqual(seen, [5400] * 4)
+            # Verdicts compare one timeout across runs, so a cohort cannot mix budgets.
+            for cases in ([{**plain_case(), 'timeout_s': 5400}, {**plain_case(), 'id': 'other'}],
+                          [{**plain_case(), 'timeout_s': 0}], [{**plain_case(), 'timeout_s': True}]):
+                with self.subTest(cases=cases), contextlib.redirect_stderr(io.StringIO()), \
+                        mock.patch.object(compare_parallel, 'run_one') as run_one, self.assertRaises(SystemExit) as error:
+                    compare_parallel.main(['--arms', 'normal,auto', '--cohort', str(self.write_cohort(directory, cases))])
+                self.assertEqual(error.exception.code, 2)
+                run_one.assert_not_called()
+        self.assertEqual(compare_parallel.case_timeout(plain_case(), 300), 300)
+
+    def test_dry_run_shows_case_timeout_and_followup_and_execution_needs_acp(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cohort = self.write_cohort(directory, [two_prompt_case(), {**plain_case(), 'id': 'single'}])
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), mock.patch.object(compare_parallel, 'run_one') as run_one:
+                self.assertEqual(compare_parallel.main(['--arms', 'normal,auto', '--cohort', str(cohort),
+                                                        '--repetitions', '1', '--timeout', '600']), 0)
+            run_one.assert_not_called()
+            plan = [line for line in out.getvalue().splitlines() if line.startswith('plan: ')]
+            self.assertEqual(len(plan), 4)
+            self.assertEqual([line.split()[2] for line in plan if 'followup=prompts/par-bugs-en.txt' in line],
+                             ['two-prompt', 'two-prompt'])
+            self.assertTrue(all(' timeout_s=600' in line for line in plan))
+            with contextlib.redirect_stderr(io.StringIO()), mock.patch.object(compare_parallel, 'run_one') as run_one, \
+                    self.assertRaises(SystemExit) as error:
+                compare_parallel.main(['--arms', 'normal,auto', '--cohort', str(cohort), '--binary', sys.executable,
+                                       '--work-root', directory + '/w', '--output', directory + '/o.json',
+                                       '--transport', 'cli', '--execute'])
+            self.assertEqual(error.exception.code, 2)
+            run_one.assert_not_called()
+
+    def test_realistic_profile_seeds_skills_agents_rules_and_one_mcp_server(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result = self.run_case(Path(directory), plain_case(), workspace_profile='realistic')
+            self.assertTrue(result['passed'], result['acp'])
+            self.assertEqual(result['settings']['workspace_profile'], 'realistic')
+            output = Path(result['output_dir'])
+            home, worktree = output / 'distill-home', output / 'worktree'
+            self.assertEqual(len(list((home / 'skills').glob('*/SKILL.md'))), 12)
+            # AGENTS.md is frozen task input: committed before the agent starts.
+            tracked = subprocess.run(['git', 'ls-files'], cwd=worktree, capture_output=True, text=True).stdout.split()
+            self.assertIn('AGENTS.md', tracked)
+            config = compare_parallel.tomllib.loads((home / 'config.toml').read_text())
+            server = config['mcp_servers'][compare_parallel.REALISTIC_MCP_NAME]
+            self.assertEqual(server['command'], 'python3')
+            self.assertTrue(Path(server['args'][0]).is_file())
+            self.assertTrue(Path(server['args'][0]).is_relative_to(home))
+        with tempfile.TemporaryDirectory() as directory:
+            result = self.run_case(Path(directory), plain_case())
+            output = Path(result['output_dir'])
+            self.assertEqual(result['settings']['workspace_profile'], 'plain')
+            self.assertFalse((output / 'distill-home' / 'skills').exists())
+            self.assertFalse((output / 'worktree' / 'AGENTS.md').exists())
+            self.assertNotIn('mcp_servers', (output / 'distill-home' / 'config.toml').read_text())
+
+    def test_realistic_profile_files_join_the_frozen_support_hashes(self):
+        cohort = {'cases': [plain_case()]}
+        plain = compare_parallel.comparison_hashes(cohort, {})
+        realistic = compare_parallel.comparison_hashes(cohort, {}, workspace_profile='realistic')
+        added = set(realistic['support_files']) - set(plain['support_files'])
+        self.assertIn(str(compare_parallel.REALISTIC_PROFILE / 'AGENTS.md'), added)
+        self.assertIn(str(compare_parallel.REALISTIC_PROFILE / 'notes_server.py'), added)
+
+    def test_mcp_stub_lists_and_answers_its_two_tools_over_stdio(self):
+        requests = [{'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {'protocolVersion': '2025-06-18'}},
+                    {'jsonrpc': '2.0', 'method': 'notifications/initialized'},
+                    {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'},
+                    {'jsonrpc': '2.0', 'id': 3, 'method': 'tools/call',
+                     'params': {'name': 'lookup_glossary', 'arguments': {'term': 'SKU'}}},
+                    {'jsonrpc': '2.0', 'id': 4, 'method': 'tools/call',
+                     'params': {'name': 'count_words', 'arguments': {'text': 'one two  three'}}},
+                    {'jsonrpc': '2.0', 'id': 5, 'method': 'resources/list'}]
+        run = subprocess.run([sys.executable, str(compare_parallel.REALISTIC_PROFILE / 'notes_server.py')],
+                             input=''.join(json.dumps(r) + '\n' for r in requests), capture_output=True, text=True,
+                             timeout=10, env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
+        replies = {reply['id']: reply for reply in map(json.loads, run.stdout.splitlines())}
+        self.assertEqual(sorted(replies), [1, 2, 3, 4, 5], 'notifications get no reply')
+        self.assertEqual(replies[1]['result']['protocolVersion'], '2025-06-18')
+        self.assertEqual([tool['name'] for tool in replies[2]['result']['tools']], ['lookup_glossary', 'count_words'])
+        self.assertIn('Stock keeping unit', replies[3]['result']['content'][0]['text'])
+        self.assertEqual(replies[4]['result']['content'][0]['text'], '3')
+        self.assertEqual(replies[5]['error']['code'], -32601)
+
+
 if __name__ == '__main__':
     unittest.main()

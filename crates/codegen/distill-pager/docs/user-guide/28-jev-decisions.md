@@ -59,6 +59,7 @@ d2_big_output_retention = false # D2: asked at ingest, before the model read the
 d6_warm_batches       = false # D6 also on a warm cache, in batches that should pay for the break; unmeasured
 b8_stable_tools       = false # Auto: once the full tool list went out, a lean pick keeps sending it, so a mode switch does not break the prompt cache; unmeasured
 b8_review_hygiene     = false # Auto mid-turn review on a large prompt: no return to a left mode without a new failure, and a 3-round hold after a switch; unmeasured
+f1_followup_label     = false # a message within 10 minutes of the last turn's end also asks whether it reports that result as wrong or incomplete; only the label is recorded, nothing acts on it
 b6_delegation_hint    = false # B6: with a worker model, the turn-start request also asks whether the request has independent parts; every answer is logged, and true adds one <delegation_hint> line before the turn's next model request
 
 # Optional, with the defaults shown

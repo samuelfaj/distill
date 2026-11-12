@@ -572,3 +572,12 @@ from the memo, latency and round; an ask that got no answer is one
 not a short identifier (a test path, for example) is replaced by its hash.
 `usage.json` counts the same labels per lever under `utilityOutcomes`, key
 `jev:<lever>`, with a failed ask counted as `no_answer:<cause>`.
+So that each decision can be joined with what happened after it, the same
+file also records outcome facts: `check_recorded` (outcome, command hash,
+whether it ran on the current tree), `final_check_reminder` and, when that
+request ends, `final_check_followup` (tool rounds after the reminder, edit,
+commit/push/PR, the bare `NOTHING_OUTSTANDING` reply, working-tree change),
+`mode_switched` (from, to, `request_start`, `review` or `user`),
+`effort_floor_raised`, and `skill_suggested` / `skill_read`. They carry ids,
+numbers, booleans and 12-hex hashes only, never a command, path, skill name,
+model name or message text.

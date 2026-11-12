@@ -1167,7 +1167,7 @@ const HARNESS_CHECK_EXCERPT_CHARS: usize = 800;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct HarnessCheck {
     pub command: String,
-    pub passed: bool,
+    pub outcome: crate::session::acp_session::turn_facts::CheckOutcome,
     pub excerpt: String,
     pub finished_at: std::time::SystemTime,
 }
@@ -1180,6 +1180,7 @@ pub(crate) fn render_harness_checks(
     checks: &[HarnessCheck],
     last_change: Option<std::time::SystemTime>,
 ) -> String {
+    use crate::session::acp_session::turn_facts::CheckOutcome;
     if checks.is_empty() {
         return "(none recorded)\n".to_owned();
     }
@@ -1191,7 +1192,15 @@ pub(crate) fn render_harness_checks(
             Some(changed) if check.finished_at < changed => "stale",
             _ => "current",
         };
-        let outcome = if check.passed { "passed" } else { "failed" };
+        let outcome = match check.outcome {
+            CheckOutcome::Passed => "passed",
+            CheckOutcome::Failed => "failed",
+            // Neither a pass nor a failure: the verifier must not count it as
+            // either.
+            CheckOutcome::Unknown => {
+                "outcome unknown (a later stage owns the exit code and the output shows no runner verdict)"
+            }
+        };
         let skip = check
             .excerpt
             .chars()

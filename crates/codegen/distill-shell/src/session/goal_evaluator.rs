@@ -1,5 +1,6 @@
 // Modified for Distill by Samuel Fajreldines, 2026.
 use crate::sampling::{ConversationItem, ConversationRequest};
+use crate::session::acp_session::turn_facts::CheckOutcome;
 use distill_sampling_types::SyntheticReason;
 
 const TRANSCRIPT_MAX_BYTES: usize = 32 * 1024;
@@ -128,7 +129,7 @@ pub(crate) struct GoalWorkSignals {
 pub(crate) struct GoalCheckOutcome {
     pub key: String,
     pub command: String,
-    pub passed: bool,
+    pub outcome: CheckOutcome,
     pub output_tail: String,
 }
 
@@ -137,10 +138,16 @@ impl GoalCheckOutcome {
         command: &str,
         command_hash: &str,
         cwd: &str,
-        failed: bool,
+        outcome: CheckOutcome,
         output_tail: &str,
         fingerprint: Option<&str>,
     ) -> Self {
+        // Passed and failed keep the keys earlier sessions stored as seen.
+        let failed = match outcome {
+            CheckOutcome::Passed => "false",
+            CheckOutcome::Failed => "true",
+            CheckOutcome::Unknown => "unknown",
+        };
         let key = blake3::hash(
             format!(
                 "{command_hash}\0{cwd}\0{failed}\0{}",
@@ -151,7 +158,7 @@ impl GoalCheckOutcome {
         Self {
             key: key.to_hex().to_string(),
             command: command.to_owned(),
-            passed: !failed,
+            outcome,
             output_tail: output_tail.to_owned(),
         }
     }
@@ -248,7 +255,7 @@ impl GoalSeenWork {
                 let count = check.output_tail.chars().count();
                 serde_json::json!({
                     "command": check.command,
-                    "passed": check.passed,
+                    "outcome": check.outcome,
                     "output_tail": check
                         .output_tail
                         .chars()
@@ -1096,7 +1103,11 @@ mod tests {
                         command,
                         command,
                         "/repo",
-                        *failed,
+                        if *failed {
+                            CheckOutcome::Failed
+                        } else {
+                            CheckOutcome::Passed
+                        },
                         "1 passed",
                         Some(fingerprint),
                     )
@@ -1114,7 +1125,7 @@ mod tests {
         assert!(seen.has_new_work(&first));
         let observed = seen.harness_observed(&first);
         assert_eq!(observed["workspace_changed_since_last_evaluation"], true);
-        assert_eq!(observed["new_check_outcomes"][0]["passed"], true);
+        assert_eq!(observed["new_check_outcomes"][0]["outcome"], "passed");
         seen.observe(&first);
         assert!(!seen.has_new_work(&first), "same state, same check");
         let observed = seen.harness_observed(&first);

@@ -115,12 +115,15 @@ impl SessionActor {
         } else {
             serde_json::json!({"step": "first_step", "what_it_must_do": bounded(request)})
         };
-        let failed_checks = ledger
-            .facts
-            .recorded_checks()
-            .iter()
-            .filter(|check| check.failed)
-            .count();
+        use super::turn_facts::CheckOutcome;
+        let checks_with = |outcome: CheckOutcome| {
+            ledger
+                .facts
+                .recorded_checks()
+                .iter()
+                .filter(|check| check.outcome == outcome)
+                .count()
+        };
         serde_json::json!({
             "request": bounded(request),
             "micro_action": action,
@@ -135,7 +138,10 @@ impl SessionActor {
                 "completed_tool_rounds": rounds,
                 "failed_tool_calls": ledger.facts.failed_tool_count(),
                 "checks_run": ledger.facts.recorded_checks().len(),
-                "failed_checks": failed_checks,
+                "passed_checks": checks_with(CheckOutcome::Passed),
+                "failed_checks": checks_with(CheckOutcome::Failed),
+                // The exit code was a filter's and no runner verdict was seen.
+                "unknown_checks": checks_with(CheckOutcome::Unknown),
             },
             "worker_model_configured": self.tier_worker_slug().is_some(),
         })

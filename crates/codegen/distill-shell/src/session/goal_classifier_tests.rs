@@ -1689,17 +1689,18 @@ fn verifier_prompt_asks_for_the_verdict_json_only() {
 #[test]
 fn harness_checks_are_newest_first_and_marked_current_or_stale() {
     use std::time::{Duration, UNIX_EPOCH};
+    use crate::session::acp_session::turn_facts::CheckOutcome;
     let at = |secs| UNIX_EPOCH + Duration::from_secs(secs);
     let checks = [
         HarnessCheck {
             command: "cargo test".into(),
-            passed: false,
+            outcome: CheckOutcome::Failed,
             excerpt: "1 failed".into(),
             finished_at: at(100),
         },
         HarnessCheck {
             command: "cargo test".into(),
-            passed: true,
+            outcome: CheckOutcome::Passed,
             excerpt: format!("{}\ntest result: ok", "x".repeat(2000)),
             finished_at: at(300),
         },
@@ -1712,6 +1713,22 @@ fn harness_checks_are_newest_first_and_marked_current_or_stale() {
     assert!(text.len() < 1200, "the output tail is bounded");
     assert_eq!(render_harness_checks(&[], None), "(none recorded)\n");
     assert!(render_harness_checks(&checks[..1], None).contains("(current)"));
+}
+
+/// A pipeline whose exit code is a filter's is neither a pass nor a failure;
+/// the verifier must see it labelled as such, not as "passed".
+#[test]
+fn an_unknown_check_outcome_has_its_own_label() {
+    use crate::session::acp_session::turn_facts::CheckOutcome;
+    let check = HarnessCheck {
+        command: "cargo test 2>&1 | grep -E '^error'".into(),
+        outcome: CheckOutcome::Unknown,
+        excerpt: String::new(),
+        finished_at: std::time::UNIX_EPOCH,
+    };
+    let text = render_harness_checks(&[check], None);
+    assert!(text.contains("` outcome unknown ("), "{text}");
+    assert!(!text.contains("` passed") && !text.contains("` failed"), "{text}");
 }
 
 #[test]

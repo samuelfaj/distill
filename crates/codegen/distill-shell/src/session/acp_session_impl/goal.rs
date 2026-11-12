@@ -114,7 +114,7 @@ impl SessionActor {
                     &check.command,
                     &check.command_hash,
                     &check.cwd,
-                    check.failed,
+                    check.outcome,
                     &check.excerpt,
                     fingerprint,
                 )
@@ -931,7 +931,7 @@ impl SessionActor {
             .iter()
             .map(|check| crate::session::goal_classifier::HarnessCheck {
                 command: check.command.clone(),
-                passed: !check.failed,
+                outcome: check.outcome,
                 excerpt: check.excerpt.clone(),
                 finished_at: check.finished_at,
             })

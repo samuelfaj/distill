@@ -2993,10 +2993,16 @@ impl SessionActor {
             .unwrap_or_default();
         // Every finished call is a fact the harness keeps (failures and
         // checks), whether or not Jev post-processes its text.
-        self.jev_ledger
-            .borrow_mut()
-            .facts
-            .note_tool_result(&call_id.to_string(), &result.output);
+        let check_context = super::turn_facts::CheckContext::for_output(
+            &result.output,
+            self.tool_context.cwd.as_path(),
+        )
+        .await;
+        self.jev_ledger.borrow_mut().facts.note_tool_result_at(
+            call_id,
+            &result.output,
+            &check_context,
+        );
         let prompt_text = match split_harness_reminders(
             &prompt_text,
             &own_text,

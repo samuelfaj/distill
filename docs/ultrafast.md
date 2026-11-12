@@ -27,7 +27,11 @@ Jev question is awaited before a main request, the effort is decided once per
 turn without waiting and capped at medium, the after-edit review waits at most
 800 ms, and the utility model does not select tool results. It also runs no
 subagent: a lone child costs its start-up and the hand-back, so the session
-does the work itself. A session pinned to UltraFast is not offered the spawn
+does the work itself. And it keeps the session's own model instead of
+routing a round to a cheaper tier: a cheaper model is not reliably a faster
+one (in a benchmark pilot the worker model answered more slowly than the
+session model), and the result keeps the model you chose. Name a faster model
+with `[modes.ultrafast] model` if you want one. A session pinned to UltraFast is not offered the spawn
 tool; under Auto the tool list stays the same across modes and a spawn is
 refused. `[modes] v2 = []` turns all of this off; it has not been benchmarked.
 See [Decision policy by mode](jev-routing.md#decision-policy-by-mode).

@@ -464,6 +464,9 @@ impl ModePolicy {
                 runtime.jev.diff_risk_deadline_ms = 800;
                 runtime.utility_selection = false;
                 runtime.subagent_depth = SubagentDepth::None;
+                // The session's own model, served fast: a cheaper tier is not
+                // reliably a faster one, and it costs the result its model.
+                runtime.tier_routing = TierRouting::Off;
                 runtime.context.cold_return = Some(ColdReturn::Off);
                 runtime.context.max_prompt_tokens = Some(0);
                 runtime.context.mode_keys = true;

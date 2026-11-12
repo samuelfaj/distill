@@ -124,15 +124,17 @@ fn tier_questions(
 }
 
 impl SessionActor {
+    /// Whether the effective mode's policy row routes rounds among the user's models.
+    fn mode_routes_tiers(&self) -> bool {
+        self.mode_policy().runtime.tier_routing != distill_tool_types::TierRouting::Off
+    }
+
     /// Whether this round may choose among the user's three models.
     pub(super) fn tier_routing_allowed(&self) -> bool {
-        matches!(
-            self.execution_mode.load(),
-            distill_tool_types::ExecutionMode::Ultrafast
-                | distill_tool_types::ExecutionMode::Ultrasave
-        ) && self
-            .jev_effort_auto
-            .load(std::sync::atomic::Ordering::Relaxed)
+        self.mode_routes_tiers()
+            && self
+                .jev_effort_auto
+                .load(std::sync::atomic::Ordering::Relaxed)
             && !self.child_model_routing_locked()
             && !self.child_jev_routing_locked()
             && !self.jev_ledger.borrow().tier_route_off
@@ -141,12 +143,8 @@ impl SessionActor {
 
     /// Why `tier_routing_allowed` said no, for the skip record.
     fn tier_block_reason(&self) -> &'static str {
-        if !matches!(
-            self.execution_mode.load(),
-            distill_tool_types::ExecutionMode::Ultrafast
-                | distill_tool_types::ExecutionMode::Ultrasave
-        ) {
-            "execution mode is not UltraFast/UltraSave"
+        if !self.mode_routes_tiers() {
+            "the mode's policy row does not route tiers"
         } else if !self
             .jev_effort_auto
             .load(std::sync::atomic::Ordering::Relaxed)
@@ -214,12 +212,8 @@ impl SessionActor {
             false
         };
         if !self.tier_routing_allowed() {
-            // Normal and UltraCode never route; only the Ultra modes explain a skip.
-            let ultra = matches!(
-                self.execution_mode.load(),
-                distill_tool_types::ExecutionMode::Ultrafast
-                    | distill_tool_types::ExecutionMode::Ultrasave
-            );
+            // A mode whose row never routes says nothing; a routing mode explains a skip.
+            let ultra = self.mode_routes_tiers();
             if ultra {
                 self.notify_tier_routing_blocked(self.tier_block_reason());
             }
@@ -659,6 +653,41 @@ mod tests {
                 assert_eq!(found[0]["reason"], "effort is not auto");
                 assert_eq!(found[0]["mode"], "ultrasave");
                 assert_eq!(found[0]["sessionId"], "test-actor");
+            })
+            .await;
+    }
+
+    /// Tier routing follows the mode's policy row. UltraFast on its v2 row keeps
+    /// the session's model, because a cheaper tier is not reliably a faster
+    /// one; UltraSave routes on both rows, and UltraFast's `today` row still
+    /// does.
+    #[tokio::test(flavor = "current_thread")]
+    async fn tier_routing_follows_the_modes_policy_row() {
+        use super::super::mode_policy::set_v2_modes_for_tests;
+        use distill_tool_types::{ExecutionMode, V2Modes};
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let actor = super::super::support::plain_actor().await;
+                actor
+                    .jev_effort_auto
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                let all = V2Modes::default()
+                    .with(ExecutionMode::Ultrafast)
+                    .with(ExecutionMode::Ultrasave)
+                    .with(ExecutionMode::Ultracode);
+                for (rows, mode, routes) in [
+                    (all, ExecutionMode::Ultrafast, false),
+                    (all, ExecutionMode::Ultrasave, true),
+                    (V2Modes::default(), ExecutionMode::Ultrafast, true),
+                    (V2Modes::default(), ExecutionMode::Ultrasave, true),
+                    (all, ExecutionMode::Normal, false),
+                    (all, ExecutionMode::Ultracode, false),
+                ] {
+                    set_v2_modes_for_tests(Some(rows));
+                    actor.execution_mode.store(mode);
+                    assert_eq!(actor.mode_routes_tiers(), routes, "{mode:?} on {rows:?}");
+                }
+                set_v2_modes_for_tests(None);
             })
             .await;
     }

@@ -54,17 +54,9 @@ tested. `ModePolicy::differing_fields` names the harness-enforced fields in
 which two rows differ; `effort.lean` and `prefix.directive` are left out
 because they are text sent to Jev or the model, not enforcement. A unit test
 requires every pair of `v2` rows to differ in at least five fields, and in at
-least five runtime fields, which also apply under Auto. The `v2` rows differ
-in:
-
-| Pair | Fields | Differing fields |
-|---|---|---|
-| Normal, UltraFast | 15 (12 runtime) | `effort.cadence`, `effort.ceiling`, `effort.lowering_pass`, `effort.when_silent`, `tier_routing`, `jev.await_turn_start`, `jev.diff_risk_deadline_ms`, `utility_selection`, `context.cold_return`, `escalation`, `subagent_depth`, `skill_descriptor_cap`, `prefix.lean_tools`, `prefix.model_key`, `prefix.provider_tier_key` |
-| Normal, UltraCode | 8 (8 runtime) | `effort.quantile`, `effort.floor_after_failure`, `effort.lowering_pass`, `effort.when_silent`, `context.cold_return`, `context.narrow_reads`, `turn_end`, `subagent_depth` |
-| Normal, UltraSave | 15 (12 runtime) | `effort.cadence`, `effort.quantile`, `effort.ceiling`, `effort.lowering_pass`, `effort.when_silent`, `tier_routing`, `context.mode_keys`, `context.cold_return`, `context.max_prompt_tokens`, `escalation`, `subagent_depth`, `skill_descriptor_cap`, `prefix.lean_tools`, `prefix.model_key`, `prefix.provider_tier_key` |
-| UltraFast, UltraCode | 18 (15 runtime) | `effort.cadence`, `effort.quantile`, `effort.ceiling`, `effort.floor_after_failure`, `effort.when_silent`, `tier_routing`, `jev.await_turn_start`, `jev.diff_risk_deadline_ms`, `utility_selection`, `context.cold_return`, `context.narrow_reads`, `turn_end`, `escalation`, `subagent_depth`, `skill_descriptor_cap`, `prefix.lean_tools`, `prefix.model_key`, `prefix.provider_tier_key` |
-| UltraFast, UltraSave | 11 (11 runtime) | `effort.cadence`, `effort.quantile`, `effort.ceiling`, `tier_routing`, `jev.await_turn_start`, `jev.diff_risk_deadline_ms`, `utility_selection`, `context.mode_keys`, `context.cold_return`, `context.max_prompt_tokens`, `escalation` |
-| UltraCode, UltraSave | 17 (14 runtime) | `effort.cadence`, `effort.quantile`, `effort.ceiling`, `effort.floor_after_failure`, `effort.when_silent`, `tier_routing`, `context.mode_keys`, `context.cold_return`, `context.max_prompt_tokens`, `context.narrow_reads`, `turn_end`, `escalation`, `subagent_depth`, `skill_descriptor_cap`, `prefix.lean_tools`, `prefix.model_key`, `prefix.provider_tier_key` |
+least five runtime fields, which also apply under Auto. The test prints the
+differing fields of a pair when it fails; this page keeps no copy of the
+list, because it would drift each time a row changes.
 
 A field that differs in the table is a field the row declares; whether the
 lever reading it is wired is a separate question (see Rows above).

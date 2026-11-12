@@ -34,10 +34,12 @@ pub(crate) const EXECUTION_MODE_TOOLS: &[&str] = &[
 ];
 
 /// The tool list a mode sends. Modes without a fixed set (Normal, UltraCode)
-/// keep the harness selection unchanged.
+/// keep the harness selection unchanged. `spawn` is whether a lean list
+/// offers `spawn_subagent`.
 pub(crate) fn execution_mode_tool_definitions(
     mode: distill_tool_types::ExecutionMode,
     defs: Vec<ToolDefinition>,
+    spawn: bool,
 ) -> Vec<ToolDefinition> {
     use distill_tool_types::ExecutionMode;
     if !matches!(mode, ExecutionMode::Ultrafast | ExecutionMode::Ultrasave) {
@@ -47,7 +49,7 @@ pub(crate) fn execution_mode_tool_definitions(
         .filter(|def| {
             let name = def.function.name.as_str();
             EXECUTION_MODE_TOOLS.contains(&name)
-                || name == "spawn_subagent"
+                || (spawn && name == "spawn_subagent")
                 || crate::session::mcp_servers::parse_mcp_tool_name(name).is_some()
         })
         .collect()
@@ -641,7 +643,14 @@ impl SessionActor {
     fn project_execution_mode_tools(&self, defs: Vec<ToolDefinition>) -> Vec<ToolDefinition> {
         let mode = self.execution_mode.load();
         if !self.auto_stable_tools() {
-            return execution_mode_tool_definitions(mode, defs);
+            // A pinned mode whose row allows no subagents does not offer the
+            // tool, so the model never spends a round on a refused spawn.
+            // Under Auto the two lean modes keep one list: a list that
+            // changed with the pick would re-read the prompt uncached.
+            let spawn = self.execution_mode.is_auto()
+                || self.mode_policy().runtime.subagent_depth
+                    != distill_tool_types::SubagentDepth::None;
+            return execution_mode_tool_definitions(mode, defs, spawn);
         }
         let mut ledger = self.jev_ledger.borrow_mut();
         if !matches!(
@@ -656,7 +665,7 @@ impl SessionActor {
         }
         ledger.auto_full_tools_sent = false;
         drop(ledger);
-        execution_mode_tool_definitions(mode, defs)
+        execution_mode_tool_definitions(mode, defs, true)
     }
 
     /// Whether the session is in Auto with the stable tools array on.

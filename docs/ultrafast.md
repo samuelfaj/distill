@@ -25,9 +25,12 @@ previous directive. No campaign has measured the new directive yet; see
 By default UltraFast also waits for nothing but the model and the checks: no
 Jev question is awaited before a main request, the effort is decided once per
 turn without waiting and capped at medium, the after-edit review waits at most
-800 ms, and the utility model does not select tool results. `[modes] v2 = []`
-turns this off; it has not been benchmarked. See
-[Decision policy by mode](jev-routing.md#decision-policy-by-mode).
+800 ms, and the utility model does not select tool results. It also runs no
+subagent: a lone child costs its start-up and the hand-back, so the session
+does the work itself. A session pinned to UltraFast is not offered the spawn
+tool; under Auto the tool list stays the same across modes and a spawn is
+refused. `[modes] v2 = []` turns all of this off; it has not been benchmarked.
+See [Decision policy by mode](jev-routing.md#decision-policy-by-mode).
 
 ## Model and provider path
 

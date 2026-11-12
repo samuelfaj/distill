@@ -2213,6 +2213,7 @@ async fn ultracode_nested_shell_inherits_distinct_shared_cwd_without_reparenting
                 mode: enabled.clone(),
                 max_depth: 2,
                 off_max_depth: 3,
+                v2: Default::default(),
                 capability_ceiling: None,
                 allowed_subagent_types: None,
             };
@@ -2424,6 +2425,7 @@ async fn ultracode_durable_isolated_resume_is_a_leaf_with_mode_on_or_off() {
                     mode: enabled.clone(),
                     max_depth: 2,
                     off_max_depth: 3,
+                    v2: Default::default(),
                     capability_ceiling: None,
                     allowed_subagent_types: None,
                 };

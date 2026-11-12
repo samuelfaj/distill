@@ -153,6 +153,7 @@ async fn ultracode_child_gets_delegation_sentences_only_below_the_depth_ceiling(
                     mode,
                     max_depth,
                     off_max_depth: 1,
+                    v2: Default::default(),
                     capability_ceiling: None,
                     allowed_subagent_types: None,
                 });
@@ -322,12 +323,22 @@ fn execution_modes_prune_tool_definitions_to_direct_work() {
     let all: Vec<String> = offered.iter().map(|name| name.to_string()).collect();
     for mode in [ExecutionMode::Normal, ExecutionMode::Ultracode] {
         assert_eq!(
-            names(&super::execution_mode_tool_definitions(mode, defs.clone())),
+            names(&super::execution_mode_tool_definitions(mode, defs.clone(), true)),
             all
         );
     }
+    // A pinned mode whose policy row allows no subagents sends the same lean
+    // list without the spawn tool, so the model cannot spend a round on a
+    // spawn the harness would refuse.
+    let direct = names(&super::execution_mode_tool_definitions(
+        ExecutionMode::Ultrafast,
+        defs.clone(),
+        false,
+    ));
+    assert!(!direct.iter().any(|name| name == "spawn_subagent"), "{direct:?}");
+    assert!(direct.iter().any(|name| name == "run_terminal_command"), "{direct:?}");
     for mode in [ExecutionMode::Ultrafast, ExecutionMode::Ultrasave] {
-        let kept = names(&super::execution_mode_tool_definitions(mode, defs.clone()));
+        let kept = names(&super::execution_mode_tool_definitions(mode, defs.clone(), true));
         for name in &kept {
             assert!(
                 super::EXECUTION_MODE_TOOLS.contains(&name.as_str())
@@ -498,6 +509,7 @@ async fn execution_policy_survives_agent_rebuild_and_shared_off() {
                 mode: enabled.clone(),
                 max_depth: 2,
                 off_max_depth: 1,
+                v2: Default::default(),
                 capability_ceiling: None,
                 allowed_subagent_types: None,
             });

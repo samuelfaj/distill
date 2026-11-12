@@ -335,6 +335,9 @@ pub enum SubagentDepth {
     One,
     /// The configured UltraCode depth (`max_depth`).
     Max,
+    /// No subagents: the session does the work itself. A lone child costs its
+    /// start-up and the hand-back, which is all the time a quick task has.
+    None,
 }
 
 /// Fields that follow the EFFECTIVE mode, so they also apply under Auto:
@@ -460,6 +463,7 @@ impl ModePolicy {
                 runtime.jev.await_turn_start = false;
                 runtime.jev.diff_risk_deadline_ms = 800;
                 runtime.utility_selection = false;
+                runtime.subagent_depth = SubagentDepth::None;
                 runtime.context.cold_return = Some(ColdReturn::Off);
                 runtime.context.max_prompt_tokens = Some(0);
                 runtime.context.mode_keys = true;

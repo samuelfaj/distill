@@ -4182,6 +4182,7 @@ fn ultracode_request(id: &str) -> SubagentRequest {
         mode: std::sync::Arc::new(distill_tool_types::AtomicExecutionMode::new(distill_tool_types::ExecutionMode::Ultracode)),
         max_depth: 2,
         off_max_depth: 1,
+        v2: Default::default(),
         capability_ceiling: None,
         allowed_subagent_types: None,
     });

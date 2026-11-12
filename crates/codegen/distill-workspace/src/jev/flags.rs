@@ -194,6 +194,8 @@ impl JevFlags {
             // Opt-in until an Auto A/B shows rounds per task do not rise with
             // the full tools array in lean modes.
             b8_stable_tools: false,
+            // Opt-in until an Auto A/B shows no regression from the review rules.
+            b8_review_hygiene: false,
         }
     }
 
@@ -292,6 +294,7 @@ impl JevFlags {
         self.b8_execution_mode =
             self.enabled && resolve_switch(ladder.b8_execution_mode, None, self.b8_execution_mode);
         self.b8_stable_tools = self.b8_execution_mode && self.b8_stable_tools;
+        self.b8_review_hygiene = self.b8_execution_mode && self.b8_review_hygiene;
         self
     }
 }
@@ -382,6 +385,10 @@ pub struct JevFlags {
     /// B8: under Auto, the tools array never shrinks once the full list was
     /// sent, so a lean pick does not re-read the prompt uncached.
     pub b8_stable_tools: bool,
+    /// B8: on a large prompt, Auto's per-round review neither returns to a
+    /// mode left this request without a new failure nor switches again
+    /// within a short dwell.
+    pub b8_review_hygiene: bool,
 }
 
 impl JevFlags {
@@ -426,6 +433,7 @@ impl JevFlags {
             b7_subagent_model: false,
             b8_execution_mode: false,
             b8_stable_tools: false,
+            b8_review_hygiene: false,
         }
     }
 
@@ -526,6 +534,7 @@ impl JevFlags {
             JevLever::B7SubagentModel => self.b7_subagent_model,
             JevLever::B8ExecutionMode => self.b8_execution_mode,
             JevLever::B8StableTools => self.b8_stable_tools,
+            JevLever::B8ReviewHygiene => self.b8_review_hygiene,
         }
     }
 
@@ -565,6 +574,7 @@ pub enum JevLever {
     B7SubagentModel,
     B8ExecutionMode,
     B8StableTools,
+    B8ReviewHygiene,
     C1PrematureStop,
     C3CompletionCheck,
     C4DiffRisk,
@@ -606,6 +616,7 @@ impl JevLever {
             Self::B7SubagentModel => "b7_subagent_model",
             Self::B8ExecutionMode => "b8_execution_mode",
             Self::B8StableTools => "b8_stable_tools",
+            Self::B8ReviewHygiene => "b8_review_hygiene",
             Self::C1PrematureStop => "c1_premature_stop",
             Self::C3CompletionCheck => "c3_completion_check",
             Self::C4DiffRisk => "c4_diff_risk",
@@ -726,6 +737,10 @@ mod tests {
         assert!(
             !flags.lever_active(JevLever::B8StableTools),
             "Auto's stable tools array is opt-in until an Auto A/B shows no regression"
+        );
+        assert!(
+            !flags.lever_active(JevLever::B8ReviewHygiene),
+            "Auto's review rules are opt-in until an Auto A/B shows no regression"
         );
         assert!(
             !flags.lever_active(JevLever::P2ReadShortlist),

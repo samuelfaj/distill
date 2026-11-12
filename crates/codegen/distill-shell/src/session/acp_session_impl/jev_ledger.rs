@@ -128,6 +128,9 @@ pub(crate) struct JevTurnLedger {
     /// pick keeps sending it while the prompt is large. Session-scoped:
     /// cleared only when a lean mode re-projects a small or compacted prompt.
     pub(crate) auto_full_tools_sent: bool,
+    /// How the last drained request ended, for Auto's next request-start
+    /// pick. Session-scoped: each drain replaces it.
+    pub(crate) previous_turn: Option<crate::session::acp_session::jev_auto_mode::PreviousTurn>,
 }
 
 /// Prompt size under which a main round may still change its effort mid-turn.
@@ -420,6 +423,9 @@ impl JevTurnLedger {
         self.pending_effort_label = None;
         self.effort_floor = None;
         self.review_escalated = false;
+        self.previous_turn = Some(crate::session::acp_session::jev_auto_mode::PreviousTurn::of(
+            &self.facts,
+        ));
         self.facts = Default::default();
         self.turn_intent = None;
         self.last_execution = None;

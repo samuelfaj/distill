@@ -7,6 +7,7 @@
 use distill_tool_types::ExecutionMode;
 use distill_workspace::jev::flags::JevLever;
 
+use super::turn_facts::CheckOutcome;
 use super::*;
 
 pub(super) const MODE_QUESTION: &str = "execution_mode";
@@ -14,12 +15,68 @@ pub(super) const MODE_CHANGED_METHOD: &str = "x.ai/session/execution_mode/change
 
 /// A mid-request switch needs this much of Jev's probability on the new mode.
 const SWITCH_PROBABILITY: f64 = 0.6;
+/// Request start: below this probability on Jev's pick, the current mode
+/// stays. 0.0 applies every pick. It must be fitted from recorded decision
+/// outcomes before it is raised; a guessed value would move picks blindly.
+const REQUEST_START_PROBABILITY_FLOOR: f64 = 0.0;
+/// With `b8_review_hygiene`, completed tool rounds a mid-request switch holds.
+const SWITCH_DWELL_ROUNDS: usize = 3;
 const REQUEST_CHARS: usize = 4_000;
 
 /// Auto's per-request bookkeeping.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct AutoModeTurn {
     round_at_decision: usize,
+    /// Completed tool rounds when the review last switched this request.
+    switched_at_round: Option<usize>,
+    /// Modes the review left this request, with the failure marks seen then.
+    left: Vec<(ExecutionMode, FailureMarks)>,
+}
+
+/// Failed tool calls and failed recorded checks so far in the request; both
+/// only grow, so a change means a new failure.
+type FailureMarks = (u64, usize);
+
+fn failure_marks(facts: &super::turn_facts::TurnFacts) -> FailureMarks {
+    (facts.failed_tool_count(), checks_with(facts, CheckOutcome::Failed))
+}
+
+fn checks_with(facts: &super::turn_facts::TurnFacts, outcome: CheckOutcome) -> usize {
+    facts
+        .recorded_checks()
+        .iter()
+        .filter(|check| check.outcome == outcome)
+        .count()
+}
+
+/// How a drained request ended, from the facts the harness recorded.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct PreviousTurn {
+    failed_tool_calls: u64,
+    passed_checks: usize,
+    failed_checks: usize,
+    unknown_checks: usize,
+}
+
+impl PreviousTurn {
+    pub(crate) fn of(facts: &super::turn_facts::TurnFacts) -> Self {
+        Self {
+            failed_tool_calls: facts.failed_tool_count(),
+            passed_checks: checks_with(facts, CheckOutcome::Passed),
+            failed_checks: checks_with(facts, CheckOutcome::Failed),
+            unknown_checks: checks_with(facts, CheckOutcome::Unknown),
+        }
+    }
+}
+
+/// The request-start mode: Jev's pick, unless its probability is under `floor`.
+fn request_start_mode(
+    picked: ExecutionMode,
+    probability: f64,
+    current: ExecutionMode,
+    floor: f64,
+) -> ExecutionMode {
+    if probability < floor { current } else { picked }
 }
 
 const MODES: [ExecutionMode; 4] = [
@@ -115,15 +172,7 @@ impl SessionActor {
         } else {
             serde_json::json!({"step": "first_step", "what_it_must_do": bounded(request)})
         };
-        use super::turn_facts::CheckOutcome;
-        let checks_with = |outcome: CheckOutcome| {
-            ledger
-                .facts
-                .recorded_checks()
-                .iter()
-                .filter(|check| check.outcome == outcome)
-                .count()
-        };
+        let checks_with = |outcome: CheckOutcome| checks_with(&ledger.facts, outcome);
         serde_json::json!({
             "request": bounded(request),
             "micro_action": action,
@@ -144,7 +193,89 @@ impl SessionActor {
                 "unknown_checks": checks_with(CheckOutcome::Unknown),
             },
             "worker_model_configured": self.tier_worker_slug().is_some(),
+            "tier_routing_available": self.tier_routing_available(),
         })
+    }
+
+    /// Whether UltraFast or UltraSave could route rounds to another tier in
+    /// this session: `tier_routing_allowed` without its mode check, since the
+    /// pick decides the mode.
+    fn tier_routing_available(&self) -> bool {
+        self.jev_effort_auto.load(std::sync::atomic::Ordering::Relaxed)
+            && !self.child_model_routing_locked()
+            && !self.child_jev_routing_locked()
+            && !self.jev_ledger.borrow().tier_route_off
+            && crate::jev::lever_active(JevLever::B2ExecutionTier)
+    }
+
+    /// The request-start state. Once a request has drained in this session,
+    /// it also names the current mode and how that request ended, so a switch
+    /// is weighed against its cost.
+    async fn request_start_state(&self, request: &str) -> serde_json::Value {
+        let mut state = self.auto_mode_state(request, None, 0).await;
+        let previous = self.jev_ledger.borrow().previous_turn.clone();
+        if let Some(previous) = previous
+            && let Some(fields) = state.as_object_mut()
+        {
+            let current = mode_id(self.execution_mode.load());
+            fields.insert("current_mode".to_owned(), current.into());
+            fields.insert(
+                "previous_turn".to_owned(),
+                serde_json::json!({
+                    "mode": current,
+                    "failed_tool_calls": previous.failed_tool_calls,
+                    "passed_checks": previous.passed_checks,
+                    "failed_checks": previous.failed_checks,
+                    "unknown_checks": previous.unknown_checks,
+                }),
+            );
+        }
+        state
+    }
+
+    /// With `b8_review_hygiene` on a prompt of 16k tokens or more, why the
+    /// review must keep the current mode instead of switching to `mode`.
+    /// Below that a cache miss is cheap, so switching stays free.
+    fn review_hold_reason(&self, mode: ExecutionMode, rounds: usize) -> Option<&'static str> {
+        if !crate::jev::lever_active(JevLever::B8ReviewHygiene) {
+            return None;
+        }
+        let ledger = self.jev_ledger.borrow();
+        if ledger
+            .last_main_prompt_tokens()
+            .is_none_or(|tokens| tokens < super::jev_ledger::EFFORT_SWITCH_FREE_PROMPT_TOKENS)
+        {
+            return None;
+        }
+        let turn = &ledger.auto_mode;
+        if turn
+            .switched_at_round
+            .is_some_and(|at| rounds < at + SWITCH_DWELL_ROUNDS)
+        {
+            return Some("dwell after a switch");
+        }
+        let marks = failure_marks(&ledger.facts);
+        if turn
+            .left
+            .iter()
+            .any(|(left, at_leave)| *left == mode && *at_leave == marks)
+        {
+            return Some("left this request, no new failure");
+        }
+        None
+    }
+
+    /// Notes a review switch away from `left` after `rounds` completed rounds.
+    fn note_review_switch(&self, left: ExecutionMode, rounds: usize) {
+        let mut ledger = self.jev_ledger.borrow_mut();
+        let ledger = &mut *ledger;
+        let marks = failure_marks(&ledger.facts);
+        let turn = &mut ledger.auto_mode;
+        turn.switched_at_round = Some(rounds);
+        match turn.left.iter_mut().find(|(mode, _)| *mode == left) {
+            Some(entry) => entry.1 = marks,
+            None => turn.left.push((left, marks)),
+        }
     }
 
     /// Applies Auto's pick and tells every attached client.
@@ -188,7 +319,7 @@ impl SessionActor {
         let Some(questions) = mode_question() else {
             return;
         };
-        let state = self.auto_mode_state(request, None, 0).await;
+        let state = self.request_start_state(request).await;
         let Some(answers) = crate::jev::ask_item(JevLever::B8ExecutionMode, state, questions).await
         else {
             crate::jev::record_item(
@@ -201,7 +332,7 @@ impl SessionActor {
             return;
         };
         let confidence = answers.confidence(MODE_QUESTION);
-        let Some((mode, _)) = picked_mode(&answers) else {
+        let Some((picked, probability)) = picked_mode(&answers) else {
             crate::jev::record_item(
                 JevLever::B8ExecutionMode,
                 "defer",
@@ -213,6 +344,18 @@ impl SessionActor {
         };
         // The user may have fixed a mode while Jev was answering.
         if !self.auto_mode_active() {
+            return;
+        }
+        let current = self.execution_mode.load();
+        let mode = request_start_mode(picked, probability, current, REQUEST_START_PROBABILITY_FLOOR);
+        if mode != picked {
+            crate::jev::record_item(
+                JevLever::B8ExecutionMode,
+                "keep",
+                &format!("{} (pick below the request-start floor)", mode_id(current)),
+                confidence,
+                Some(&answers),
+            );
             return;
         }
         crate::jev::record_item(
@@ -262,6 +405,16 @@ impl SessionActor {
             );
             return false;
         }
+        if let Some(hold) = self.review_hold_reason(mode, rounds) {
+            crate::jev::record_item(
+                JevLever::B8ExecutionMode,
+                "keep",
+                &format!("{} ({hold})", mode_id(current)),
+                confidence,
+                Some(&answers),
+            );
+            return false;
+        }
         crate::jev::record_item(
             JevLever::B8ExecutionMode,
             mode_id(mode),
@@ -273,7 +426,11 @@ impl SessionActor {
             "switched from {} after {rounds} tool rounds",
             current.label()
         );
-        self.publish_auto_mode(mode, &reason)
+        let switched = self.publish_auto_mode(mode, &reason);
+        if switched {
+            self.note_review_switch(current, rounds);
+        }
+        switched
     }
 }
 
@@ -362,6 +519,159 @@ mod tests {
                 assert_eq!(actor.execution_mode.load(), ExecutionMode::Ultracode);
                 assert_eq!(crate::jev::test_decision_answers_remaining(), 1);
                 crate::jev::clear_test_decision_answers();
+            })
+            .await;
+    }
+
+    /// Without the current mode, Jev cannot weigh a request-start switch
+    /// against the cache the session already holds. After a drained request
+    /// the state names the current mode and how that request ended; the first
+    /// request of a session has neither.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_request_start_state_carries_the_current_mode_and_last_outcome() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let actor = super::super::support::plain_actor().await;
+                actor.execution_mode.store_auto(ExecutionMode::Ultrasave);
+                let first = actor.request_start_state("rename a variable").await;
+                assert!(first["current_mode"].is_null(), "{first}");
+                assert!(first.get("previous_turn").is_none(), "{first}");
+                assert_eq!(first["micro_action"]["step"], "first_step");
+
+                actor
+                    .jev_ledger
+                    .borrow_mut()
+                    .facts
+                    .note_tool_result("call-1", &failed_command());
+                let _ = actor.jev_ledger.borrow_mut().take_rows();
+                let next = actor.request_start_state("now add a test").await;
+                assert_eq!(next["current_mode"], "ultrasave");
+                assert_eq!(next["previous_turn"]["mode"], "ultrasave");
+                assert_eq!(next["previous_turn"]["failed_tool_calls"], 1);
+                assert_eq!(next["micro_action"]["step"], "first_step", "still a new request");
+                assert!(next["worker_model_configured"].is_boolean(), "kept: {next}");
+                // UltraSave is current here, so the mode-free gate must agree
+                // with the gate the tier route itself applies.
+                assert_eq!(
+                    next["tier_routing_available"],
+                    actor.tier_routing_allowed(),
+                    "{next}"
+                );
+            })
+            .await;
+    }
+
+    /// The floor keeps the current mode on a weak pick; at the default 0.0
+    /// every pick applies, as before.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_request_start_pick_below_the_floor_keeps_the_current_mode() {
+        use ExecutionMode::{Normal, Ultrasave};
+        assert_eq!(request_start_mode(Normal, 0.4, Ultrasave, 0.5), Ultrasave);
+        assert_eq!(request_start_mode(Normal, 0.5, Ultrasave, 0.5), Normal);
+        assert_eq!(REQUEST_START_PROBABILITY_FLOOR, 0.0, "fit it from decision data first");
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let actor = super::super::support::plain_actor().await;
+                actor.execution_mode.store_auto(Ultrasave);
+                crate::jev::set_test_decision_answers([Some(answer("normal", 0.05))]);
+                actor.jev_auto_pick_mode("rename a variable").await;
+                assert_eq!(actor.execution_mode.load(), Normal);
+                crate::jev::clear_test_decision_answers();
+            })
+            .await;
+    }
+
+    fn failed_command() -> distill_tools::types::output::ToolOutput {
+        distill_tools::types::output::ToolOutput::Bash(distill_tools::types::output::BashOutput {
+            output: Vec::new(),
+            output_for_prompt: "No such file or directory".to_owned(),
+            exit_code: 1,
+            command: "ls missing".to_owned(),
+            truncated: false,
+            signal: None,
+            timed_out: false,
+            description: None,
+            current_dir: "/tmp".to_owned(),
+            output_file: String::new(),
+            total_bytes: 0,
+            output_delta: None,
+            was_bare_echo: false,
+        })
+    }
+
+    async fn review(actor: &SessionActor, mode: &str, round: usize) -> bool {
+        crate::jev::set_test_decision_answers([Some(answer(mode, 0.9))]);
+        let switched = actor.jev_auto_review_mode("rename a variable", round).await;
+        assert_eq!(crate::jev::test_decision_answers_remaining(), 0, "round {round} was reviewed");
+        switched
+    }
+
+    fn report_prompt_tokens(actor: &SessionActor, tokens: u64) {
+        let mut ledger = actor.jev_ledger.borrow_mut();
+        ledger.note_round("main", None);
+        ledger.add_usage(tokens, 1);
+    }
+
+    /// On a large prompt a switch can re-read it uncached, and going straight
+    /// back to a mode the request just left pays that twice for nothing. With
+    /// `b8_review_hygiene` a left mode comes back only after a new failure,
+    /// and a switch holds for three rounds; every round is still reviewed,
+    /// and a small prompt keeps switching freely.
+    #[tokio::test(flavor = "current_thread")]
+    async fn review_hygiene_blocks_returns_and_short_dwells_only_on_large_prompts() {
+        use ExecutionMode::{Normal, Ultracode, Ultrasave};
+        const LARGE: u64 = super::super::jev_ledger::EFFORT_SWITCH_FREE_PROMPT_TOKENS;
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                crate::jev::set_test_flags(distill_workspace::jev::JevFlags {
+                    b8_review_hygiene: true,
+                    ..distill_workspace::jev::JevFlags::harness_default()
+                });
+                let actor = super::super::support::plain_actor().await;
+                actor.execution_mode.store_auto(Normal);
+                report_prompt_tokens(&actor, LARGE);
+
+                assert!(review(&actor, "ultrasave", 1).await, "Normal is left at round 1");
+                assert!(!review(&actor, "ultracode", 2).await, "inside the dwell");
+                assert!(!review(&actor, "ultracode", 3).await, "inside the dwell");
+                assert!(!review(&actor, "normal", 4).await, "no return without a new failure");
+                assert_eq!(actor.execution_mode.load(), Ultrasave);
+                assert!(review(&actor, "ultracode", 5).await, "a mode never left is free after the dwell");
+                assert_eq!(actor.execution_mode.load(), Ultracode);
+
+                assert!(!review(&actor, "ultrasave", 8).await, "UltraSave was left at round 5");
+                actor
+                    .jev_ledger
+                    .borrow_mut()
+                    .facts
+                    .note_tool_result("call-1", &failed_command());
+                assert!(review(&actor, "ultrasave", 9).await, "a new failure reopens a left mode");
+
+                // A small prompt: a miss is cheap, so the rules step aside.
+                report_prompt_tokens(&actor, LARGE - 1);
+                assert!(review(&actor, "ultracode", 10).await, "return inside the dwell");
+                assert_eq!(actor.execution_mode.load(), Ultracode);
+                crate::jev::clear_test_decision_answers();
+                crate::jev::clear_test_flags();
+            })
+            .await;
+    }
+
+    /// With the flag off (the default) a large prompt switches as freely as
+    /// before, including straight back to the mode just left.
+    #[tokio::test(flavor = "current_thread")]
+    async fn without_review_hygiene_a_large_prompt_still_switches_freely() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                crate::jev::set_test_flags(distill_workspace::jev::JevFlags::harness_default());
+                let actor = super::super::support::plain_actor().await;
+                actor.execution_mode.store_auto(ExecutionMode::Normal);
+                report_prompt_tokens(&actor, 200_000);
+                assert!(review(&actor, "ultrasave", 1).await);
+                assert!(review(&actor, "normal", 2).await);
+                assert_eq!(actor.execution_mode.load(), ExecutionMode::Normal);
+                crate::jev::clear_test_decision_answers();
+                crate::jev::clear_test_flags();
             })
             .await;
     }

@@ -74,6 +74,20 @@ pub fn effective_conversation_output_tokens(
         })
 }
 
+/// The serving path a request to `base_url` may carry: none on OpenRouter, where the model
+/// variant carries it, and no economy tier on the ChatGPT Codex backend, which refuses `flex`
+/// with a client error.
+pub(crate) fn effective_provider_tier(
+    tier: Option<crate::config::ProviderTier>,
+    base_url: &str,
+) -> Option<crate::config::ProviderTier> {
+    tier.filter(|tier| {
+        !is_openrouter_base_url(base_url)
+            && !(matches!(tier, crate::config::ProviderTier::Economy)
+                && is_codex_base_url(base_url))
+    })
+}
+
 fn is_codex_base_url(base_url: &str) -> bool {
     let Ok(url) = reqwest::Url::parse(base_url) else {
         return false;
@@ -2358,11 +2372,9 @@ impl SamplingClient {
         Ok(())
     }
 
-    /// The configured serving path, except on OpenRouter, where the model variant carries it.
+    /// The serving path this client's requests carry; see [`effective_provider_tier`].
     fn provider_tier(&self) -> Option<crate::config::ProviderTier> {
-        self.defaults
-            .provider_tier
-            .filter(|_| !is_openrouter_base_url(&self.base_url))
+        effective_provider_tier(self.defaults.provider_tier, &self.base_url)
     }
 
     /// True when the request carries the Anthropic beta flag that accepts a
@@ -3449,9 +3461,18 @@ mod tests {
         assert!(responses.get("service_tier").is_none(), "{responses}");
         assert!(messages.get("speed").is_none(), "{messages}");
 
+        // The ChatGPT Codex backend takes the fast path and refuses the economy one, so the
+        // economy tier is never sent there: a pinned UltraSave session on a subscription model
+        // must not open with a refused request.
+        let codex = "https://chatgpt.com/backend-api/codex";
+        let (responses, _) = bodies(codex, Some(ProviderTier::Fast));
+        assert_eq!(responses["service_tier"], "priority");
+        let (responses, _) = bodies(codex, Some(ProviderTier::Economy));
+        assert!(responses.get("service_tier").is_none(), "{responses}");
+
         // `sends_provider_tier` names exactly the bodies above that carry a field, so a caller
         // that drops a refused tier never drops one the endpoint did not see.
-        for base_url in [direct, "https://openrouter.ai/api/v1"] {
+        for base_url in [direct, "https://openrouter.ai/api/v1", codex] {
             for tier in [None, Some(ProviderTier::Fast), Some(ProviderTier::Economy)] {
                 let (responses, messages) = bodies(base_url, tier);
                 for (backend, carried) in [

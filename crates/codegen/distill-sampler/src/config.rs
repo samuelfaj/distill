@@ -148,13 +148,14 @@ pub struct SamplerConfig {
 impl SamplerConfig {
     /// Whether a request built from this config carries a serving-path field: Responses
     /// `service_tier` for either tier, Messages `speed` for `Fast`. OpenRouter takes the model
-    /// variant instead, and Chat Completions gets no such field.
+    /// variant instead, the ChatGPT Codex backend gets no economy tier, and Chat Completions
+    /// gets no such field.
     pub fn sends_provider_tier(&self) -> bool {
-        if crate::client::is_openrouter_base_url(&self.base_url) {
-            return false;
-        }
         matches!(
-            (self.provider_tier, &self.api_backend),
+            (
+                crate::client::effective_provider_tier(self.provider_tier, &self.base_url),
+                &self.api_backend
+            ),
             (Some(_), ApiBackend::Responses) | (Some(ProviderTier::Fast), ApiBackend::Messages)
         )
     }

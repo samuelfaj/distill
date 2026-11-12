@@ -70,7 +70,8 @@ provider_tier = "economy"   # the default; "off" sends no serving-path field
   because changing it mid-session invalidates the provider's prompt cache. It
   applies to the session's model only (a round routed to another model goes
   without it):
-  - Responses API endpoints: `service_tier: "flex"`.
+  - Responses API endpoints: `service_tier: "flex"`, except the ChatGPT
+    subscription endpoint, which refuses it; nothing is sent there.
   - Anthropic Messages endpoints: nothing is sent.
   - OpenRouter: the model variant stays `floor` when `[models] main_variant`
     is unset, which is already the default.

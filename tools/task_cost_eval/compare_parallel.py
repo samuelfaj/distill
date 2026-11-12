@@ -8,10 +8,14 @@ import json
 import math
 import os
 import random
+import re
 import shutil
 import subprocess
+import tempfile
 import time
 import tomllib
+import urllib.error
+import urllib.request
 import uuid
 from collections import Counter
 from pathlib import Path
@@ -19,32 +23,130 @@ from pathlib import Path
 from .acp_driver import EXECUTION_MODES, OwnedTree, run_acp
 from .compare_codex import LOCAL_TOOLS, distill_accounting, distill_config, subscription_account
 from .evaluate import _sha256_file, _sha256_tree
+from .gates import aa_check
 from .parallel_verdict import verdict
 from .runner import _terminate_owned_group
-from .ultrafast_verdict import verdict as ultrafast_verdict
+from .ultrafast_verdict import charged_completion_s, verdict as ultrafast_verdict
 from .ultrasave_verdict import verdict as ultrasave_verdict
 from .auto_verdict import verdict as auto_verdict
 
 ROOT = Path(__file__).resolve().parent
 MODEL = 'chatgpt/gpt-6.1-sol'
 VARIANTS = ('baseline', 'candidate')
+AA_VARIANT = 'baseline_aa'
 TOKEN_FIELDS = ('input_tokens', 'cached_input_tokens', 'output_tokens', 'reasoning_tokens')
 UTILITY_MODEL = 'chatgpt/gpt-6-luna'
 CREDIT_BASIS = ('credits: published subscription credit rates over LLM calls only; Jev (role "jev") calls are '
                 'billed in native USD ticks and reported separately as jev_usd, never converted into credits')
 CAPACITY_ENV = ('GROK_MAX_CONCURRENT_SUBAGENTS', 'GROK_SUBAGENT_SAMPLING_LIMIT',
                 'GROK_WORKFLOW_MAX_CONCURRENT_AGENTS')
+# Mirrors distill-workspace jev/client.rs with the default OpenRouter Decisions provider.
+JEV_DECISIONS_URL = 'https://openrouter.ai/api/alpha/decisions'
+JEV_MODEL = '~typesafe/jev-latest'
+# Never copied with a kept failing run folder.
+CREDENTIAL_FILES = ('codex-auth.json', 'openrouter-auth.json')
 
 
-def plan_runs(cohort, repetitions, order_seed=None):
-    """Keep pairs adjacent and reverse their order on every other repetition."""
+def plan_runs(cohort, repetitions, order_seed=None, variants=VARIANTS):
+    """Keep arms of one case adjacent and rotate their order across repetitions.
+
+    Two arms reverse on every other repetition (and across tasks when seeded);
+    more arms rotate by case and repetition so each arm leads equally often.
+    """
     cases = list(cohort['cases'])
     if order_seed is not None:
         random.Random(order_seed).shuffle(cases)
-    return [(variant, case, rep) for rep in range(1, repetitions + 1)
-            for index, case in enumerate(cases)
-            for variant in (VARIANTS if (rep - 1 + (index if order_seed is not None else 0)) % 2 == 0
-                            else VARIANTS[::-1])]
+    per_case = order_seed is not None or len(variants) > 2
+    planned = []
+    for rep in range(1, repetitions + 1):
+        for index, case in enumerate(cases):
+            shift = (rep - 1 + (index if per_case else 0)) % len(variants)
+            planned.extend((variant, case, rep) for variant in variants[shift:] + variants[:shift])
+    return planned
+
+
+def jev_preflight(key, timeout=30):
+    """One minimal Jev decision with the staged key; returns {'ok', 'status', 'error'}.
+
+    Same endpoint, bearer header and typed envelope as the Rust client, with a
+    single yes/no question. Tests replace this function; it is never retried.
+    """
+    body = json.dumps({'state': {'purpose': 'benchmark preflight'}, 'model': JEV_MODEL,
+                       'questions': {'ready': {'type': 'noul',
+                                               'instructions': 'Is this a benchmark preflight request?'}}}).encode()
+    request = urllib.request.Request(JEV_DECISIONS_URL, data=body, method='POST', headers={
+        'Authorization': f'Bearer {key}', 'Content-Type': 'application/json'})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            response.read()
+            return {'ok': 200 <= response.status < 300, 'status': response.status, 'error': None}
+    except urllib.error.HTTPError as error:
+        return {'ok': False, 'status': error.code, 'error': None}
+    except (urllib.error.URLError, OSError, TimeoutError) as error:
+        return {'ok': False, 'status': None, 'error': type(error).__name__}
+
+
+def binary_commit(binary, declared=None):
+    """Source commit of a build: from `<binary> --version`, else the declared argument, else unknown."""
+    try:
+        with tempfile.TemporaryDirectory() as home:
+            environment = {**{k: v for k, v in os.environ.items() if not k.endswith('_API_KEY')},
+                           'DISTILL_HOME': home, 'GROK_HOME': home}
+            output = subprocess.run([str(binary), '--version'], capture_output=True, text=True, timeout=15,
+                                    env=environment, stdin=subprocess.DEVNULL).stdout
+    except (OSError, subprocess.SubprocessError):
+        output = ''
+    found = re.search(r'\(([0-9a-f]{7,40})\)', output)
+    if found:
+        record = {'source_commit': found.group(1), 'commit_source': 'version'}
+        if declared and declared != found.group(1):
+            record['declared_commit'] = declared
+        return record
+    if declared:
+        return {'source_commit': declared, 'commit_source': 'argument'}
+    return {'source_commit': 'unknown', 'commit_source': 'unknown'}
+
+
+def keep_failed_run(run_dir, destination):
+    """Copy a failing run folder for later review; credential copies are never kept."""
+    def ignore(_directory, names):
+        return [name for name in names if name in CREDENTIAL_FILES]
+    target = destination / Path(run_dir).name
+    shutil.copytree(run_dir, target, symlinks=True, ignore=ignore)
+    return str(target)
+
+
+def campaign_aa_check(control_rows, aa_rows):
+    """A/A on credits and charged completion time (failures charged the timeout)."""
+    def credits(row):
+        return row['credits'] if row.get('accounting_complete') and row.get('credits') is not None else None
+
+    def seconds(row):
+        return charged_completion_s(row) if row.get('grader') and row.get('settings') else row['wall_time_s']
+    return aa_check(control_rows, aa_rows, credits, seconds)
+
+
+def mark_aa(report, check):
+    """An out-of-band A/A makes the campaign INVALID; an unmeasurable one leaves it INCOMPLETE."""
+    if check['valid']:
+        return
+    report['reasons'].extend(check['reasons'])
+    measured = check['credit_ratio'] is not None and check['time_ratio'] is not None
+    report['verdict'] = 'INVALID' if measured else 'INCOMPLETE'
+
+
+def call_summary(calls):
+    """Per-run time and round split from per-call usage rows."""
+    durations = [call.get('api_duration_ms') for call in calls]
+    jev = [call for call in calls if call.get('role') == 'jev']
+    return {
+        'model_time_ms': sum(call.get('api_duration_ms') or 0 for call in calls if call.get('role') != 'jev'),
+        'jev_time_ms': sum(call.get('api_duration_ms') or 0 for call in jev),
+        'calls_without_duration': sum(value is None for value in durations),
+        'root_rounds': sum(call.get('agent') == 'main' and call.get('role') in ('main', 'main_retry') for call in calls),
+        'child_calls': sum(call.get('agent') == 'worker' and call.get('role') != 'jev' for call in calls),
+        'jev_failed_calls': sum(call.get('status', 'completed') != 'completed' for call in jev),
+    }
 
 
 def case_hashes(case):
@@ -255,6 +357,8 @@ def run_one(binary, variant, case, repetition, work_root, profile, timeout, *,
             'accounting_complete': bool(accounting['accounting_complete'] and (not sanitize or evidence['complete'])
                                         and (not enable_jev or jev_priced)),
             'jev_usd': jev_usd, 'jev_calls': len(jev_ticks),
+            **call_summary(accounting.get('call_usage', [])),
+            **{key: (acp or {}).get(key) for key in ('effective_mode_mix', 'mode_switches', 'effective_mode_timeline')},
             'accounting_evidence': evidence,
             'call_usage': accounting.get('call_usage', []),
             'exit_code': exit_code, 'timed_out': timed_out, 'session': session, 'grader': grade,
@@ -275,6 +379,9 @@ def aggregate(runs):
         main_efforts = [[(call.get('effort') or 'unknown').removeprefix('effort:')
                          for call in (run.get('call_usage') or []) if call.get('role') == 'main'] for run in rows]
         mix = Counter(label for labels in main_efforts for label in labels)
+        modes = Counter()
+        for run in rows:
+            modes.update(run.get('effective_mode_mix') or {})
         accepted = sum(1 for r in rows if r['passed'])
         complete = all(r['accounting_complete'] for r in rows)
         credits = sum(r['credits'] for r in rows) if complete else None
@@ -285,7 +392,11 @@ def aggregate(runs):
                      **{f: sum(r[f] for r in rows) if all(r.get(f) is not None for r in rows) else None
                         for f in ('model_calls', *TOKEN_FIELDS)},
                      'main_effort_mix': dict(sorted(mix.items())),
-                     'main_effort_switches': sum(a != b for labels in main_efforts for a, b in zip(labels, labels[1:]))}
+                     'main_effort_switches': sum(a != b for labels in main_efforts for a, b in zip(labels, labels[1:])),
+                     'effective_mode_mix': dict(sorted(modes.items())),
+                     'mode_switches': sum(r.get('mode_switches') or 0 for r in rows),
+                     **{f: sum(r.get(f) or 0 for r in rows)
+                        for f in ('model_time_ms', 'jev_time_ms', 'root_rounds', 'child_calls', 'jev_failed_calls')}}
     return out
 
 
@@ -310,11 +421,12 @@ def main(argv=None):
                              'mode with different binaries; requires an ultrafast/ultrasave/auto verdict')
     parser.add_argument('--max-concurrent', type=int, help='common task, sampling, and workflow capacity')
     parser.add_argument('--verdict', choices=('parallel', 'ultrafast', 'ultrasave', 'auto'), default='parallel',
-                        help='paired ACP gates vs Normal: ultrafast median completion ratio <=0.60; ultrasave median credit '
-                             'ratio <=0.45 (both <=0.85 with --compare-versions); auto median credit and completion '
-                             'ratios <=1.0 with one <=0.85 vs Normal or a previous Auto version; '
-                             'Auto vs specialists reports tradeoffs without a performance gate; all Auto tasks must pass; '
-                             'other verdicts allow at most 1 quality regression')
+                        help='paired ACP gates vs Normal on ratios of totals: ultrafast completion <=0.60; ultrasave '
+                             'credits <=0.45 (both <=0.85 with --compare-versions); auto credits and completion '
+                             '<=1.0 with one <=0.85 vs Normal or a previous Auto version; '
+                             'Auto vs specialists reports tradeoffs without a performance gate; Auto accepts at least '
+                             'the baseline minus 1 in 60 runs; other verdicts allow at most 1 quality regression; '
+                             'fewer than 3 repetitions report SMOKE, not a verdict')
     for variant in VARIANTS:
         mode = parser.add_mutually_exclusive_group()
         mode.add_argument(f'--{variant}-ultracode', action='store_true',
@@ -333,6 +445,14 @@ def main(argv=None):
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--distill-profile', type=Path, default=Path.home() / '.grok')
     parser.add_argument('--timeout', type=float, default=300)
+    parser.add_argument('--aa-arm', action='store_true',
+                        help='add an A/A arm (the baseline binary and settings again); the campaign is INVALID '
+                             'when its ratio of totals leaves 0.90-1.10 on credits or time')
+    for variant in VARIANTS:
+        parser.add_argument(f'--{variant}-commit',
+                            help=f'source commit of the {variant} binary when its --version does not carry one')
+    parser.add_argument('--keep-failed-runs', type=Path,
+                        help='copy each failing run folder here (credential copies excluded)')
     parser.add_argument('--execute', action='store_true',
                         help='run the models (spends credits); without it only the plan is printed')
     args = parser.parse_args(argv)
@@ -376,7 +496,15 @@ def main(argv=None):
                           'utility_model': args.utility_model, 'enable_jev': args.enable_jev,
                           'order_seed': args.order_seed} for variant in VARIANTS}
     binaries = {'baseline': args.baseline_binary, 'candidate': args.candidate_binary}
-    planned = plan_runs(cohort, args.repetitions, args.order_seed)
+    declared_commits = {'baseline': args.baseline_commit, 'candidate': args.candidate_commit}
+    variants = VARIANTS
+    if args.aa_arm:
+        variants = (*VARIANTS, AA_VARIANT)
+        settings[AA_VARIANT] = settings['baseline']
+        binaries[AA_VARIANT] = binaries['baseline']
+        declared_commits[AA_VARIANT] = args.baseline_commit
+    planned = (plan_runs(cohort, args.repetitions, args.order_seed) if variants == VARIANTS
+               else plan_runs(cohort, args.repetitions, args.order_seed, variants))
     if not args.execute:
         for variant, case, rep in planned:
             print(f'plan: {variant} {case["id"]} ({case["kind"]}) rep {rep} -> {binaries[variant]} '
@@ -394,8 +522,20 @@ def main(argv=None):
         raise RuntimeError('Frozen cohort changed before execution')
     profile = args.distill_profile.expanduser()
     subscription_account(profile / 'codex-auth.json')
-    if args.enable_jev and not (profile / 'openrouter-auth.json').is_file():
-        parser.error(f'--enable-jev needs {profile / "openrouter-auth.json"}')
+    preflight = None
+    if args.enable_jev:
+        if not (profile / 'openrouter-auth.json').is_file():
+            parser.error(f'--enable-jev needs {profile / "openrouter-auth.json"}')
+        key = json.loads((profile / 'openrouter-auth.json').read_text()).get('key')
+        if not isinstance(key, str) or not key:
+            parser.error('OpenRouter auth file has no key')
+        # One decision with the staged key before any run: a dead key must not
+        # spend a whole campaign on Normal arms while every Jev call fails.
+        preflight = jev_preflight(key)
+        if not preflight['ok']:
+            status = f'HTTP {preflight["status"]}' if preflight['status'] is not None else preflight['error']
+            parser.error(f'Jev preflight failed ({status}); campaign aborted before the first run')
+    commits = {variant: binary_commit(binary, declared_commits.get(variant)) for variant, binary in binaries.items()}
     work_root = args.work_root.resolve()
     work_root.mkdir(parents=True, exist_ok=True)
     runs = []
@@ -407,6 +547,9 @@ def main(argv=None):
                       binary_hash=frozen['binaries'][variant], **settings[variant])
         if comparison_hashes(cohort, binaries, args.cohort) != frozen:
             raise RuntimeError('Frozen comparison inputs or binaries changed after execution')
+        if not run['passed'] and args.keep_failed_runs is not None and run.get('output_dir'):
+            args.keep_failed_runs.mkdir(parents=True, exist_ok=True)
+            run['kept_run_dir'] = keep_failed_run(run['output_dir'], args.keep_failed_runs)
         runs.append(run)
         print(json.dumps({k: run[k] for k in ('variant', 'case', 'repetition', 'passed', 'wall_time_s',
                                              'credits', 'accounting_complete')}), flush=True)
@@ -418,12 +561,18 @@ def main(argv=None):
                'transport': args.transport, 'order_seed': args.order_seed, 'repetitions': args.repetitions,
                'verdict_policy': args.verdict, 'compare_versions': args.compare_versions,
                'jev_enabled': args.enable_jev, 'utility_model': args.utility_model,
-               'credit_basis': CREDIT_BASIS,
+               'jev_preflight': preflight, 'credit_basis': CREDIT_BASIS,
                'runs': runs, 'aggregates': aggregate(runs),
-               'binaries': {v: {'path': str(b), 'sha256': frozen['binaries'][v]}
+               'failed_run_dirs': [r.get('kept_run_dir') or r.get('output_dir') for r in runs if not r['passed']],
+               'binaries': {v: {'path': str(b), 'sha256': frozen['binaries'][v], **commits[v]}
                             for v, b in binaries.items()}}
+    paired = {**results, 'runs': [r for r in runs if r['variant'] in VARIANTS]}
     results['verdict'] = {'parallel': verdict, 'ultrafast': ultrafast_verdict,
-                          'ultrasave': ultrasave_verdict, 'auto': auto_verdict}[args.verdict](results)
+                          'ultrasave': ultrasave_verdict, 'auto': auto_verdict}[args.verdict](paired)
+    if args.aa_arm:
+        results['aa_check'] = campaign_aa_check([r for r in runs if r['variant'] == 'baseline'],
+                                                [r for r in runs if r['variant'] == AA_VARIANT])
+        mark_aa(results['verdict'], results['aa_check'])
     invalid = [f'{r["variant"]} {r["case"]}#{r["repetition"]}: {r["acp"]["error"] or "ACP incomplete"}'
                for r in runs if r.get('acp') is not None
                and (not r['acp']['setup_confirmed'] or not r['acp']['cleanup_complete'])]

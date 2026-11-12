@@ -430,7 +430,8 @@ def distill_accounting(home, session, *, strict=False, zero_usage_attempts=froze
                     'endpoint': attribution.get('endpoint'),
                     'owner': call_owners[0] if len(call_owners) == 1 else None,
                     'requested_effort': attribution.get('requested_effort'),
-                    'effort': attribution.get('applied_effort')}
+                    'effort': attribution.get('applied_effort'),
+                    'api_duration_ms': attribution.get('api_duration_ms')}
         if not usage:
             if attribution['attempt_id'] in zero_usage_attempts:
                 rows.append({**identity, 'complete': True, 'imputed_zero_usage': True,

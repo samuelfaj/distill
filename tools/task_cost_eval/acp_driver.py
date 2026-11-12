@@ -17,6 +17,8 @@ from .runner import _terminate_owned_group
 
 ULTRACODE_METHOD = '_x.ai/session/ultracode/set'
 EXECUTION_MODE_METHOD = '_x.ai/session/execution_mode/set'
+# jev_auto_mode.rs publish_auto_mode: {sessionId, mode, choice, reason} after each Auto pick.
+MODE_CHANGED_METHODS = ('_x.ai/session/execution_mode/changed', 'x.ai/session/execution_mode/changed')
 EXECUTION_MODES = ('normal', 'ultrafast', 'ultracode', 'ultrasave', 'auto')
 HOOK_RUN_METHOD = '_x.ai/hooks/run'
 STOP_CALLBACK_ID = 'benchmark-root-stop'
@@ -145,6 +147,7 @@ class _Client:
         self.before_stop_feedback = before_stop_feedback
         self.stop_feedback_sent = False
         self.stop_hook_receipts = []
+        self.mode_changes = []
         os.set_blocking(process.stdout.fileno(), False)
         os.set_blocking(process.stdin.fileno(), False)
 
@@ -259,6 +262,9 @@ class _Client:
             return
         if not isinstance(params, dict):
             raise AcpError(f'{method}: invalid params')
+        if method in MODE_CHANGED_METHODS and 'id' not in message:
+            self.mode_changes.append({key: params.get(key) for key in ('sessionId', 'mode', 'choice', 'reason')})
+            return
         if 'id' in message:
             if method == HOOK_RUN_METHOD and self.stop_feedback is not None:
                 feedback_sent = (not self.stop_feedback_sent
@@ -337,6 +343,23 @@ class _Client:
                 self.observed_subagents.add(key)
                 self.peak_live_subagents = max(self.peak_live_subagents,
                     sum(1 for pending in self.pending if pending[0] == 'subagent'))
+
+
+def mode_mix(activation_receipt, changes, session):
+    """Effective-mode segments of the root session: the activated mode, then each Auto change.
+
+    The mix counts segments (entries into a mode), not model calls; switches count
+    consecutive segments whose mode differs.
+    """
+    activation = activation_receipt.get('result') if isinstance(activation_receipt, dict) else None
+    timeline = [activation['mode']] if isinstance(activation, dict) and isinstance(activation.get('mode'), str) else []
+    timeline += [change['mode'] for change in changes
+                 if change.get('sessionId') == session and isinstance(change.get('mode'), str)]
+    mix = {}
+    for mode in timeline:
+        mix[mode] = mix.get(mode, 0) + 1
+    return {'effective_mode_timeline': timeline, 'effective_mode_mix': dict(sorted(mix.items())),
+            'mode_switches': sum(a != b for a, b in zip(timeline, timeline[1:]))}
 
 
 def run_acp(command, *, cwd, environment, prompt, model, effort, ultracode=False, execution_mode=None,
@@ -438,6 +461,8 @@ def run_acp(command, *, cwd, environment, prompt, model, effort, ultracode=False
                 result['prompt_receipt'] = client.receipts.get('session/prompt')
                 result['observed_subagent_attempts'] = len(client.observed_subagents)
                 result['observed_peak_live_subagents'] = client.peak_live_subagents
+                result['mode_changes'] = client.mode_changes
+                result.update(mode_mix(result['activation_receipt'], client.mode_changes, client.session))
             if stop_feedback is not None:
                 result['stop_hook_receipts'] = client.stop_hook_receipts if client is not None else []
                 result['stop_feedback_sent'] = client.stop_feedback_sent if client is not None else False

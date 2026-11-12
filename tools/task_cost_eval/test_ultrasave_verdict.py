@@ -5,8 +5,8 @@ from .test_ultrafast_verdict import FOUR, result as paired_result
 from .ultrasave_verdict import TOKEN_FIELDS, verdict
 
 
-def result(cases=('parallel', 'sequential')):
-    data = paired_result(cases)
+def result(cases=('parallel', 'sequential'), repetitions=3):
+    data = paired_result(cases, repetitions)
     for row in data['runs']:
         candidate = row['variant'] == 'candidate'
         row['credits'] = 4 if candidate else 10
@@ -28,14 +28,15 @@ class UltraSaveVerdictTest(unittest.TestCase):
         report = verdict(result())
         self.assertEqual(report['verdict'], 'PASS')
         self.assertAlmostEqual(report['median_paired_token_ratio'], 95 / 135)
-        self.assertEqual(report['baseline']['total_tokens'], 270)
-        self.assertEqual(report['candidate']['total_tokens'], 190)
-        self.assertEqual(report['candidate']['input_tokens'], 140)
-        self.assertEqual(report['candidate']['cached_input_tokens'], 110)
-        self.assertEqual(report['candidate']['uncached_input_tokens'], 30)
-        self.assertEqual(report['candidate']['output_tokens'], 50)
-        self.assertEqual(report['candidate']['reasoning_tokens'], 20)
-        self.assertEqual(report['candidate']['model_calls'], 4)
+        # Six runs per arm (two cases, three repetitions), each counted once.
+        self.assertEqual(report['baseline']['total_tokens'], 6 * 135)
+        self.assertEqual(report['candidate']['total_tokens'], 6 * 95)
+        self.assertEqual(report['candidate']['input_tokens'], 6 * 70)
+        self.assertEqual(report['candidate']['cached_input_tokens'], 6 * 55)
+        self.assertEqual(report['candidate']['uncached_input_tokens'], 6 * 15)
+        self.assertEqual(report['candidate']['output_tokens'], 6 * 25)
+        self.assertEqual(report['candidate']['reasoning_tokens'], 6 * 10)
+        self.assertEqual(report['candidate']['model_calls'], 12)
         self.assertEqual(report['pairs'][0]['candidate']['total_tokens'], 95)
 
     def test_failed_candidate_cannot_earn_token_savings_and_retains_raw_usage(self):
@@ -48,13 +49,14 @@ class UltraSaveVerdictTest(unittest.TestCase):
         self.assertFalse(failed['token_savings_eligible'])
         self.assertEqual(failed['gate_token_ratio'], 1)
         self.assertAlmostEqual(failed['raw_token_ratio'], 95 / 135)
-        self.assertEqual(report['candidate']['total_tokens'], 190)
-        self.assertEqual(report['candidate']['credits'], 8)
-        self.assertEqual(report['candidate']['raw_elapsed_s'], 110)
+        self.assertEqual(report['candidate']['total_tokens'], 6 * 95)
+        self.assertEqual(report['candidate']['credits'], 6 * 4)
+        self.assertEqual(report['candidate']['raw_elapsed_s'], 6 * 55)
 
     def test_money_gate_is_credit_ratio_not_tokens(self):
         data = result()
         self.assertAlmostEqual(verdict(data)['median_paired_credit_ratio'], .4)
+        self.assertAlmostEqual(verdict(data)['credit_ratio_of_totals'], .4)
         for row in data['runs']:
             if row['variant'] == 'candidate':
                 row['credits'] = 4.4
@@ -70,10 +72,16 @@ class UltraSaveVerdictTest(unittest.TestCase):
     def test_failed_candidate_pair_cannot_earn_credit_savings(self):
         data = result()
         data['runs'][1]['passed'] = False
-        self.assertEqual(verdict(data)['pairs'][0]['gate_credit_ratio'], 1)
+        report = verdict(data)
+        self.assertEqual(report['pairs'][0]['gate_credit_ratio'], 1)
+        # In the gate total the failed attempt counts as the baseline's 10, not its 4.
+        self.assertAlmostEqual(report['credit_ratio_of_totals'], (5 * 4 + 10) / 60)
 
     def test_one_regression_tolerated_two_fail(self):
         data = result(FOUR)
+        for row in data['runs']:
+            if row['variant'] == 'candidate':
+                row['credits'] = 3  # the failed pair is charged the baseline's 10 credits
         data['runs'][1]['passed'] = False
         report = verdict(data)
         self.assertEqual((report['quality_regressions'], report['verdict']), (1, 'PASS'), report['reasons'])
@@ -91,7 +99,7 @@ class UltraSaveVerdictTest(unittest.TestCase):
             row['credits'] = 8 if row['variant'] == 'candidate' else 10
         report = verdict(data)
         self.assertEqual(report['verdict'], 'PASS', report['reasons'])
-        self.assertEqual(report['target']['maximum_median_paired_credit_ratio'], .85)
+        self.assertEqual(report['target']['maximum_credit_ratio_of_totals'], .85)
         for row in data['runs']:
             if row['variant'] == 'candidate':
                 row['credits'] = 9

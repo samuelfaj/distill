@@ -1,10 +1,18 @@
-"""Bounded paired UltraFast speed/quality gate; not a statistical equivalence test."""
+"""Bounded paired UltraFast speed/quality gate; not a statistical equivalence test.
+
+The gate uses the ratio of totals of charged completion time; the median of
+paired ratios is reported for continuity only (it is biased near 1.1 for
+identical arms). Fewer than three repetitions report a smoke, not a verdict.
+"""
 from __future__ import annotations
 
 import math
 import statistics
 
-# Predeclared targets. Quality: tolerate one regression and one missed task per cohort.
+from .gates import apply_repetition_rule, case_bootstrap, jev_unavailable_reason, ratio_of_totals
+
+# Predeclared targets. Quality: tolerate one regression and one missed task per
+# cohort, pooled over every repetition.
 MAX_COMPLETION_RATIO = 0.60
 MAX_COMPLETION_RATIO_COMPARE_VERSIONS = 0.85
 MAX_QUALITY_REGRESSIONS = 1
@@ -53,7 +61,10 @@ def validated_pairs(results, *, candidate_mode, baseline_modes, compare_versions
                 activation.get('choice', activation.get('mode')) != mode or not acp.get('setup_confirmed') or
                 not acp.get('cleanup_complete') or not row.get('execution_mode_activation_confirmed')):
             reasons.append(f'{label}: missing mode/setup/cleanup confirmation')
-        if (not row.get('accounting_complete') or not (row.get('accounting_evidence') or {}).get('complete') or
+        jev_reason = jev_unavailable_reason(row)
+        if jev_reason:
+            reasons.append(f'{label}: {jev_reason}')
+        elif (not row.get('accounting_complete') or not (row.get('accounting_evidence') or {}).get('complete') or
                 not row.get('call_usage') or any(not call.get('complete') for call in row['call_usage'])):
             reasons.append(f'{label}: incomplete all-call accounting')
         if not row.get('frozen_inputs_unchanged') or not row.get('binary_unchanged'):
@@ -85,13 +96,14 @@ def verdict(results):
                                      compare_versions=compare_versions)
     target = MAX_COMPLETION_RATIO_COMPARE_VERSIONS if compare_versions else MAX_COMPLETION_RATIO
     report = {'verdict': 'INCOMPLETE', 'reasons': reasons, 'compare_versions': compare_versions,
-              'target': {'maximum_median_paired_completion_ratio': target,
+              'gate_statistic': 'ratio of totals of charged completion time',
+              'target': {'maximum_completion_ratio_of_totals': target,
                          'maximum_quality_regressions': MAX_QUALITY_REGRESSIONS,
                          'minimum_candidate_accepted': 'runs - %d' % MAX_MISSED_ACCEPTANCES},
               'scope': 'bounded observed sample; no statistical equivalence or general superiority claim',
               'pairs': [], 'baseline': None, 'candidate': None}
     if reasons:
-        return report
+        return apply_repetition_rule(report, results.get('repetitions'))
 
     for key, pair in sorted(pairs.items()):
         baseline, candidate = pair['baseline'], pair['candidate']
@@ -126,15 +138,20 @@ def verdict(results):
             'observed_peak_live_subagents': max(peaks) if all(value is not None for value in peaks) else None,
             'observed_subagent_attempts': sum(attempts) if all(value is not None for value in attempts) else None,
         }
-    ratio = statistics.median(pair['completion_ratio'] for pair in report['pairs'])
-    report['median_paired_completion_ratio'] = ratio
-    report['median_paired_time_saved_fraction'] = 1 - ratio
+    median = statistics.median(pair['completion_ratio'] for pair in report['pairs'])
+    report['median_paired_completion_ratio'] = median
+    report['median_paired_time_saved_fraction'] = 1 - median
+    times = (lambda pair: pair['baseline_completion_s'], lambda pair: pair['candidate_completion_s'])
+    ratio = ratio_of_totals(report['pairs'], *times)
+    report['completion_ratio_of_totals'] = ratio
+    report['completion_ratio_bootstrap'] = case_bootstrap(report['pairs'], *times)
     report['quality_regressions'] = sum(pair['quality_regression'] for pair in report['pairs'])
     if not report['baseline']['accepted']:
         report['reasons'].append('baseline accepted no task; no quality comparison basis')
-        return report
+        return apply_repetition_rule(report, results.get('repetitions'))
     if ratio > target:
-        report['reasons'].append(f'median paired completion time did not improve by at least {round((1 - target) * 100)}%')
+        report['reasons'].append(f'completion time ratio of totals {ratio:.3f} did not improve by at least '
+                                 f'{round((1 - target) * 100)}%')
     report['reasons'].extend(quality_reasons(report, 'UltraFast'))
     report['verdict'] = 'FAIL' if report['reasons'] else 'PASS'
-    return report
+    return apply_repetition_rule(report, results.get('repetitions'))

@@ -1,6 +1,8 @@
 """Pure verdict over compare_parallel results; executes nothing."""
 from __future__ import annotations
 
+from .gates import jev_unavailable_reason
+
 OVERUSE_NUM, OVERUSE_DEN = 11, 10  # candidate sequential credits may exceed baseline by at most 10%
 
 
@@ -18,7 +20,7 @@ def verdict(results):
     for name, rows in by_variant.items():
         if not rows:
             reasons.append(f'no {name} runs')
-        reasons += [f'{name} {r["case"]}#{r["repetition"]}: accounting incomplete'
+        reasons += [f'{name} {r["case"]}#{r["repetition"]}: {jev_unavailable_reason(r) or "accounting incomplete"}'
                     for r in rows if not r['accounting_complete'] or r['credits'] is None]
     keys = {v: sorted((r['case'], r['repetition']) for r in rows) for v, rows in by_variant.items()}
     if by_variant['baseline'] and by_variant['candidate'] and keys['baseline'] != keys['candidate']:

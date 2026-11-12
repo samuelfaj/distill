@@ -311,6 +311,16 @@ class StrictDistillAccountingTest(unittest.TestCase):
             self.assertEqual(calls['initial-title:t']['task_id'], 'select_units')
             self.assertEqual(calls['initial-title:t']['source_kind'], 'tool_families')
 
+    def test_per_call_api_duration_is_carried_and_absent_stays_unknown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            main, _, rows = self.fixture(root)
+            rows[0]['api_duration_ms'] = 1234
+            self.write_ledger(main, rows)
+            calls = {row['attempt']: row for row in distill_accounting(root, 'main', strict=True)['call_usage']}
+            self.assertEqual(calls['sampler:a']['api_duration_ms'], 1234)
+            self.assertIsNone(calls['initial-title:t']['api_duration_ms'])
+
     def retry_fixture(self, root, *, output_started):
         endpoint = 'https://chatgpt.com/backend-api/codex/responses'
         usage = {'prompt_tokens': 10, 'completion_tokens': 1,

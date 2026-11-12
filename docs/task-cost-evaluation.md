@@ -306,3 +306,50 @@ does not enforce an aggregate provider-call ceiling, so the protocol records
 that finite eligibility/stop condition as a controller dependency rather than
 presenting wall-clock timeout as a hard spend guarantee. This readiness artifact
 does not establish a savings claim.
+
+## Paired campaign yardstick
+
+`compare_parallel.py` runs paired campaigns (`--baseline-*` against
+`--candidate-*`). Without `--execute` it only prints the run plan. The gate
+rules below apply to the `ultrafast`, `ultrasave` and `auto` verdicts:
+
+- Gates decide on the ratio of totals: candidate total over baseline total,
+  pooled over every case and repetition. Credits charge a failed candidate
+  attempt at least its baseline's credits; completion time charges a failure
+  the timeout. The median of paired ratios is still reported, but it reads
+  about 1.1 for two identical arms and is never the gate.
+- Each ratio carries a 90% bootstrap interval that resamples whole cases, so
+  repetitions of one case are not counted as independent tasks.
+- A gate verdict needs 3 repetitions. With fewer, a finished report becomes
+  `SMOKE`, keeps its would-be result in `smoke_verdict`, and exits 1.
+- Auto accepts at least the compared arm's count minus 1 in 60 runs; it no
+  longer needs every run to pass.
+- `--aa-arm` adds a third arm that repeats the baseline binary and settings.
+  Arm order rotates by case and repetition. When the A/A ratio of totals
+  leaves 0.90-1.10 on credits or on charged time the campaign is `INVALID`;
+  when it cannot be measured the campaign is `INCOMPLETE`. The A/A rows stay
+  in `runs`, but the verdict only pairs baseline and candidate.
+- With `--enable-jev` and `--execute`, one Jev decision request is sent with
+  the staged key before the first run (same endpoint, bearer header and typed
+  envelope as the Rust client). A failure aborts the campaign with exit code 2
+  and the HTTP status; the result records `jev_preflight`. A run whose Jev
+  calls failed is reported as `Jev unavailable (N of M calls failed)` instead
+  of the generic incomplete-accounting reason.
+
+The result JSON also records:
+
+- `binaries.<arm>.source_commit` and `commit_source`: taken from
+  `<binary> --version` when it prints `(commit)`, else from
+  `--baseline-commit` / `--candidate-commit`, else `unknown`.
+- Per call, `api_duration_ms` from the usage ledger. Per run and per
+  aggregate, `model_time_ms`, `jev_time_ms`, `root_rounds` (root main and
+  retry calls), `child_calls` (worker calls other than Jev) and
+  `jev_failed_calls`.
+- Per ACP run, `effective_mode_timeline`, `effective_mode_mix` and
+  `mode_switches`, read from the `x.ai/session/execution_mode/changed`
+  notifications that Auto sends after each pick. The mix counts entries into a
+  mode, not model calls; it sits next to the existing effort mix.
+- `failed_run_dirs`. Run folders are never deleted by the runner; only the
+  staged credential copies are. `--keep-failed-runs DIR` copies every failing
+  run folder to `DIR` without credential files, so the evidence survives a
+  temporary work root.

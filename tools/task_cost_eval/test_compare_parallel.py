@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections import Counter
 from pathlib import Path
 from unittest import mock
 
@@ -273,6 +274,7 @@ class ActivationRunTest(unittest.TestCase):
             self.assertFalse(result['ultracode_activation_confirmed'])
             self.assertEqual(result['settings']['execution_mode'], 'ultrafast')
             self.assertEqual(result['settings']['capacity_env'], {key: '8' for key in compare_parallel.CAPACITY_ENV})
+            self.assertEqual((result['effective_mode_mix'], result['mode_switches']), ({'ultrafast': 1}, 0))
 
     def test_unverified_teardown_skips_grading_and_ledger_reads(self):
         case = COHORT['cases'][0]
@@ -613,6 +615,174 @@ class AggregateEffortTest(unittest.TestCase):
         out = compare_parallel.aggregate([first, second, legacy])['candidate/all']
         self.assertEqual(out['main_effort_mix'], {'absent': 1, 'low': 2, 'medium': 2, 'unknown': 1})
         self.assertEqual(out['main_effort_switches'], 3)
+
+    def test_mode_mix_switches_durations_and_rounds_sum_next_to_effort_mix(self):
+        first = dict(run('candidate', 'a', 'divisible', 1.0), effective_mode_mix={'normal': 1, 'ultrafast': 1},
+                     mode_switches=1, model_time_ms=900, jev_time_ms=100, root_rounds=3, child_calls=2)
+        second = dict(run('candidate', 'b', 'sequential', 1.0), effective_mode_mix={'normal': 2, 'ultrasave': 1},
+                      mode_switches=2, model_time_ms=100, jev_time_ms=50, root_rounds=1, child_calls=0)
+        out = compare_parallel.aggregate([first, second, run('candidate', 'c', 'sequential', 1.0)])['candidate/all']
+        self.assertEqual(out['effective_mode_mix'], {'normal': 3, 'ultrafast': 1, 'ultrasave': 1})
+        self.assertEqual((out['mode_switches'], out['model_time_ms'], out['jev_time_ms']), (3, 1000, 150))
+        self.assertEqual((out['root_rounds'], out['child_calls']), (4, 2))
+
+
+def campaign_row(variant, case, rep, credits, wall, passed=True, **extra):
+    return dict(run(variant, case['id'], case['kind'], credits, wall=wall, passed=passed, rep=rep),
+                model_calls=1, **{f: 1 for f in compare_parallel.TOKEN_FIELDS}, **extra)
+
+
+class YardstickTest(unittest.TestCase):
+    """S-005: Jev preflight, A/A arm, binary commit, kept failures and per-call time."""
+
+    def profile(self, root, key='sk-or-test'):
+        profile = root / 'profile'
+        profile.mkdir()
+        (profile / 'codex-auth.json').write_text('{}')
+        (profile / 'openrouter-auth.json').write_text(json.dumps({'key': key}))
+        return profile
+
+    def campaign(self, root, extra, recorded, preflight=None):
+        argv = ['--baseline-binary', sys.executable, '--candidate-binary', sys.executable,
+                '--case', COHORT['cases'][0]['id'], '--case', COHORT['cases'][4]['id'], '--repetitions', '3',
+                '--distill-profile', str(self.profile(root)), '--work-root', str(root / 'runs'),
+                '--output', str(root / 'result.json'), '--execute', *extra]
+        preflight = preflight or {'ok': True, 'status': 200, 'error': None}
+        with mock.patch.object(compare_parallel, 'run_one', side_effect=recorded) as run_one, \
+                mock.patch.object(compare_parallel, 'jev_preflight', return_value=preflight) as probe, \
+                mock.patch.object(compare_parallel, 'subscription_account'), \
+                contextlib.redirect_stdout(io.StringIO()):
+            code = compare_parallel.main(argv)
+        return code, json.loads((root / 'result.json').read_text()), run_one, probe
+
+    def test_failed_jev_preflight_aborts_before_the_first_run_with_the_http_status(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            err = io.StringIO()
+            with mock.patch.object(compare_parallel, 'run_one') as run_one, \
+                    mock.patch.object(compare_parallel, 'jev_preflight',
+                                      return_value={'ok': False, 'status': 401, 'error': None}) as probe, \
+                    mock.patch.object(compare_parallel, 'subscription_account'), \
+                    contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as error:
+                compare_parallel.main(['--baseline-binary', sys.executable, '--candidate-binary', sys.executable,
+                                       '--enable-jev', '--distill-profile', str(self.profile(root, 'dead-key')),
+                                       '--work-root', str(root / 'runs'), '--output', str(root / 'out.json'),
+                                       '--execute'])
+            self.assertEqual(error.exception.code, 2)
+            probe.assert_called_once_with('dead-key')
+            run_one.assert_not_called()
+            self.assertIn('Jev preflight failed (HTTP 401)', err.getvalue())
+            self.assertFalse((root / 'runs').exists() or (root / 'out.json').exists())
+
+    def test_preflight_mirrors_the_rust_decision_request_without_network(self):
+        seen = {}
+
+        class Reply:
+            status = 200
+
+            def read(self):
+                return b'{"answers": {}}'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def urlopen(request, timeout):
+            seen.update(url=request.full_url, method=request.get_method(), timeout=timeout,
+                        auth=request.get_header('Authorization'), body=json.loads(request.data))
+            return Reply()
+
+        with mock.patch.object(compare_parallel.urllib.request, 'urlopen', side_effect=urlopen):
+            self.assertEqual(compare_parallel.jev_preflight('k'), {'ok': True, 'status': 200, 'error': None})
+        self.assertEqual((seen['url'], seen['method'], seen['auth']),
+                         ('https://openrouter.ai/api/alpha/decisions', 'POST', 'Bearer k'))
+        self.assertEqual(seen['body']['model'], '~typesafe/jev-latest')
+        self.assertEqual(seen['body']['questions']['ready']['type'], 'noul')
+        self.assertNotIn('k', json.dumps(seen['body']).replace('"', ' ').split(), 'the key travels only in the header')
+
+    def test_identical_aa_arm_is_neutral_and_a_drifting_one_invalidates_the_campaign(self):
+        for drift, expected in ((1.0, 'valid'), (1.2, 'INVALID')):
+            with self.subTest(drift=drift), tempfile.TemporaryDirectory() as directory:
+                def recorded(binary, variant, case, repetition, *args, **kwargs):
+                    credits = 10 * (drift if variant == compare_parallel.AA_VARIANT else 1)
+                    # Uneven split across cases: the median of paired ratios would not read 1.
+                    wall = 50 if (case['kind'] == 'divisible') == (variant == 'candidate') else 100
+                    return campaign_row(variant, case, repetition, credits, wall)
+
+                code, result, run_one, _ = self.campaign(Path(directory), ['--aa-arm'], recorded)
+                self.assertEqual(run_one.call_count, 18, 'three arms x two cases x three repetitions')
+                check = result['aa_check']
+                self.assertEqual(check['valid'], expected == 'valid')
+                self.assertAlmostEqual(check['credit_ratio'], drift)
+                self.assertAlmostEqual(check['time_ratio'], 1.0)
+                if expected == 'INVALID':
+                    self.assertEqual(result['verdict']['verdict'], 'INVALID')
+                    self.assertTrue(any('A/A credit ratio 1.2' in r for r in result['verdict']['reasons']))
+                    self.assertEqual(code, 1)
+                else:
+                    self.assertNotEqual(result['verdict']['verdict'], 'INVALID')
+                self.assertEqual(Counter(r['variant'] for r in result['runs'])[compare_parallel.AA_VARIANT], 6)
+
+    def test_three_arms_rotate_so_each_arm_leads_equally(self):
+        variants = ('baseline', 'candidate', compare_parallel.AA_VARIANT)
+        plan = compare_parallel.plan_runs({'cases': COHORT['cases'][:3]}, 3, None, variants)
+        leaders = Counter(plan[i][0] for i in range(0, len(plan), 3))
+        self.assertEqual(leaders, {variant: 3 for variant in variants})
+        for i in range(0, len(plan), 3):
+            self.assertEqual({p[0] for p in plan[i:i + 3]}, set(variants))
+            self.assertEqual(len({(p[1]['id'], p[2]) for p in plan[i:i + 3]}), 1)
+
+    def test_result_records_binary_commits_preflight_and_kept_failure_folders(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            kept = root / 'kept'
+
+            def recorded(binary, variant, case, repetition, *args, **kwargs):
+                folder = root / 'runs' / f'{variant}-{case["id"]}-{repetition}'
+                (folder / 'distill-home').mkdir(parents=True)
+                (folder / 'acp-transcript.jsonl').write_text('{}\n')
+                (folder / 'distill-home' / 'openrouter-auth.json').write_text('{"key": "leak"}')
+                return campaign_row(variant, case, repetition, 1.0, 10, passed=variant == 'baseline',
+                                    output_dir=str(folder))
+
+            code, result, _, probe = self.campaign(
+                root, ['--enable-jev', '--keep-failed-runs', str(kept), '--candidate-commit', 'feedbeef'], recorded)
+            probe.assert_called_once()
+            self.assertEqual(result['jev_preflight']['status'], 200)
+            self.assertEqual(result['binaries']['candidate']['source_commit'], 'feedbeef')
+            self.assertEqual(result['binaries']['candidate']['commit_source'], 'argument')
+            self.assertEqual(result['binaries']['baseline']['source_commit'], 'unknown')
+            failed = [r for r in result['runs'] if not r['passed']]
+            self.assertEqual(len(failed), 6)
+            self.assertEqual(sorted(result['failed_run_dirs']), sorted(r['kept_run_dir'] for r in failed))
+            for row in failed:
+                copy = Path(row['kept_run_dir'])
+                self.assertTrue((copy / 'acp-transcript.jsonl').is_file(), 'evidence is kept')
+                self.assertFalse((copy / 'distill-home' / 'openrouter-auth.json').exists(), 'credentials are not')
+            self.assertFalse(any(kept.glob('baseline-*')), 'passing runs are not copied')
+
+    def test_binary_commit_reads_version_output_before_the_declared_argument(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / 'distill'
+            binary.write_text(f'#!{sys.executable}\nprint("distill 2.0.68 (7c2e6174abcd)")\n')
+            binary.chmod(0o700)
+            self.assertEqual(compare_parallel.binary_commit(binary, 'other'),
+                             {'source_commit': '7c2e6174abcd', 'commit_source': 'version', 'declared_commit': 'other'})
+            self.assertEqual(compare_parallel.binary_commit(Path(directory) / 'missing'),
+                             {'source_commit': 'unknown', 'commit_source': 'unknown'})
+
+    def test_call_summary_splits_root_rounds_child_calls_and_model_from_jev_time(self):
+        calls = [{'role': 'main', 'agent': 'main', 'api_duration_ms': 1000},
+                 {'role': 'main_retry', 'agent': 'main', 'api_duration_ms': 200},
+                 {'role': 'main', 'agent': 'worker', 'api_duration_ms': 500},
+                 {'role': 'jev', 'agent': 'main', 'api_duration_ms': 80, 'status': 'completed'},
+                 {'role': 'jev', 'agent': 'main', 'api_duration_ms': None, 'status': 'rejected'},
+                 {'role': 'utility', 'agent': 'main'}]
+        self.assertEqual(compare_parallel.call_summary(calls), {
+            'model_time_ms': 1700, 'jev_time_ms': 80, 'calls_without_duration': 2,
+            'root_rounds': 2, 'child_calls': 1, 'jev_failed_calls': 1})
 
 
 if __name__ == '__main__':

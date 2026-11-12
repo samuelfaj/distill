@@ -85,6 +85,11 @@ for line in sys.stdin:
             result = None
     elif method == 'session/prompt':
         (root / 'prompt-seen').write_text(request['params']['prompt'][0]['text'])
+        if scenario == 'mode-changes':
+            for session, mode in (('runtime-session', 'ultrafast'), ('child-session', 'ultrasave'),
+                                  ('runtime-session', 'normal')):
+                send({'method': '_x.ai/session/execution_mode/changed', 'params': {
+                    'sessionId': session, 'mode': mode, 'choice': 'auto', 'reason': 'picked for this request'}})
         if scenario in ('stop-feedback', 'stop-feedback-scope', 'stop-feedback-failure'):
             envelope = {'hookCallbackId': 'benchmark-root-stop', 'sessionId': 'runtime-session',
                         'hookEventName': 'stop', 'reason': 'end_turn', 'stopHookActive': False,
@@ -200,6 +205,21 @@ class AcpDriverTest(unittest.TestCase):
                 self.assertNotIn(acp_driver.ULTRACODE_METHOD, methods)
                 self.assertEqual(result['observed_subagent_attempts'], 1)
                 self.assertEqual(result['observed_peak_live_subagents'], 1)
+
+    def test_auto_mode_changes_report_root_mode_mix_and_switches(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result = drive(Path(directory), 'mode-changes', ultracode=False, execution_mode='auto')
+        self.assertTrue(result['completed'], result)
+        # Activation starts Auto on Normal; the child's change is not the root's mode.
+        self.assertEqual(result['effective_mode_timeline'], ['normal', 'ultrafast', 'normal'])
+        self.assertEqual(result['effective_mode_mix'], {'normal': 2, 'ultrafast': 1})
+        self.assertEqual(result['mode_switches'], 2)
+        self.assertEqual(len(result['mode_changes']), 3)
+
+    def test_pinned_mode_without_changes_has_one_segment_and_no_switch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result = drive(Path(directory), ultracode=False, execution_mode='ultrasave')
+        self.assertEqual((result['effective_mode_mix'], result['mode_switches']), ({'ultrasave': 1}, 0))
 
     def test_execution_mode_mismatch_never_sends_prompt(self):
         for mode in ('ultrafast', 'ultrasave'):

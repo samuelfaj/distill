@@ -233,24 +233,24 @@ lifetime (a known one only; the hour fallback never counts), the request about
 to go out writes the whole history at full price anyway, so the turn first asks:
 Compact and continue, Keep full history, or Don't ask again, which writes
 `[compaction] cold_return = "off"`. `cold_return = "auto"` compacts without
-asking. A history already at the auto-compact threshold compacts as usual, and
-headless sessions, subagents, `--no-ask-user`, a client without the question UI
-and no answer within two minutes keep the full history. A resumed session is
-asked only when it was reloaded warm and its idle time since the last request
-then passed the lifetime; a cold resume is never asked.
+asking, and `"off"` turns the offer off. A history already at the
+auto-compact threshold compacts as usual, and subagents, `--no-ask-user`, a
+client without the question UI and no answer within two minutes keep the full
+history.
 
-Three keys widen this, all off by default: there is no pass-rate evidence yet
-that compacting more often keeps tasks passing, and each compaction replaces a
-long history with a short summary. Setting `cold_return` explicitly (left
-unset, only the case above is asked) also covers a session reloaded past the
-lifetime `cache_state.json` recorded, before it sends anything; a missing or
-unreadable file keeps today's behaviour. A headless session cannot be asked,
-so there only `"auto"` compacts. `[compaction] cold_return_min_tokens` moves
+The offer also covers a session reloaded past the lifetime `cache_state.json`
+recorded, before it sends anything; a missing or unreadable file is not a cold
+moment. A headless session cannot be asked, so under the default `"offer"` it
+keeps its history and only `"auto"` compacts it. Leaving `cold_return` unset
+behaves as `"offer"`. This default has not been benchmarked: there is no
+pass-rate evidence yet that compacting more often keeps tasks passing, and each
+compaction replaces a long history with a short summary.
+`[compaction] cold_return_min_tokens` moves
 the 100K floor, which assumes a cache read at 0.1x of input; at 0.05x (Opus
 and Sonnet) or 0.025x (Fable and Mythos) the same payback needs about twice or
 four times the history. `[compaction] max_prompt_tokens` is an absolute cap
 beside `auto_compact_threshold_percent`: a history above it compacts before the
-first request of a human turn, never mid-turn, and `0` is off. While the
+first request of a human turn, never mid-turn; unset or `0` is off. While the
 effective mode is UltraSave, `[modes.ultrasave] cold_return` and
 `[modes.ultrasave] max_prompt_tokens` replace those two values when set.
 Subagents never compact here. `usage.json` counts each compaction these keys

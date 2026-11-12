@@ -3,12 +3,12 @@
 //! about to go out writes the whole history to the cache again at full price either way, so this
 //! is the one moment a compaction costs no cache it would otherwise keep:
 //! `[compaction] cold_return` decides whether to offer it (`"offer"`, the default), run it
-//! (`"auto"`) or leave the history alone (`"off"`). Left unset, only an interactive session that
-//! sat idle in this process is offered. Set explicitly, a session reloaded past the cache lifetime
-//! its last request recorded counts too, and a headless session, which cannot be asked, compacts
-//! under `"auto"` only. Subagent sessions never do anything here, and every unknown (an endpoint
-//! whose lifetime is unknown, a config that fails to load, a missing or unreadable
-//! `cache_state.json`, a client that cannot ask) keeps the full history, as before.
+//! (`"auto"`) or leave the history alone (`"off"`). An interactive session that sat idle in this
+//! process counts, and so does a session reloaded past the cache lifetime its last request
+//! recorded; a headless session, which cannot be asked, compacts under `"auto"` only. Unset is
+//! `"offer"` over those moments (not benchmarked). Subagent sessions never do anything here, and
+//! every unknown (an endpoint whose lifetime is unknown, a config that fails to load, a missing or
+//! unreadable `cache_state.json`, a client that cannot ask) keeps the full history.
 //!
 //! The same boundary applies `[compaction] max_prompt_tokens`, an absolute cap beside the percent
 //! threshold: a history above it compacts before the turn's first request, never mid-turn.
@@ -147,10 +147,10 @@ struct Boundary {
     turn_start: bool,
 }
 
-/// The keys the boundary applies. Each unset key keeps today's decision.
+/// The keys the boundary applies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct BoundarySettings {
-    /// `cold_return` when set to a known value; unset offers on today's moment only.
+    /// `cold_return` when set to a known value; unset behaves as `Offer`.
     cold_return: Option<ColdReturnMode>,
     min_tokens: u64,
     max_prompt_tokens: Option<u64>,
@@ -277,12 +277,11 @@ fn decide(settings: BoundarySettings, at: Boundary) -> BoundaryAction {
         ColdMoment::Resumed => Some(COLD_RESUME_LABEL),
         _ => Some(COLD_HEADLESS_LABEL),
     };
-    match settings.cold_return {
-        None if todays_moment => BoundaryAction::Ask(None),
-        None | Some(ColdReturnMode::Off) => BoundaryAction::Keep,
-        Some(ColdReturnMode::Auto) => BoundaryAction::Compact(label),
-        Some(ColdReturnMode::Offer) if at.interactive => BoundaryAction::Ask(label),
-        Some(ColdReturnMode::Offer) => BoundaryAction::Keep,
+    match settings.cold_return.unwrap_or(ColdReturnMode::Offer) {
+        ColdReturnMode::Off => BoundaryAction::Keep,
+        ColdReturnMode::Auto => BoundaryAction::Compact(label),
+        ColdReturnMode::Offer if at.interactive => BoundaryAction::Ask(label),
+        ColdReturnMode::Offer => BoundaryAction::Keep,
     }
 }
 
@@ -611,12 +610,12 @@ mod tests {
         assert_eq!(decide(defaults, due), BoundaryAction::Keep);
     }
 
-    /// No new key changes anything until it is set: with an empty config, every combination of
-    /// size, cache state, interactivity, threshold and turn position gets the decision the cold
-    /// return made before the keys existed (offer to an interactive session idle in this process
-    /// at 100K or more short of the threshold; nothing for a reloaded or headless session).
+    /// An empty config offers on every cold moment: every combination of size, cache state,
+    /// interactivity, threshold and turn position gets the decision `cold_return = "offer"`
+    /// makes, so a reloaded interactive session past its cache lifetime is asked too, and a
+    /// headless session, which cannot be asked, keeps its history.
     #[test]
-    fn an_empty_config_reproduces_todays_decisions() {
+    fn an_empty_config_offers_like_an_explicit_offer() {
         let settings = BoundarySettings::from_config(&root(""), false);
         assert_eq!(settings, BoundarySettings::default());
         assert_eq!(
@@ -624,17 +623,19 @@ mod tests {
             settings,
             "UltraSave without its keys is the same"
         );
-        let today = |b: Boundary| {
-            if b.cold == ColdMoment::Idle
-                && b.interactive
-                && b.tokens >= 100_000
-                && !b.threshold_due
-            {
-                BoundaryAction::Ask(None)
-            } else {
-                BoundaryAction::Keep
-            }
-        };
+        let offer =
+            BoundarySettings::from_config(&root("[compaction]\ncold_return = \"offer\"\n"), false);
+        assert_eq!(
+            decide(settings, at(300_000, ColdMoment::Resumed, true)),
+            BoundaryAction::Ask(Some(COLD_RESUME_LABEL)),
+            "a reloaded session past its cache lifetime is asked by default"
+        );
+        assert_eq!(
+            decide(settings, at(300_000, ColdMoment::Idle, false)),
+            BoundaryAction::Keep,
+            "a headless session is never compacted by default"
+        );
+        let today = |b: Boundary| decide(offer, b);
         for tokens in [0, 50_000, 99_999, 100_000, 450_000, 900_000] {
             for cold in [ColdMoment::Warm, ColdMoment::Idle, ColdMoment::Resumed] {
                 for interactive in [true, false] {
@@ -673,7 +674,12 @@ mod tests {
         assert_eq!(decide(settings, idle(150_000)), BoundaryAction::Keep);
         assert_eq!(decide(settings, idle(200_000)), BoundaryAction::Ask(None));
         assert_eq!(
-            decide(settings, at(500_000, ColdMoment::Resumed, true)),
+            decide(settings, at(150_000, ColdMoment::Resumed, true)),
+            BoundaryAction::Keep,
+            "the floor applies to a reloaded session too"
+        );
+        assert_eq!(
+            decide(settings, at(500_000, ColdMoment::Resumed, false)),
             BoundaryAction::Keep,
             "the floor does not widen the moments"
         );
@@ -739,11 +745,11 @@ mod tests {
         assert!(!awaits_first_request(&[ConversationItem::system("sys")]));
     }
 
-    /// Set explicitly, `cold_return` covers a reloaded session past its cache lifetime and a
-    /// headless one; a headless session cannot be asked, so only `auto` compacts it. Today's
-    /// moment keeps its unlabelled decision under every value.
+    /// `cold_return` covers a reloaded session past its cache lifetime and a headless one; a
+    /// headless session cannot be asked, so only `auto` compacts it, and `off` keeps every
+    /// history. An idle interactive session keeps its unlabelled decision under every value.
     #[test]
-    fn an_explicit_cold_return_widens_the_moments() {
+    fn each_cold_return_value_decides_every_moment() {
         let with = |value: &str| {
             BoundarySettings::from_config(
                 &root(&format!("[compaction]\ncold_return = \"{value}\"\n")),
@@ -789,7 +795,7 @@ mod tests {
         assert_eq!(
             with("of"),
             BoundarySettings::default(),
-            "a typo keeps the default instead of widening"
+            "a typo keeps the default, offer"
         );
     }
 

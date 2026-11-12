@@ -544,11 +544,12 @@ Eight levers affect what reaches the model:
   assistant message (left out when it looks secret-bearing) and the todo
   statuses; `usage.json` counts each answer under `compaction_timing`.
   Beside it, `[compaction] max_prompt_tokens` compacts a history above an
-  absolute size before the first request of a human turn, never mid-turn, and
-  `[compaction] cold_return` set explicitly and `cold_return_min_tokens` extend
-  the cold-return compaction to reloaded and headless sessions (see
-  `docs/jev-routing.md`). They are off by default: no pass-rate evidence yet
-  shows that compacting more often keeps tasks passing. Their compactions count
+  absolute size before the first request of a human turn, never mid-turn; it
+  is off by default. `[compaction] cold_return` covers reloaded sessions past
+  their cache lifetime by default and headless ones under `"auto"` (see
+  `docs/jev-routing.md`); unset behaves as `"offer"`, `"off"` turns it off, and
+  this default has not been benchmarked: no pass-rate evidence yet shows that
+  compacting more often keeps tasks passing. Their compactions count
   under `compaction_timing` as `compact:max-prompt`, `compact:cold-resume` and
   `compact:cold-headless`. The effective mode's policy row layers on top of
   them; see "Context by mode" below.

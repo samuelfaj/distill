@@ -568,6 +568,50 @@ async fn an_explicit_effort_turns_the_rules_off() {
     .await;
 }
 
+/// The one predicate skips utility selection only where the row says so:
+/// UltraFast v2. It records the skip once per round.
+#[tokio::test(flavor = "current_thread")]
+#[serial_test::serial]
+async fn only_ultrafast_v2_skips_utility_selection() {
+    let session = "mode-effort-utility";
+    let mut flags = distill_workspace::jev::JevFlags::harness_default();
+    flags.e_cheap_compress = true;
+    crate::jev::set_test_flags(flags);
+    for (modes, mode, selects) in [
+        (v2(), ExecutionMode::Normal, true),
+        (v2(), ExecutionMode::Ultrasave, true),
+        (v2(), ExecutionMode::Ultracode, true),
+        (v2(), ExecutionMode::Ultrafast, false),
+        (today(), ExecutionMode::Ultrafast, true),
+    ] {
+        with_rows(modes, async {
+            let actor = super::super::support::plain_actor().await;
+            actor.execution_mode.store(mode);
+            crate::jev::with_session_scope_and_recorder(session, None, async {
+                assert_eq!(
+                    actor.utility_selection_active(),
+                    selects,
+                    "{mode:?} {modes:?}"
+                );
+                assert_eq!(actor.utility_selection_active(), selects);
+                crate::jev::begin_model_round();
+                assert_eq!(actor.utility_selection_active(), selects);
+            })
+            .await;
+            let skipped = rows(session)
+                .get(&format!("{}:utility_selection_skipped", mode.id()))
+                .copied();
+            assert_eq!(
+                skipped,
+                (!selects).then_some(2),
+                "once per round, two rounds"
+            );
+        })
+        .await;
+    }
+    crate::jev::clear_test_flags();
+}
+
 /// The late skill line joins the conversation before the turn's second
 /// request when it is in; one still in flight then is dropped.
 #[tokio::test(flavor = "current_thread")]

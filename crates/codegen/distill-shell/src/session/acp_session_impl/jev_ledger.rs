@@ -165,6 +165,8 @@ pub(crate) struct JevTurnLedger {
     failures_at_last_response: u64,
     /// The turn-start skill-relevance line nothing awaited, with its turn.
     pub(crate) late_skill_hint: Option<(u64, tokio::task::JoinHandle<Option<String>>)>,
+    /// `(turn, round)` that last recorded a skipped utility selection.
+    pub(crate) utility_skip_recorded: Option<(u64, u64)>,
 }
 
 /// What a request did after its final-check reminder.
@@ -547,6 +549,7 @@ impl JevTurnLedger {
         if let Some((_, hint)) = self.late_skill_hint.take() {
             hint.abort();
         }
+        self.utility_skip_recorded = None;
         rows.sort_by(|a, b| {
             b.tokens()
                 .cmp(&a.tokens())

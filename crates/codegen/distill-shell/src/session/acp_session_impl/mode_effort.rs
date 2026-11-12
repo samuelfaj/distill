@@ -467,6 +467,29 @@ impl SessionActor {
             }
         }
     }
+
+    /// Whether the utility model may select what of a tool result reaches the
+    /// next request: the selection lever is on and the mode's row allows it.
+    /// The deterministic reducers (crushers, read reuse) never ask this. A row
+    /// that turns selection off records it at most once per round.
+    pub(super) fn utility_selection_active(&self) -> bool {
+        if !crate::jev::lever_active(JevLever::ECheapCompress) {
+            return false;
+        }
+        if self.mode_policy().runtime.utility_selection {
+            return true;
+        }
+        let round = (
+            self.current_turn_number.get(),
+            crate::jev::telemetry_context().2,
+        );
+        let first = self.jev_ledger.borrow().utility_skip_recorded != Some(round);
+        if first {
+            self.jev_ledger.borrow_mut().utility_skip_recorded = Some(round);
+            crate::jev::record_policy(self.execution_mode.load(), "utility_selection_skipped");
+        }
+        false
+    }
 }
 
 #[cfg(test)]

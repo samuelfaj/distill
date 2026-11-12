@@ -2099,7 +2099,7 @@ impl SessionActor {
             return body;
         };
         let results: Vec<_> = multi.results.iter().collect();
-        if !crate::jev::lever_active(JevLever::ECheapCompress) {
+        if !self.utility_selection_active() {
             return body;
         }
         let floor = if results.iter().map(|result| result.output.len()).sum::<usize>()
@@ -2343,7 +2343,7 @@ impl SessionActor {
             _ => return body,
         };
         let delta_active = crate::jev::lever_active(JevLever::EReadReuse);
-        let select_active = crate::jev::lever_active(JevLever::ECheapCompress);
+        let select_active = self.utility_selection_active();
         let running: Vec<_> = results
             .into_iter()
             .filter(|result| {
@@ -2533,7 +2533,7 @@ impl SessionActor {
         if kept_whole
             || reads_stored_original(tool, tool_command, tool_args, output)
             || text.len() < CHEAP_COMPRESS_MIN_BYTES
-            || !crate::jev::lever_active(JevLever::ECheapCompress)
+            || !self.utility_selection_active()
             || !compression_allows_exact(
                 distill_workspace::jev::crushers::exact_output_kind(tool, tool_command),
                 text.len(),
@@ -2626,7 +2626,7 @@ impl SessionActor {
         min_bytes: usize,
         report_limit: usize,
     ) -> Option<(String, bool)> {
-        if !crate::jev::lever_active(JevLever::ECheapCompress) {
+        if !self.utility_selection_active() {
             return None;
         }
         let report_end = subagent_report_end(answer);
@@ -2733,7 +2733,7 @@ impl SessionActor {
                 && c.output.len() == c.full_output_bytes
                 && (c.output.len() >= CHEAP_COMPRESS_MIN_BYTES || c.output.contains(REPORT_CUT_OPEN))
         };
-        if !crate::jev::lever_active(JevLever::ECheapCompress) || !completions.iter().any(candidate) {
+        if !completions.iter().any(candidate) || !self.utility_selection_active() {
             return;
         }
         crate::jev::with_recorder_unless_scoped(
@@ -3100,7 +3100,7 @@ impl SessionActor {
         let mut compressed_by_utility = false;
         if tool == "search_tool"
             && body.len() >= CHEAP_COMPRESS_MIN_BYTES
-            && crate::jev::lever_active(JevLever::ECheapCompress)
+            && self.utility_selection_active()
             && let Some((units, parsed)) = crate::utility_select::search_tool_units(&body)
             && !units.is_empty()
         {
@@ -3258,13 +3258,13 @@ impl SessionActor {
                     body.len(),
                     top_level,
                 ))
-            && crate::jev::lever_active(JevLever::ECheapCompress);
+            && self.utility_selection_active();
         // A large result an exact-output floor or a read guard keeps from the
         // utility is counted with that reason, so usage.json shows per session
         // (a fresh or a resumed child) which guard blocks selection.
         if !cheap_eligible
             && answer_len >= CHEAP_COMPRESS_MIN_BYTES
-            && crate::jev::lever_active(JevLever::ECheapCompress)
+            && self.utility_selection_active()
         {
             let exact_blocked = || {
                 !compression_allows_exact(

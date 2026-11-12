@@ -1115,12 +1115,18 @@ pub(crate) fn ultrasave_has_no_cheaper_model(root: Option<&toml::Value>) -> bool
 /// so every mode keeps today's row.
 pub(crate) fn modes_v2(root: Option<&toml::Value>) -> distill_tool_types::V2Modes {
     use distill_tool_types::{ExecutionMode, V2Modes};
+    // No key: every mode acts on its v2 row. An explicit list, the empty one
+    // included, is authoritative, so `v2 = []` is the off switch.
+    let all = V2Modes::default()
+        .with(ExecutionMode::Ultrasave)
+        .with(ExecutionMode::Ultrafast)
+        .with(ExecutionMode::Ultracode);
     let Some(value) = root.and_then(|root| root.get("modes")?.get("v2")) else {
-        return V2Modes::default();
+        return all;
     };
     let Some(entries) = value.as_array() else {
         tracing::warn!("[modes] v2 must be a list of mode names; ignored");
-        return V2Modes::default();
+        return all;
     };
     entries.iter().fold(V2Modes::default(), |modes, entry| {
         match entry

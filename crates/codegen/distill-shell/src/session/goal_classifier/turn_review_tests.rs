@@ -8,18 +8,21 @@ use std::sync::Mutex;
 
 // ── contract ──────────────────────────────────────────────────────────
 
-/// Only `[modes.ultracode] contract = "v2"` turns the review on; an absent
-/// key, another value or another mode's table leaves today's behaviour.
+/// The review is on by default, because UltraCode is on its v2 row unless
+/// `[modes] v2` leaves it out. With UltraCode left out, only
+/// `[modes.ultracode] contract = "v2"` turns the review back on.
 #[test]
-fn only_the_v2_contract_turns_the_review_on() {
+fn the_review_is_on_unless_modes_v2_leaves_ultracode_out() {
     let parse = |text: &str| toml::from_str::<toml::Value>(text).unwrap();
-    assert!(!contract_v2_in(None));
-    assert!(!contract_v2_in(Some(&parse(""))));
-    assert!(!contract_v2_in(Some(&parse("[cache]\nextended_ttl = \"auto\"\n"))));
-    assert!(!contract_v2_in(Some(&parse("[modes.ultracode]\ncontract = \"v1\"\n"))));
-    assert!(!contract_v2_in(Some(&parse("[modes.ultrafast]\ncontract = \"v2\"\n"))));
-    assert!(contract_v2_in(Some(&parse("[modes.ultracode]\ncontract = \"v2\"\n"))));
-    assert!(contract_v2_in(Some(&parse("[modes.ultracode]\ncontract = \" v2 \"\n"))));
+    assert!(contract_v2_in(None));
+    assert!(contract_v2_in(Some(&parse(""))));
+    assert!(contract_v2_in(Some(&parse("[cache]\nextended_ttl = \"auto\"\n"))));
+    let off = "[modes]\nv2 = []\n";
+    assert!(!contract_v2_in(Some(&parse(off))));
+    assert!(!contract_v2_in(Some(&parse(&format!("{off}[modes.ultracode]\ncontract = \"v1\"\n")))));
+    assert!(!contract_v2_in(Some(&parse(&format!("{off}[modes.ultrafast]\ncontract = \"v2\"\n")))));
+    assert!(contract_v2_in(Some(&parse(&format!("{off}[modes.ultracode]\ncontract = \"v2\"\n")))));
+    assert!(contract_v2_in(Some(&parse(&format!("{off}[modes.ultracode]\ncontract = \" v2 \"\n")))));
 }
 
 /// Listing `ultracode` in `[modes] v2` selects its target row, whose

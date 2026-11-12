@@ -13,7 +13,37 @@ use crate::session::acp_session::SessionActor;
 use crate::session::acp_session::turn_facts::{CheckOutcome, TestEvidence};
 use crate::session::goal_classifier::turn_review::TurnStatus;
 
+#[cfg(test)]
+thread_local! {
+    static V2_MODES_FOR_TESTS: std::cell::Cell<Option<V2Modes>> = const { std::cell::Cell::new(None) };
+}
+
+/// Overrides the configured `[modes] v2` list on this thread; `None` reads the config.
+#[cfg(test)]
+pub(crate) fn set_v2_modes_for_tests(modes: Option<V2Modes>) {
+    V2_MODES_FOR_TESTS.with(|cell| cell.set(modes));
+}
+
+/// The modes on their v2 row, read once per process (config does not change
+/// mid-run); a config that fails to load keeps the default, every mode.
+pub(crate) fn v2_modes() -> V2Modes {
+    #[cfg(test)]
+    if let Some(modes) = V2_MODES_FOR_TESTS.with(std::cell::Cell::get) {
+        return modes;
+    }
+    static SETTING: OnceLock<V2Modes> = OnceLock::new();
+    *SETTING.get_or_init(|| {
+        crate::agent::config::modes_v2(crate::config::load_effective_config().ok().as_ref())
+    })
+}
+
 impl SessionActor {
+    /// The policy row of the effective mode: what the harness enforces on the
+    /// round being prepared. Every lever that differs by mode reads this.
+    pub(super) fn mode_policy(&self) -> distill_tool_types::ModePolicy {
+        v2_modes().policy(self.execution_mode.load())
+    }
+
     /// Counts one main-loop round of the current prompt turn under `mode`.
     pub(super) fn note_mode_round(&self, mode: ExecutionMode) {
         let mut ledger = self.jev_ledger.borrow_mut();

@@ -1575,7 +1575,7 @@ pub struct Config {
     /// Resolved max subagent nesting depth (see [`crate::config::SubagentsConfig::resolve_max_depth`]).
     #[serde(skip)]
     pub subagents_max_depth: u32,
-    /// UltraCode default two-level ceiling, reduced by explicit depth settings.
+    /// UltraCode depth ceiling: the ordinary default, raised to at most two by an explicit setting.
     #[serde(skip)]
     pub subagents_ultracode_max_depth: u32,
     #[serde(skip)]
@@ -1864,7 +1864,7 @@ impl Default for Config {
             cli_agent_overrides: CliAgentOverrides::default(),
             subagents_enabled: true,
             subagents_max_depth: crate::config::SubagentsConfig::DEFAULT_MAX_DEPTH,
-            subagents_ultracode_max_depth: 2,
+            subagents_ultracode_max_depth: crate::config::SubagentsConfig::DEFAULT_MAX_DEPTH,
             subagents_max_concurrent:
                 distill_tools::implementations::distill::task::admission::DEFAULT_MAX_CONCURRENT,
             subagents_sampling_limit:

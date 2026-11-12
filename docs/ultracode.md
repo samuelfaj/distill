@@ -1,8 +1,11 @@
 # UltraCode
 
-UltraCode lets a session choose whether to execute directly, investigate an
-uncertainty, or delegate smaller tasks that can be verified independently.
-Delegation is optional. There is no agent quota, required tree shape, or promise
+UltraCode means extra care: higher effort and verification discipline. With
+automatic effort it leans one level higher than Normal, and its directive asks
+for the invariants and root cause before an edit and a check of the changed
+behavior and edge cases after it. The session still chooses whether to execute
+directly, investigate an uncertainty, or delegate smaller tasks that can be
+verified independently. Delegation is optional. There is no agent quota, required tree shape, or promise
 that a larger tree will be faster or cheaper. The parent must inspect child
 changes and evidence before accepting the result.
 
@@ -31,16 +34,17 @@ the actual mode from session startup metadata after initializing its models,
 so the footer and tier editor reflect the restored selection. An older server
 that omits the metadata defaults the UI to off instead of inheriting the prior
 session's mode. The flag does not
-change the configured model, reasoning effort, permission mode, or profile
-configuration. Interactive startup with `--ultracode` is rejected: use the slash
+change the configured model, permission mode, or profile configuration. An
+explicit reasoning effort stays as configured; with automatic effort, UltraCode
+leans one level higher. Interactive startup with `--ultracode` is rejected: use the slash
 command there. An agent running over `distill agent` uses the ACP endpoint instead.
 
 ## Hierarchy and limits
 
 The root is depth zero. A depth ceiling of one allows children but no
 grandchildren; two allows a child to delegate one more level. UltraCode defaults
-to two child levels and caps its ceiling at two. An explicit lower ceiling wins:
-`GROK_SUBAGENTS_MAX_DEPTH=1` produces the flat comparison. The existing depth
+to one level, like Normal, and caps its ceiling at two:
+`GROK_SUBAGENTS_MAX_DEPTH=2` allows the second level. The existing depth
 environment variable takes precedence over `[subagents] max_depth` and the
 remote setting. The runtime clamps values below one to one and ignores invalid
 environment values; the comparison runner rejects requested depths below one.
@@ -50,8 +54,11 @@ Task children share the root's exclusive mode, including when launched in
 Normal, so later mode changes apply to the existing tree. Normal retains its
 configured depth; UltraFast and UltraSave advertise no delegation tool and UltraCode
 uses its resolved ceiling. Internal planner/verifier agents, workflow children
-and children with an explicit output-token budget remain leaves. Normal UltraCode
-children can delegate within shared root concurrency, depth, cancellation and usage accounting.
+and children with an explicit output-token budget remain leaves. With a ceiling of
+two, UltraCode children can delegate within shared root concurrency, depth,
+cancellation and usage accounting. A child that cannot delegate (no spawn tool,
+or already at the ceiling) gets the UltraCode directive without its delegation
+sentences.
 Subagents running in isolated worktrees are leaves and cannot delegate, with
 UltraCode on or off; shared-workspace UltraCode hierarchy remains available
 within the existing limits.

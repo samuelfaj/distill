@@ -4405,12 +4405,15 @@ fn plugin_config_writes_keep_the_caller_local_set_live() {
 
 
 #[test]
-fn ultracode_depth_defaults_to_two_and_honors_explicit_stricter_setting() {
-    assert_eq!(SubagentsConfig::resolve_ultracode_max_depth(None, None, None), 2);
-    assert_eq!(SubagentsConfig::resolve_ultracode_max_depth(None, Some(1), None), 1);
+fn ultracode_depth_defaults_to_one_and_an_explicit_ceiling_allows_two() {
+    // A second level was almost never used, so UltraCode no longer opens it by default.
+    assert_eq!(SubagentsConfig::resolve_ultracode_max_depth(None, None, None), 1);
+    assert_eq!(SubagentsConfig::resolve_ultracode_max_depth(Some("invalid"), None, None), 1);
+    // The environment override still opens the second level, and nothing goes past two.
+    assert_eq!(SubagentsConfig::resolve_ultracode_max_depth(Some("2"), None, None), 2);
     assert_eq!(SubagentsConfig::resolve_ultracode_max_depth(Some("1"), Some(2), None), 1);
+    assert_eq!(SubagentsConfig::resolve_ultracode_max_depth(None, Some(1), None), 1);
     assert_eq!(SubagentsConfig::resolve_ultracode_max_depth(None, None, Some(1)), 1);
-    assert_eq!(SubagentsConfig::resolve_ultracode_max_depth(Some("invalid"), None, None), 2);
     assert_eq!(SubagentsConfig::resolve_ultracode_max_depth(None, Some(8), None), 2);
     assert_eq!(SubagentsConfig::resolve_max_depth(None, None, None), 1);
 }

@@ -59,13 +59,14 @@ model, effort and verification steps stay the same.
 
 ### UltraCode
 
-# Parallel subagents
+# Extra care
 
-UltraCode lets the session split work into smaller tasks and hand them to
-subagents, then checks their changes and evidence before accepting the result.
+UltraCode means extra care: higher effort and verification discipline. With
+automatic effort it leans one level higher than Normal, and it asks for the
+root cause before an edit and a check of the changed behavior after it.
 
-Delegation is optional and has no speed or cost claim yet. Your model, effort
-and permissions stay the same.
+Delegation is optional and has no speed or cost claim yet. Your model and
+permissions stay the same.
 
 `/ultracode on` or `--ultracode`
 

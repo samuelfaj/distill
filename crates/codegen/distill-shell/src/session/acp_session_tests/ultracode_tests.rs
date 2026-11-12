@@ -27,6 +27,76 @@ async fn execution_mode_reminder_supersedes_previous_modes_without_changing_effo
     }).await;
 }
 
+/// A child that cannot spawn pays for delegation advice on every turn and may
+/// try a spawn that is refused, so its directive drops exactly those sentences
+/// and keeps the care and verification ones.
+#[test]
+fn leaf_ultracode_directive_drops_only_the_delegation_sentences() {
+    use super::ultracode::{
+        ULTRACODE_DELEGATION_SENTENCES, ULTRACODE_DIRECTIVE, ultracode_leaf_directive,
+    };
+    for sentence in ULTRACODE_DELEGATION_SENTENCES {
+        assert!(
+            ULTRACODE_DIRECTIVE.contains(sentence),
+            "drifted: {sentence}"
+        );
+    }
+    let leaf = ultracode_leaf_directive();
+    assert!(!leaf.to_lowercase().contains("delegat"), "{leaf}");
+    assert!(!leaf.contains("child"), "{leaf}");
+    for kept in [
+        "Ultracode mode is ON.",
+        "Understand invariants and the root cause before editing; verify the changed behavior and relevant edge cases.",
+        "Preserve explicit model/effort pins and capability and permission ceilings.",
+        "Report unresolved uncertainty and concrete runtime limits.",
+    ] {
+        assert!(leaf.contains(kept), "{leaf}");
+    }
+    assert!(!leaf.contains("  "), "{leaf}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ultracode_child_gets_delegation_sentences_only_below_the_depth_ceiling() {
+    use distill_tools::implementations::distill;
+    use distill_tools::implementations::distill::task::types::ExecutionPolicy;
+    use distill_tools::registry::types::ToolConfig;
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut actor = super::support::plain_actor().await;
+            *actor.agent.borrow_mut() = super::support::test_agent_with_tools(vec![
+                ToolConfig::for_tool::<distill::TaskTool>(),
+                ToolConfig::for_tool::<distill::KillTaskTool>(),
+                ToolConfig::for_tool::<distill::TaskOutputTool>(),
+            ])
+            .await;
+            actor.startup_hints.is_subagent = true;
+            actor.tool_context.subagent_depth = 1;
+            for (max_depth, can_delegate) in [(1, false), (2, true)] {
+                let mode = std::sync::Arc::new(distill_tool_types::AtomicExecutionMode::new(
+                    distill_tool_types::ExecutionMode::Ultracode,
+                ));
+                actor.execution_mode = mode.clone();
+                actor.tool_context.execution_policy = Some(ExecutionPolicy {
+                    mode,
+                    max_depth,
+                    off_max_depth: 1,
+                    capability_ceiling: None,
+                    allowed_subagent_types: None,
+                });
+                actor.inject_execution_mode_reminder();
+                let conversation = actor.chat_state_handle.get_conversation().await;
+                let text = conversation.last().unwrap().text_content();
+                assert!(text.contains("Ultracode mode is ON"), "{text}");
+                assert_eq!(
+                    text.contains("Delegate only"),
+                    can_delegate,
+                    "max_depth {max_depth}: {text}"
+                );
+            }
+        })
+        .await;
+}
+
 /// UltraFast and UltraSave send only direct-work tools, so planning, feedback,
 /// scheduling and orchestration schemas stop costing tokens and whole rounds.
 #[test]

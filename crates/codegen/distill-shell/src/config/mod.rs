@@ -279,19 +279,17 @@ impl SubagentsConfig {
         }
         Self::DEFAULT_MAX_DEPTH
     }
-    /// UltraCode defaults to two levels; an explicit existing ceiling may only
-    /// reduce that limit. Ordinary sessions retain `DEFAULT_MAX_DEPTH`.
+    /// UltraCode defaults to [`Self::DEFAULT_MAX_DEPTH`] like ordinary sessions: a
+    /// second level was almost never used. An explicit ceiling (for example
+    /// `GROK_SUBAGENTS_MAX_DEPTH=2`) may raise it, capped at two.
     pub(crate) fn resolve_ultracode_max_depth(
         env: Option<&str>,
         config: Option<i64>,
         remote: Option<u32>,
     ) -> u32 {
+        // The ordinary resolution already warned about an invalid env value.
         let valid_env = env.filter(|value| value.trim().parse::<i64>().is_ok());
-        if valid_env.is_none() && config.is_none() && remote.is_none() {
-            2
-        } else {
-            Self::resolve_max_depth(valid_env, config, remote).min(2)
-        }
+        Self::resolve_max_depth(valid_env, config, remote).min(2)
     }
     pub const ENV_MAX_CONCURRENT: &'static str = "GROK_MAX_CONCURRENT_SUBAGENTS";
     pub const ENV_SAMPLING_LIMIT: &'static str = "GROK_SUBAGENT_SAMPLING_LIMIT";

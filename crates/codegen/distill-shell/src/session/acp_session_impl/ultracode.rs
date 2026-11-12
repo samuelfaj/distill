@@ -8,14 +8,58 @@ pub(super) const ULTRAFAST_DIRECTIVE: &str = "UltraFast mode is active. Minimize
 
 pub(super) const ULTRASAVE_DIRECTIVE: &str = "UltraSave mode is active. Minimize money cost first, then total input and output tokens, to a verified result. Execute directly. Delegate to a subagent (runs on the cheaper worker model) only large, mechanical, fully specified work where the worker's re-reads cost less than the main model doing it; do small or judgment work directly. Search narrowly before reading, read only relevant ranges, reuse evidence already in context, and batch independent reads or edits in one round. Do not write plans or progress lists, or repeat checks that later edits did not invalidate. Do not restate source text in a report when a path and check result suffice. Preserve explicit model and effort choices, repository instructions, permissions, exact code and error evidence and required project checks. Never hide failures, truncate required work or omit verification to save tokens. Stop when acceptance criteria are verified and report the result and remaining uncertainty concisely. Before finishing, check every requirement and edge case the task states with a quick test, and fix any that fail.";
 
+/// The UltraCode sentences that only matter to a session that can delegate.
+pub(super) const ULTRACODE_DELEGATION_SENTENCES: [&str; 7] = [
+    "Delegation is optional in this mode, overriding default delegation preferences, with no agent quota.",
+    "Keep targeted inspection, implementation and checks for a bounded known change with one execution owner; separate exploration or planning only to resolve a concrete uncertainty.",
+    "Before delegating, state the objective, restrictions, owned paths, acceptance criteria and existing evidence references.",
+    "Delegate only tasks smaller than the parent objective, within the shared depth, concurrency and budget limits.",
+    "If admission is refused, execute locally or wait for independent work to finish; never recursively retry or multiply budgets.",
+    "Workflow-owned, harness-internal, output-budgeted and isolated-worktree agents are leaves.",
+    "Integrate child results by inspecting their evidence and actual changes, then verify the parent objective; a child report alone is not completion.",
+];
+
+/// [`ULTRACODE_DIRECTIVE`] for a session that cannot spawn: delegation advice
+/// there is noise the child pays for on every turn.
+pub(super) fn ultracode_leaf_directive() -> String {
+    ULTRACODE_DELEGATION_SENTENCES
+        .iter()
+        .fold(ULTRACODE_DIRECTIVE.to_owned(), |text, sentence| {
+            text.replace(&format!(" {sentence}"), "")
+        })
+}
+
 impl SessionActor {
+    /// Whether this session can spawn a child now: it has the spawn tool and is
+    /// below the mode's depth ceiling. A child without the delegation policy
+    /// (workflow and other leaf agents) cannot.
+    fn can_delegate(&self) -> bool {
+        let has_spawn_tool = self
+            .agent
+            .borrow()
+            .tool_bridge()
+            .toolset()
+            .tool_name_for_kind(distill_tools::types::tool::ToolKind::Task)
+            .is_some();
+        let below_ceiling = match &self.tool_context.execution_policy {
+            Some(policy) => self.tool_context.subagent_depth < policy.effective_max_depth(),
+            None => !self.startup_hints.is_subagent,
+        };
+        has_spawn_tool && below_ceiling
+    }
+
     /// Every turn states the authority, including Normal after switching off.
     pub(super) fn inject_execution_mode_reminder(&self) {
         use distill_tool_types::ExecutionMode;
+        let leaf_ultracode;
         let directive = match self.execution_mode.load() {
             ExecutionMode::Normal => "Normal execution mode is active. Follow the configured default execution policy.",
             ExecutionMode::Ultrafast => ULTRAFAST_DIRECTIVE,
-            ExecutionMode::Ultracode => ULTRACODE_DIRECTIVE,
+            ExecutionMode::Ultracode if self.can_delegate() => ULTRACODE_DIRECTIVE,
+            ExecutionMode::Ultracode => {
+                leaf_ultracode = ultracode_leaf_directive();
+                leaf_ultracode.as_str()
+            }
             ExecutionMode::Ultrasave => ULTRASAVE_DIRECTIVE,
         };
         self.push_system_reminder_with_tag(

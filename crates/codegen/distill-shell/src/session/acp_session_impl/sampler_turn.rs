@@ -611,8 +611,45 @@ impl SessionActor {
         if plan_active {
             defs
         } else {
-            execution_mode_tool_definitions(self.execution_mode.load(), defs)
+            self.project_execution_mode_tools(defs)
         }
+    }
+
+    /// The execution-mode projection. Under Auto with `b8_stable_tools`, once
+    /// the full list went out a lean pick sends it too: a changed tools array
+    /// re-reads the whole prompt uncached. A small or compacted prompt
+    /// re-projects to the lean list, and a fixed `/mode` always re-projects.
+    fn project_execution_mode_tools(&self, defs: Vec<ToolDefinition>) -> Vec<ToolDefinition> {
+        let mode = self.execution_mode.load();
+        if !self.auto_stable_tools() {
+            return execution_mode_tool_definitions(mode, defs);
+        }
+        let mut ledger = self.jev_ledger.borrow_mut();
+        if !matches!(
+            mode,
+            distill_tool_types::ExecutionMode::Ultrafast | distill_tool_types::ExecutionMode::Ultrasave
+        ) {
+            ledger.auto_full_tools_sent = true;
+            return defs;
+        }
+        if ledger.keeps_full_tools() {
+            return defs;
+        }
+        ledger.auto_full_tools_sent = false;
+        drop(ledger);
+        execution_mode_tool_definitions(mode, defs)
+    }
+
+    /// Whether the session is in Auto with the stable tools array on.
+    fn auto_stable_tools(&self) -> bool {
+        self.execution_mode.is_auto()
+            && crate::jev::lever_active(distill_workspace::jev::flags::JevLever::B8StableTools)
+    }
+
+    /// Whether a lean mode sends the full tools array (and its families) this
+    /// round instead of the lean list.
+    pub(super) fn auto_keeps_full_tools(&self) -> bool {
+        self.auto_stable_tools() && self.jev_ledger.borrow().keeps_full_tools()
     }
 
     pub(super) fn model_auth_facts(&self, model_id: &str) -> crate::agent::config::ModelAuthFacts {

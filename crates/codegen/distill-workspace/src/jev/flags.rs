@@ -191,6 +191,9 @@ impl JevFlags {
             d6_warm_batches: false,
             b7_subagent_model: true,
             b8_execution_mode: true,
+            // Opt-in until an Auto A/B shows rounds per task do not rise with
+            // the full tools array in lean modes.
+            b8_stable_tools: false,
         }
     }
 
@@ -288,6 +291,7 @@ impl JevFlags {
             self.enabled && resolve_switch(ladder.b7_subagent_model, None, self.b7_subagent_model);
         self.b8_execution_mode =
             self.enabled && resolve_switch(ladder.b8_execution_mode, None, self.b8_execution_mode);
+        self.b8_stable_tools = self.b8_execution_mode && self.b8_stable_tools;
         self
     }
 }
@@ -375,6 +379,9 @@ pub struct JevFlags {
     pub b7_subagent_model: bool,
     /// B8: Auto execution mode picks the session's effective mode.
     pub b8_execution_mode: bool,
+    /// B8: under Auto, the tools array never shrinks once the full list was
+    /// sent, so a lean pick does not re-read the prompt uncached.
+    pub b8_stable_tools: bool,
 }
 
 impl JevFlags {
@@ -418,6 +425,7 @@ impl JevFlags {
             d6_warm_batches: false,
             b7_subagent_model: false,
             b8_execution_mode: false,
+            b8_stable_tools: false,
         }
     }
 
@@ -517,6 +525,7 @@ impl JevFlags {
             JevLever::D6HistoryEviction => self.d6_history_eviction,
             JevLever::B7SubagentModel => self.b7_subagent_model,
             JevLever::B8ExecutionMode => self.b8_execution_mode,
+            JevLever::B8StableTools => self.b8_stable_tools,
         }
     }
 
@@ -555,6 +564,7 @@ pub enum JevLever {
     B6DelegationHint,
     B7SubagentModel,
     B8ExecutionMode,
+    B8StableTools,
     C1PrematureStop,
     C3CompletionCheck,
     C4DiffRisk,
@@ -595,6 +605,7 @@ impl JevLever {
             Self::B6DelegationHint => "b6_delegation_hint",
             Self::B7SubagentModel => "b7_subagent_model",
             Self::B8ExecutionMode => "b8_execution_mode",
+            Self::B8StableTools => "b8_stable_tools",
             Self::C1PrematureStop => "c1_premature_stop",
             Self::C3CompletionCheck => "c3_completion_check",
             Self::C4DiffRisk => "c4_diff_risk",
@@ -711,6 +722,10 @@ mod tests {
         assert!(
             !flags.e_cheap_agent,
             "utility explore children are opt-in until their reports are measured"
+        );
+        assert!(
+            !flags.lever_active(JevLever::B8StableTools),
+            "Auto's stable tools array is opt-in until an Auto A/B shows no regression"
         );
         assert!(
             !flags.lever_active(JevLever::P2ReadShortlist),

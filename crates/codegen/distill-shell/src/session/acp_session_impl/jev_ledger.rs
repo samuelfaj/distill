@@ -124,6 +124,10 @@ pub(crate) struct JevTurnLedger {
     /// panel counters, gate clock and status. Keyed by prompt id, so a new
     /// prompt starts from zero.
     pub(crate) ultracode_review: crate::session::goal_classifier::turn_review::TurnReviewState,
+    /// B8 stable tools: the full tools array went out under Auto, so a lean
+    /// pick keeps sending it while the prompt is large. Session-scoped:
+    /// cleared only when a lean mode re-projects a small or compacted prompt.
+    pub(crate) auto_full_tools_sent: bool,
 }
 
 /// Prompt size under which a main round may still change its effort mid-turn.
@@ -204,6 +208,17 @@ impl JevTurnLedger {
     /// Prompt tokens of the last main response whose prefix may be reused.
     pub(crate) fn last_main_prompt_tokens(&self) -> Option<u64> {
         self.last_main_prompt_tokens
+    }
+
+    /// Whether a lean mode under Auto keeps the full tools array: it already
+    /// went out, and the prompt is large enough that changing the array would
+    /// re-read it uncached at a real cost. After a compaction the prompt size
+    /// is unknown, so the array may be rebuilt.
+    pub(crate) fn keeps_full_tools(&self) -> bool {
+        self.auto_full_tools_sent
+            && self
+                .last_main_prompt_tokens
+                .is_some_and(|tokens| tokens >= EFFORT_SWITCH_FREE_PROMPT_TOKENS)
     }
 
     /// Changed tools or rewritten history cannot reuse the previous prefix.

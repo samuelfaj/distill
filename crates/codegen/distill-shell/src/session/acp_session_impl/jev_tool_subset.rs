@@ -38,14 +38,16 @@ impl SessionActor {
         defs: Vec<ToolDefinition>,
         plan_active: bool,
     ) -> Vec<ToolDefinition> {
-        if plan_active
-            || defs.is_empty()
-            || matches!(
-                self.execution_mode.load(),
-                distill_tool_types::ExecutionMode::Ultrafast
-                    | distill_tool_types::ExecutionMode::Ultrasave
-            )
-        {
+        let lean = matches!(
+            self.execution_mode.load(),
+            distill_tool_types::ExecutionMode::Ultrafast
+                | distill_tool_types::ExecutionMode::Ultrasave
+        );
+        // A lean pick that keeps the full array runs the same family pass as
+        // Normal, so the array keeps its bytes and a request that needs an
+        // optional family (scheduling for `/loop`) still gets it.
+        let keeps_full = lean && self.auto_keeps_full_tools();
+        if plan_active || defs.is_empty() || (lean && !keeps_full) {
             // UltraFast and UltraSave have a fixed execution tool set; asking a
             // utility model which families to keep costs a blocking model round.
             self.jev_ledger.borrow_mut().deferred_tools.clear();

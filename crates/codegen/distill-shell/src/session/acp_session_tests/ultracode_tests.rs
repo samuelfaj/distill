@@ -169,6 +169,138 @@ fn execution_modes_prune_tool_definitions_to_direct_work() {
     }
 }
 
+/// Runs `steps` (effective modes Auto picks, and prompt sizes the last main
+/// response reported) and returns the tools array each pick would send.
+async fn auto_tool_arrays(
+    actor: &SessionActor,
+    steps: &[(distill_tool_types::ExecutionMode, Option<u64>)],
+) -> Vec<Vec<String>> {
+    let mut arrays = Vec::new();
+    for (mode, prompt_tokens) in steps {
+        if let Some(tokens) = prompt_tokens {
+            let mut ledger = actor.jev_ledger.borrow_mut();
+            ledger.note_round("main", None);
+            ledger.add_usage(*tokens, 1);
+        }
+        actor.execution_mode.pick_auto(*mode);
+        let defs = actor.prepare_tool_definitions().await;
+        arrays.push(
+            defs.iter()
+                .map(|def| serde_json::to_string(def).expect("tool definition serializes"))
+                .collect(),
+        );
+    }
+    arrays
+}
+
+async fn actor_with_lean_and_full_tools() -> SessionActor {
+    use distill_tools::implementations::distill;
+    use distill_tools::registry::types::ToolConfig;
+    let actor = super::support::plain_actor().await;
+    *actor.agent.borrow_mut() = super::support::test_agent_with_tools(vec![
+        ToolConfig::for_tool::<distill::ReadFileTool>(),
+        ToolConfig::for_tool::<distill::GrepTool>(),
+        ToolConfig::for_tool::<distill::todo::TodoWriteTool>(),
+    ])
+    .await;
+    // Every Jev question in these tests gets no answer; nothing leaves the process.
+    crate::jev::set_test_decision_answers([]);
+    actor
+}
+
+/// Under Auto, a switch between the lean and the full tool list changed the
+/// tools array and re-read the whole prompt uncached. With `b8_stable_tools`
+/// the array only grows: once the full list went out, UltraSave and UltraFast
+/// send exactly the same bytes, so the turn loop sees the same tools and keeps
+/// the cached prompt. A small or compacted prompt may shrink it again, and a
+/// session that started lean grows once, on its first move up.
+#[tokio::test(flavor = "current_thread")]
+async fn auto_never_shrinks_the_tools_array_once_the_full_list_went_out() {
+    use distill_tool_types::ExecutionMode::{Normal, Ultracode, Ultrafast, Ultrasave};
+    const LARGE: u64 = super::jev_ledger::EFFORT_SWITCH_FREE_PROMPT_TOKENS;
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            crate::jev::set_test_flags(distill_workspace::jev::JevFlags {
+                b8_stable_tools: true,
+                ..distill_workspace::jev::JevFlags::harness_default()
+            });
+            let actor = actor_with_lean_and_full_tools().await;
+            actor.execution_mode.store_auto(Ultrasave);
+            let arrays = auto_tool_arrays(
+                &actor,
+                &[
+                    (Ultrasave, None),
+                    (Ultrafast, Some(LARGE)),
+                    (Normal, Some(LARGE)),
+                    (Ultrasave, Some(LARGE)),
+                    (Ultrafast, Some(LARGE)),
+                    (Ultracode, Some(LARGE)),
+                    (Ultrasave, Some(LARGE)),
+                ],
+            )
+            .await;
+            let [lean, lean_again, full, rest @ ..] = arrays.as_slice() else {
+                unreachable!()
+            };
+            assert!(lean.len() < full.len(), "the session started on the lean list");
+            assert_eq!(lean, lean_again, "a lean start stays lean until a move up");
+            for (index, array) in rest.iter().enumerate() {
+                assert_eq!(array, full, "step {index} after the move up changed the tools array");
+            }
+
+            // A compaction rewrote the prompt: the lean list may come back,
+            // and the next move up grows the array once again.
+            actor.jev_ledger.borrow_mut().note_compaction();
+            let arrays =
+                auto_tool_arrays(&actor, &[(Ultrasave, None), (Normal, None), (Ultrafast, Some(LARGE))])
+                    .await;
+            assert_eq!(arrays, [lean.clone(), full.clone(), full.clone()]);
+
+            // Under 16k prompt tokens a miss is cheap, so the lean list is free to return.
+            let arrays = auto_tool_arrays(&actor, &[(Ultrafast, Some(LARGE - 1))]).await;
+            assert_eq!(arrays, std::slice::from_ref(lean));
+
+            // An explicit /mode is the user's choice and re-projects at once.
+            auto_tool_arrays(&actor, &[(Normal, Some(LARGE))]).await;
+            actor.execution_mode.store(Ultrasave);
+            let fixed = actor.prepare_tool_definitions().await;
+            let fixed: Vec<String> = fixed
+                .iter()
+                .map(|def| serde_json::to_string(def).unwrap())
+                .collect();
+            assert_eq!(&fixed, lean);
+            crate::jev::clear_test_decision_answers();
+            crate::jev::clear_test_flags();
+        })
+        .await;
+}
+
+/// With `b8_stable_tools` off (the default) every Auto pick re-projects
+/// exactly as before: the lean modes always send the lean list.
+#[tokio::test(flavor = "current_thread")]
+async fn without_stable_tools_auto_reprojects_on_every_pick() {
+    use distill_tool_types::ExecutionMode::{Normal, Ultrafast, Ultrasave};
+    const LARGE: u64 = super::jev_ledger::EFFORT_SWITCH_FREE_PROMPT_TOKENS;
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            crate::jev::set_test_flags(distill_workspace::jev::JevFlags::harness_default());
+            let actor = actor_with_lean_and_full_tools().await;
+            actor.execution_mode.store_auto(Normal);
+            let arrays = auto_tool_arrays(
+                &actor,
+                &[(Normal, None), (Ultrasave, Some(LARGE)), (Ultrafast, Some(LARGE)), (Normal, Some(LARGE))],
+            )
+            .await;
+            assert_eq!(arrays[0], arrays[3]);
+            assert_eq!(arrays[1], arrays[2], "the two lean modes send the same list");
+            assert!(arrays[1].len() < arrays[0].len());
+            assert!(!actor.jev_ledger.borrow().auto_full_tools_sent);
+            crate::jev::clear_test_decision_answers();
+            crate::jev::clear_test_flags();
+        })
+        .await;
+}
+
 #[tokio::test]
 async fn execution_policy_survives_agent_rebuild_and_shared_off() {
     use distill_tools::implementations::distill::task::types::ExecutionPolicy;

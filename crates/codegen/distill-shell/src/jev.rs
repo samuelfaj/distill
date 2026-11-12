@@ -780,6 +780,8 @@ pub fn record_item(
     answers: Option<&distill_workspace::jev::types::JevAnswerSet>,
 ) {
     log_item(lever, decision, reason, confidence, answers);
+    let label = event_id(decision);
+    count_jev_outcome(lever, &label);
     // `reason` stays out of the event: it carries paths and model names.
     let (question_hash, memo) = answers
         .and_then(|answers| answer_trace(lever, answers))
@@ -798,7 +800,7 @@ pub fn record_item(
                 .map(|(id, answer)| (event_id(id), answer_summary(answer)))
                 .collect()
         }),
-        label: event_id(decision),
+        label,
         confidence,
         memo,
         latency_ms: answers.map_or(0, |answers| answers.latency_ms),
@@ -1163,6 +1165,62 @@ mod decision_event_tests {
         );
     }
 
+    /// usage.json counts each lever's composed labels, so mode switches and
+    /// reminders by label are countable without the event file; a path-like
+    /// label is counted under its hash.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn usage_counts_each_lever_label_and_failed_ask() {
+        clear_test_decision_answers();
+        let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let recorder = distill_chat_state::ChatStateActor::spawn(
+            Vec::new(),
+            distill_sampling_types::SamplingConfig::default(),
+            Box::new(distill_chat_state::NullChatPersistence),
+            event_tx,
+            cancellation.clone(),
+        );
+        with_session_scope_and_recorder("usage-counter-session", Some(recorder.clone()), async {
+            record_item(JevLever::B2MicroEffort, "effort:low", "", None, None);
+            record_item(JevLever::B2MicroEffort, "effort:low", "", None, None);
+            record_item(JevLever::B2MicroEffort, "defer", "", None, None);
+            record_item(JevLever::A6TestToRun, "tests/a.rs::case", "", None, None);
+            set_test_decision_answers([None]);
+            assert!(
+                ask_item(
+                    JevLever::B2MicroEffort,
+                    serde_json::json!({}),
+                    mode_questions()
+                )
+                .await
+                .is_none()
+            );
+        })
+        .await;
+        clear_test_decision_answers();
+
+        let ledger = recorder
+            .try_get_session_usage()
+            .await
+            .expect("chat-state actor must acknowledge the usage query");
+        let counts = |lever: JevLever| {
+            ledger.utility_outcomes[&format!("jev:{}", lever.as_str())]
+                .decisions
+                .clone()
+        };
+        let effort = counts(JevLever::B2MicroEffort);
+        assert_eq!(effort["effort:low"], 2);
+        assert_eq!(effort["defer"], 1);
+        assert_eq!(effort["no_answer:error"], 1);
+        let tests = counts(JevLever::A6TestToRun);
+        assert!(
+            tests.keys().all(|label| label.starts_with("h:")),
+            "{tests:?}"
+        );
+        cancellation.cancel();
+    }
+
     /// Outside a registered session nothing is written and nothing fails.
     #[tokio::test]
     #[serial_test::serial]
@@ -1496,12 +1554,22 @@ fn emit_jev_event(build: impl FnOnce(u64, Option<u64>) -> distill_session_events
     writer.emit(build(seq, round));
 }
 
+/// Per-lever counts of each composed label in the session's usage.json
+/// (`utilityOutcomes["jev:<lever>"]`); nothing without a usage recorder.
+fn count_jev_outcome(lever: distill_workspace::jev::flags::JevLever, label: &str) {
+    if let Some(recorder) = active_usage_recorder() {
+        recorder.record_utility_outcome(&format!("jev:{}", lever.as_str()), label, 0, 0, 0);
+    }
+}
+
 fn emit_no_answer(
     lever: distill_workspace::jev::flags::JevLever,
     kind: distill_session_events::JevNoAnswerKind,
     question_hash: Option<String>,
     latency_ms: u64,
 ) {
+    let kind_label: &'static str = kind.into();
+    count_jev_outcome(lever, &format!("no_answer:{kind_label}"));
     emit_jev_event(|seq, round| distill_session_events::Event::JevNoAnswer {
         seq,
         lever: lever.as_str(),

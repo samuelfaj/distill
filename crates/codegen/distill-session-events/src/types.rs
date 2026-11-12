@@ -382,8 +382,9 @@ fn is_zero(value: &usize) -> bool {
     *value == 0
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, strum::IntoStaticStr)]
 #[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
 pub enum JevNoAnswerKind {
     Error,
     Timeout,

@@ -466,3 +466,5 @@ from the memo, latency and round; an ask that got no answer is one
 `jev_no_answer` line with its cause (`error`, `timeout`, `no_credential`,
 `lever_off`). No state, question text or reason is written, and an id that is
 not a short identifier (a test path, for example) is replaced by its hash.
+`usage.json` counts the same labels per lever under `utilityOutcomes`, key
+`jev:<lever>`, with a failed ask counted as `no_answer:<cause>`.

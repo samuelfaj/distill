@@ -167,7 +167,8 @@ def execute_family(cells, record, path, *, run=subprocess.run):
         record['runs'].append(cell_record(cell, completed))
         record['executed_executions'] = len(record['runs'])
         write(path, record)
-    record['status'] = 'complete'
+    from .requested_summary import family_totals  # imports this module
+    record.update(totals=family_totals(record), status='complete')
     write(path, record)
     return record
 

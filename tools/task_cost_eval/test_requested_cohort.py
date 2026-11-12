@@ -139,6 +139,8 @@ class ExecuteTest(unittest.TestCase):
             self.assertEqual(command[command.index('--claude-auth') + 1], '<private-credential-path>')
             self.assertNotIn(str(Path.home()), path.read_text())
             self.assertEqual([a['mode'] for a in saved['requested_arms']], [None, 'normal', 'ultrafast'])
+            self.assertEqual({arm: totals['runs'] for arm, totals in saved['totals'].items()},
+                             {'native': 9, 'normal': 9, 'ultrafast': 9})
 
 
 if __name__ == '__main__':

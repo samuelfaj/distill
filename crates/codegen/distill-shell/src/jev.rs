@@ -1046,6 +1046,12 @@ pub(crate) fn take_test_asked_questions() -> Vec<Vec<String>> {
     TEST_ASKED_QUESTIONS.with(|asked| std::mem::take(&mut *asked.borrow_mut()))
 }
 
+/// Whether this thread answers Jev requests from a scripted queue.
+#[cfg(test)]
+pub(crate) fn test_decision_answers_scripted() -> bool {
+    TEST_DECISION_ANSWERS.with(|queue| queue.borrow().is_some())
+}
+
 #[cfg(test)]
 pub(crate) fn test_decision_answers_remaining() -> usize {
     TEST_DECISION_ANSWERS.with(|queue| {

@@ -23,8 +23,16 @@ use distill_workspace::jev::types::{Question, QuestionId};
 /// Whether shadow packs may join live requests (`[jev] shadow_packs`).
 pub fn packs_on() -> bool {
     #[cfg(test)]
-    if let Some(on) = TEST_SWITCHES.with(|switches| switches.get().0) {
-        return on;
+    {
+        if let Some(on) = TEST_SWITCHES.with(|switches| switches.get().0) {
+            return on;
+        }
+        // A scripted answer names plain question ids, and a shadow pack sends
+        // a packed request whose ids carry the pack index. A test that
+        // scripts answers gets no shadow pack unless it asks for one.
+        if crate::jev::test_decision_answers_scripted() {
+            return false;
+        }
     }
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| packs_on_with(crate::jev::resolve_config_from_disk().shadow_packs))

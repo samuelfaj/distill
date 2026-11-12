@@ -785,5 +785,135 @@ class YardstickTest(unittest.TestCase):
             'root_rounds': 2, 'child_calls': 1, 'jev_failed_calls': 1})
 
 
+class MatrixCampaignTest(unittest.TestCase):
+    """S-029: N arms on one binary with a shared Normal arm and an A/A arm."""
+    COHORT = ROOT / 'cohort-ultrafast-v2.json'
+
+    def dry_run(self, arms, *extra):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), mock.patch.object(compare_parallel, 'run_one') as run_one, \
+                mock.patch.object(subprocess, 'Popen') as popen:
+            code = compare_parallel.main(['--arms', arms, '--cohort', str(self.COHORT), '--repetitions', '3', *extra])
+        self.assertEqual(code, 0)
+        run_one.assert_not_called()
+        popen.assert_not_called()
+        return [line for line in out.getvalue().splitlines() if line.startswith('plan: ')], out.getvalue()
+
+    def test_dry_run_prints_the_plan_for_four_and_six_arms_without_a_binary(self):
+        cases = len(json.loads(self.COHORT.read_text())['cases'])
+        for arms, labels in (('normal,normal,ultrasave,ultrafast', ['normal', 'normal_aa', 'ultrasave', 'ultrafast']),
+                             ('normal,normal,ultrasave,ultrafast,ultracode,auto',
+                              ['normal', 'normal_aa', 'ultrasave', 'ultrafast', 'ultracode', 'auto'])):
+            with self.subTest(arms=arms):
+                plan, text = self.dry_run(arms)
+                self.assertEqual(len(plan), len(labels) * cases * 3)
+                self.assertIn(f'dry run: {len(plan)} runs planned over {len(labels)} arms ({", ".join(labels)})', text)
+                self.assertIn('model profile single', text)
+                groups = [plan[i:i + len(labels)] for i in range(0, len(plan), len(labels))]
+                for group in groups:
+                    self.assertEqual(sorted(line.split()[1] for line in group), sorted(labels))
+                    self.assertEqual(len({tuple(line.split()[2:6]) for line in group}), 1, 'one case per group')
+                leaders = Counter(group[0].split()[1] for group in groups)
+                self.assertEqual(set(leaders), set(labels))
+                self.assertLessEqual(max(leaders.values()) - min(leaders.values()), 1, 'leading position rotates')
+                self.assertIn('"execution_mode": "normal"', plan[0] + plan[1])
+                self.assertIn('"worker_model": ""', plan[0], 'the single profile has no worker model')
+
+    def test_tiered_profile_writes_the_ultrasave_model_into_every_arm(self):
+        plan, text = self.dry_run('normal,normal,ultrasave,ultrafast', '--ultrasave-model', 'vendor/cheap')
+        self.assertIn('model profile tiered', text)
+        self.assertTrue(all('"ultrasave_model": "vendor/cheap"' in line for line in plan))
+        config = compare_parallel.distill_config(worker_model='', ultrasave_model='vendor/cheap')
+        self.assertIn('[modes.ultrasave]\nmodel = "vendor/cheap"', config)
+        self.assertNotIn('\nworker = ', config)
+
+    def test_tiered_run_config_records_the_ultrasave_model_and_no_worker(self):
+        case = COHORT['cases'][0]
+        accounting = {'accounting_complete': True, 'credit_estimate': 1.0, 'calls': 1,
+                      'call_usage': [{'complete': True}], 'accounting_evidence': {'complete': True},
+                      **{field: 1 for field in compare_parallel.TOKEN_FIELDS}}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            peer = fake_peer(root)
+            (root / 'profile').mkdir()
+            (root / 'profile' / 'codex-auth.json').write_text('{}')
+            with mock.patch.object(compare_parallel, 'distill_accounting', return_value=accounting), \
+                    mock.patch.object(compare_parallel, 'run_grader', return_value={
+                        'exit_code': 0, 'timed_out': False, 'wall_time_s': .01}):
+                result = compare_parallel.run_one(peer, 'ultrasave', case, 1, root / 'runs', root / 'profile', 3,
+                    frozen_inputs=compare_parallel.case_hashes(case), binary_hash=compare_parallel._sha256_file(peer),
+                    transport='acp', execution_mode='ultrasave', worker_model='', ultrasave_model='vendor/cheap')
+            self.assertEqual(result['settings']['configured_modes'], {'ultrasave': {'model': 'vendor/cheap'}})
+            self.assertNotIn('worker', result['settings']['configured_models'])
+            config = (Path(result['output_dir']) / 'distill-home/config.toml').read_text()
+            self.assertIn('[modes.ultrasave]\nmodel = "vendor/cheap"', config)
+
+    def test_invalid_arm_lists_and_paired_flags_are_rejected(self):
+        for extra in (['--arms', 'normal'], ['--arms', 'normal,normal,normal'], ['--arms', 'normal,fast'],
+                      ['--arms', 'normal,auto,auto'], ['--arms', 'ultrafast,auto'],
+                      ['--arms', 'normal,auto', '--baseline-binary', '/a'],
+                      ['--arms', 'normal,auto', '--aa-arm'], ['--arms', 'normal,auto', '--verdict', 'ultrafast'],
+                      ['--arms', 'normal,auto', '--substantial', 'bench-lru'],
+                      ['--arms', 'normal,auto', '--execute', '--binary', '/a', '--work-root', '/w', '--output', '/o']):
+            with self.subTest(extra=extra), contextlib.redirect_stderr(io.StringIO()), \
+                    mock.patch.object(compare_parallel, 'run_one') as run_one, self.assertRaises(SystemExit) as error:
+                compare_parallel.main(['--cohort', str(self.COHORT), *extra])
+            self.assertEqual(error.exception.code, 2)
+            run_one.assert_not_called()
+
+    def test_normal_verdict_runs_old_against_new_normal_only_with_compare_versions(self):
+        base = ['--baseline-binary', '/old', '--candidate-binary', '/new', '--baseline-mode', 'normal',
+                '--candidate-mode', 'normal', '--transport', 'acp', '--max-concurrent', '8', '--order-seed', '1',
+                '--verdict', 'normal', '--work-root', '/u', '--output', '/u.json']
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(compare_parallel.main(base + ['--compare-versions']), 0)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+            compare_parallel.main(base)
+        self.assertEqual(error.exception.code, 2)
+
+    def test_executed_identical_arms_give_a_valid_neutral_modes_verdict(self):
+        from .test_modes_verdict import row as arm_row
+        for arms, drift, expected in (('normal,normal', 1.0, 'PASS'), ('normal,normal', 1.2, 'INVALID'),
+                                      ('normal,normal,ultrafast,auto', 1.0, None)):
+            with self.subTest(arms=arms, drift=drift), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / 'profile').mkdir()
+                (root / 'profile' / 'codex-auth.json').write_text('{}')
+                seen = []
+
+                def recorded(binary, variant, case, repetition, *args, **kwargs):
+                    seen.append((variant, kwargs['execution_mode'], kwargs['worker_model'], kwargs['ultrasave_model']))
+                    credits = 10 * (drift if variant == 'normal_aa' else 1)
+                    return arm_row(variant, case['id'], repetition, credits=credits,
+                                   wall=50.0 if variant == 'ultrafast' else 100.0)
+
+                with mock.patch.object(compare_parallel, 'run_one', side_effect=recorded), \
+                        mock.patch.object(compare_parallel, 'subscription_account'), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    code = compare_parallel.main([
+                        '--arms', arms, '--binary', sys.executable, '--transport', 'acp',
+                        '--case', 'bench-semver', '--case', 'bench-lru', '--cohort', str(self.COHORT),
+                        '--distill-profile', str(root / 'profile'), '--work-root', str(root / 'runs'),
+                        '--output', str(root / 'result.json'), '--execute'])
+                result = json.loads((root / 'result.json').read_text())
+                labels = compare_parallel.arm_labels(arms.split(','))
+                self.assertEqual(result['arms'], labels)
+                self.assertEqual(result['model_profile'], 'single')
+                self.assertEqual(len(seen), len(labels) * 2 * 3)
+                self.assertEqual({entry[1] for entry in seen if entry[0] == 'normal_aa'}, {'normal'})
+                self.assertEqual({entry[2:] for entry in seen}, {('', None)})
+                self.assertEqual(set(result['binaries']), set(labels))
+                report = result['verdict']
+                if expected == 'PASS':
+                    self.assertEqual((report['verdict'], code), ('PASS', 0), report['reasons'])
+                    self.assertAlmostEqual(report['aa_check']['credit_ratio'], 1.0)
+                elif expected == 'INVALID':
+                    self.assertEqual((report['verdict'], code), ('INVALID', 1))
+                else:
+                    # Silent failures are unknown only for failing runs; all pass here.
+                    self.assertEqual(report['claims']['ultrafast']['status'], 'PASS', report['claims'])
+                    self.assertEqual(report['auto']['verdict'], 'PASS')
+
+
 if __name__ == '__main__':
     unittest.main()

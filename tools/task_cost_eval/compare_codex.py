@@ -84,13 +84,16 @@ class CollectorHandler(BaseHTTPRequestHandler):
 
 def distill_config(*, main_model='chatgpt/gpt-6.1-sol', worker_model='chatgpt/gpt-6-luna',
                    worker_effort='auto', utility_effort='auto', enable_jev=False,
-                   utility_model='chatgpt/gpt-6-luna'):
+                   utility_model='chatgpt/gpt-6-luna', ultrasave_model=None):
+    """Isolated benchmark config. An empty worker_model leaves the worker unset
+    (the main model does all the work); ultrasave_model writes [modes.ultrasave] model."""
+    worker = f'worker = {json.dumps(worker_model)}\n' if worker_model else ''
+    modes = f'[modes.ultrasave]\nmodel = {json.dumps(ultrasave_model)}\n' if ultrasave_model else ''
     return f'''[cli]
 use_leader = false
 [models]
 default = {json.dumps(main_model)}
-worker = {json.dumps(worker_model)}
-worker_effort = {json.dumps(worker_effort)}
+{worker}worker_effort = {json.dumps(worker_effort)}
 session_summary = {json.dumps(utility_model)}
 [jev]
 enabled = true
@@ -119,7 +122,7 @@ rules = false
 skills = false
 agents = false
 hooks = false
-'''
+{modes}'''
 
 
 def distill_accounting(home, session, *, strict=False, zero_usage_attempts=frozenset()):

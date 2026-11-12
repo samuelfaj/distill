@@ -1,6 +1,7 @@
 import unittest
 
-from .auto_verdict import acceptance_shortfall, verdict
+from .auto_verdict import acceptance_shortfall, matrix_verdict, verdict
+from .test_modes_verdict import campaign
 from .test_ultrafast_verdict import FOUR
 from .test_ultrasave_verdict import result as paired_result
 
@@ -86,6 +87,50 @@ class AutoVerdictTest(unittest.TestCase):
         report = verdict(data)
         self.assertEqual(report['verdict'], 'FAIL', report['reasons'])
         self.assertEqual(report['quality_regressions'], 1)
+
+
+ARMS = ('normal', 'ultrasave', 'ultrafast', 'auto')
+COSTS = {'normal': (10.0, 100.0), 'ultrasave': (4.0, 120.0), 'ultrafast': (12.0, 50.0), 'auto': (5.0, 70.0)}
+
+
+def matrix(overrides=None):
+    def values(arm, case, rep):
+        credits, wall = COSTS[arm]
+        return {'credits': credits, 'wall': wall, **((overrides or {}).get((arm, case, rep), {}))}
+    data = campaign(ARMS, values=values)
+    by_arm = {arm: [row for row in data['runs'] if row['variant'] == arm] for arm in ARMS}
+    return matrix_verdict(by_arm, data['repetitions'])
+
+
+class AutoMatrixVerdictTest(unittest.TestCase):
+    def test_regret_is_against_the_best_single_pinned_mode_on_each_axis(self):
+        report = matrix()
+        self.assertEqual(report['verdict'], 'PASS', report['reasons'])
+        self.assertEqual(report['regret']['credits']['best_pinned_arm'], 'ultrasave')
+        self.assertAlmostEqual(report['regret']['credits']['regret'], 5 / 4)
+        self.assertEqual(report['regret']['charged_completion_s']['best_pinned_arm'], 'ultrafast')
+        self.assertAlmostEqual(report['regret']['charged_completion_s']['regret'], 70 / 50)
+
+    def test_a_pinned_arm_below_the_acceptance_bar_is_not_the_regret_reference(self):
+        lost = {('ultrasave', case, 1): {'passed': False} for case in 'abc'}
+        report = matrix(lost)
+        self.assertEqual(report['regret']['credits']['best_pinned_arm'], 'normal')
+        self.assertEqual(report['verdict'], 'PASS', 'Auto is compared with the best pinned acceptance, 12 of 12')
+
+    def test_auto_fails_when_it_trails_the_best_pinned_arm_beyond_one_in_sixty(self):
+        report = matrix({('auto', 'a', 2): {'passed': False}})
+        self.assertEqual(report['verdict'], 'FAIL')
+        self.assertTrue(any('Auto accepted 11 of 12 against 12' in reason for reason in report['reasons']))
+
+    def test_oracle_is_chosen_on_odd_repetitions_and_scored_on_even_ones(self):
+        # UltraSave is cheapest on repetitions 1 and 3 but expensive on 2: an
+        # oracle chosen and scored on the same runs would hide that noise.
+        report = matrix({('ultrasave', case, 2): {'credits': 20.0} for case in 'abcd'})
+        oracle = report['per_case_oracle']['credits']
+        self.assertEqual(set(oracle['chosen_on_odd_repetitions'].values()), {'ultrasave'})
+        self.assertEqual(oracle['scored_repetitions'], [2])
+        self.assertEqual((oracle['oracle_total'], oracle['auto_total']), (80.0, 20.0))
+        self.assertAlmostEqual(oracle['regret'], 0.25)
 
 
 if __name__ == '__main__':

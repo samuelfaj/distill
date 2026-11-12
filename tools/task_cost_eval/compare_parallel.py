@@ -29,6 +29,7 @@ from .runner import _terminate_owned_group
 from .ultrafast_verdict import charged_completion_s, verdict as ultrafast_verdict
 from .ultrasave_verdict import verdict as ultrasave_verdict
 from .auto_verdict import verdict as auto_verdict
+from .modes_verdict import arm_labels, arm_mode, normal_verdict, verdict as modes_verdict
 
 ROOT = Path(__file__).resolve().parent
 MODEL = 'chatgpt/gpt-6.1-sol'
@@ -51,16 +52,19 @@ def plan_runs(cohort, repetitions, order_seed=None, variants=VARIANTS):
     """Keep arms of one case adjacent and rotate their order across repetitions.
 
     Two arms reverse on every other repetition (and across tasks when seeded);
-    more arms rotate by case and repetition so each arm leads equally often.
+    more arms rotate one step per case group, so over the whole campaign each
+    arm leads as often as the others (exactly when groups divide evenly).
     """
     cases = list(cohort['cases'])
     if order_seed is not None:
         random.Random(order_seed).shuffle(cases)
-    per_case = order_seed is not None or len(variants) > 2
     planned = []
     for rep in range(1, repetitions + 1):
         for index, case in enumerate(cases):
-            shift = (rep - 1 + (index if per_case else 0)) % len(variants)
+            if len(variants) > 2:
+                shift = ((rep - 1) * len(cases) + index) % len(variants)
+            else:
+                shift = (rep - 1 + (index if order_seed is not None else 0)) % len(variants)
             planned.extend((variant, case, rep) for variant in variants[shift:] + variants[:shift])
     return planned
 
@@ -135,6 +139,35 @@ def mark_aa(report, check):
     report['verdict'] = 'INVALID' if measured else 'INCOMPLETE'
 
 
+def arms_from_argument(parser, args):
+    """Validate an --arms list and return its labels (the second normal is the A/A arm)."""
+    arms = [arm.strip() for arm in args.arms.split(',') if arm.strip()]
+    others = [arm for arm in arms if arm != 'normal']
+    if (len(arms) < 2 or any(arm not in EXECUTION_MODES for arm in arms) or arms.count('normal') not in (1, 2)
+            or len(set(others)) != len(others)):
+        parser.error(f'--arms takes 2 or more of {", ".join(EXECUTION_MODES)}: normal once (twice adds the '
+                     'A/A arm), every other mode at most once')
+    paired_flags = [flag for flag in ('baseline_binary', 'candidate_binary', 'baseline_mode', 'candidate_mode',
+                                      'baseline_max_depth', 'candidate_max_depth', 'baseline_commit')
+                    if getattr(args, flag) is not None]
+    if (paired_flags or args.aa_arm or args.baseline_ultracode or args.candidate_ultracode
+            or args.compare_versions):
+        parser.error('--arms runs one --binary; it does not take paired --baseline-*/--candidate-* options, '
+                     '--aa-arm or --compare-versions (use --candidate-commit for the binary commit)')
+    if args.verdict == 'parallel':
+        args.verdict = 'modes'
+    if args.verdict != 'modes':
+        parser.error('--arms uses --verdict modes (Auto and UltraCode are judged inside it)')
+    if 'ultracode' not in arms and (args.substantial or args.control):
+        parser.error('--substantial/--control need an ultracode arm')
+    if args.execute:
+        missing = [flag for flag, value in (('--binary', args.binary), ('--work-root', args.work_root),
+                                            ('--output', args.output)) if value is None]
+        if missing or args.transport != 'acp':
+            parser.error('an executed --arms campaign needs --transport acp, --binary, --work-root and --output')
+    return arm_labels(arms)
+
+
 def call_summary(calls):
     """Per-run time and round split from per-call usage rows."""
     durations = [call.get('api_duration_ms') for call in calls]
@@ -192,7 +225,8 @@ def run_one(binary, variant, case, repetition, work_root, profile, timeout, *,
             frozen_inputs, binary_hash,
             ultracode=False, max_depth=None, model=MODEL, effort=None, transport='cli',
             worker_model='chatgpt/gpt-6-luna', worker_effort='auto', utility_effort='auto', order_seed=None,
-            execution_mode=None, max_concurrent=None, enable_jev=False, utility_model=UTILITY_MODEL):
+            execution_mode=None, max_concurrent=None, enable_jev=False, utility_model=UTILITY_MODEL,
+            ultrasave_model=None):
     if execution_mode is not None and (execution_mode not in EXECUTION_MODES or ultracode):
         raise ValueError('Use one execution_mode or the legacy ultracode flag')
     mode = execution_mode or ('ultracode' if ultracode else 'normal')
@@ -214,7 +248,8 @@ def run_one(binary, variant, case, repetition, work_root, profile, timeout, *,
     home.mkdir()
     auth = home / 'codex-auth.json'
     config_text = distill_config(main_model=model, worker_model=worker_model, worker_effort=worker_effort,
-                                 utility_effort=utility_effort, enable_jev=enable_jev, utility_model=utility_model)
+                                 utility_effort=utility_effort, enable_jev=enable_jev, utility_model=utility_model,
+                                 ultrasave_model=ultrasave_model)
     (home / 'config.toml').write_text(config_text)
     configured = tomllib.loads(config_text)
     session = str(uuid.uuid4()) if transport == 'cli' else None
@@ -263,6 +298,7 @@ def run_one(binary, variant, case, repetition, work_root, profile, timeout, *,
                 'configured_utility': configured['jev']['local'],
                 'configured_main_effort_auto': configured['jev']['effort_auto'],
                 'jev_enabled': bool(enable_jev), 'utility_model': utility_model,
+                'configured_modes': configured.get('modes'),
                 'order_seed': order_seed, 'timeout_s': timeout,
                 'environment_policy': 'remove inherited model/effort/depth overrides' if sanitize else 'historical inheritance',
                 'accounting_audit': 'strict study evidence' if sanitize else 'historical ledger reconciliation',
@@ -402,14 +438,23 @@ def aggregate(runs):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--baseline-binary', type=Path, required=True)
-    parser.add_argument('--candidate-binary', type=Path, required=True)
+    parser.add_argument('--baseline-binary', type=Path, help='paired campaigns: required')
+    parser.add_argument('--candidate-binary', type=Path, help='paired campaigns: required')
+    parser.add_argument('--arms', help='N-arm campaign on one --binary, e.g. normal,normal,ultrasave,ultrafast,ultracode,'
+                                       'auto; a second normal is the A/A arm; replaces --baseline-*/--candidate-*')
+    parser.add_argument('--binary', type=Path, help='the one binary of an --arms campaign (needed with --execute)')
+    parser.add_argument('--ultrasave-model',
+                        help='tiered profile: write [modes.ultrasave] model into every run config; without it the '
+                             'campaign is the single-model profile')
+    parser.add_argument('--substantial', action='append', help='--arms with ultracode: substantial case ID (repeatable)')
+    parser.add_argument('--control', action='append', help='--arms with ultracode: control case ID (repeatable)')
     parser.add_argument('--transport', choices=('cli', 'acp'), default='cli',
                         help='common transport for both binaries; ACP supports builds without --ultracode')
     parser.add_argument('--order-seed', type=int, help='shuffle tasks once; alternate AB/BA across tasks and repetitions')
     parser.add_argument('--worker-effort', default='auto', help='[models].worker_effort for both variants')
-    parser.add_argument('--worker-model', default='chatgpt/gpt-6-luna',
-                        help='[models].worker for both variants')
+    parser.add_argument('--worker-model',
+                        help='[models].worker for every arm; default chatgpt/gpt-6-luna for paired campaigns and '
+                             'no worker (empty) for --arms')
     parser.add_argument('--utility-effort', default='auto', help='[jev.local].effort for both variants')
     parser.add_argument('--utility-model', default=UTILITY_MODEL,
                         help='[jev.local].model and [models].session_summary for both variants')
@@ -418,15 +463,17 @@ def main(argv=None):
                              'Jev calls are reported as jev_usd, not credits')
     parser.add_argument('--compare-versions', action='store_true',
                         help='head-to-head release comparison: baseline and candidate may use the same execution '
-                             'mode with different binaries; requires an ultrafast/ultrasave/auto verdict')
+                             'mode with different binaries; requires an ultrafast/ultrasave/auto/normal verdict')
     parser.add_argument('--max-concurrent', type=int, help='common task, sampling, and workflow capacity')
-    parser.add_argument('--verdict', choices=('parallel', 'ultrafast', 'ultrasave', 'auto'), default='parallel',
+    parser.add_argument('--verdict', choices=('parallel', 'ultrafast', 'ultrasave', 'auto', 'normal', 'modes'),
+                        default='parallel',
                         help='paired ACP gates vs Normal on ratios of totals: ultrafast completion <=0.60; ultrasave '
                              'credits <=0.45 (both <=0.85 with --compare-versions); auto credits and completion '
                              '<=1.0 with one <=0.85 vs Normal or a previous Auto version; '
                              'Auto vs specialists reports tradeoffs without a performance gate; Auto accepts at least '
                              'the baseline minus 1 in 60 runs; other verdicts allow at most 1 quality regression; '
-                             'fewer than 3 repetitions report SMOKE, not a verdict')
+                             'fewer than 3 repetitions report SMOKE, not a verdict; normal (with --compare-versions) '
+                             'keeps old-vs-new Normal ratios inside 1.10; modes is the --arms verdict')
     for variant in VARIANTS:
         mode = parser.add_mutually_exclusive_group()
         mode.add_argument(f'--{variant}-ultracode', action='store_true',
@@ -441,8 +488,8 @@ def main(argv=None):
                         help='existing case ID to run (repeatable); default runs the full cohort')
     parser.add_argument('--cohort', type=Path, default=ROOT / 'cohort-parallel-v1.json')
     parser.add_argument('--repetitions', type=int, default=3)
-    parser.add_argument('--work-root', type=Path, required=True)
-    parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--work-root', type=Path, help='required except for an --arms dry run')
+    parser.add_argument('--output', type=Path, help='required except for an --arms dry run')
     parser.add_argument('--distill-profile', type=Path, default=Path.home() / '.grok')
     parser.add_argument('--timeout', type=float, default=300)
     parser.add_argument('--aa-arm', action='store_true',
@@ -462,14 +509,29 @@ def main(argv=None):
         parser.error('--timeout must be finite and greater than zero')
     if args.max_concurrent is not None and args.max_concurrent < 1:
         parser.error('--max-concurrent must be at least 1')
-    paired_mode = args.verdict in ('ultrafast', 'ultrasave', 'auto')
+    labels = None
+    if args.arms is not None:
+        labels = arms_from_argument(parser, args)
+    else:
+        missing = [flag for flag, value in (('--baseline-binary', args.baseline_binary),
+                                            ('--candidate-binary', args.candidate_binary),
+                                            ('--work-root', args.work_root), ('--output', args.output)) if value is None]
+        if missing:
+            parser.error(f'the following arguments are required: {", ".join(missing)}')
+        if args.binary is not None or args.substantial or args.control or args.verdict == 'modes':
+            parser.error('--binary, --substantial, --control and --verdict modes belong to --arms campaigns')
+    if args.verdict == 'normal' and not args.compare_versions:
+        parser.error('--verdict normal compares Normal old against new: pass --compare-versions')
+    worker_model = args.worker_model if args.worker_model is not None else (
+        '' if labels else 'chatgpt/gpt-6-luna')
+    paired_mode = args.verdict in ('ultrafast', 'ultrasave', 'auto', 'normal')
     baseline_modes = {'ultrafast': ('normal', 'ultracode'), 'auto': ('normal', 'ultrafast', 'ultrasave', 'ultracode')}.get(
         args.verdict, ('normal',))
     if args.compare_versions:
         if not paired_mode:
-            parser.error('--compare-versions requires --verdict ultrafast, ultrasave, or auto')
+            parser.error('--compare-versions requires --verdict ultrafast, ultrasave, auto, or normal')
         baseline_modes += (args.verdict,)
-    if paired_mode and (
+    if paired_mode and not labels and (
             args.transport != 'acp' or args.candidate_mode != args.verdict or
             args.baseline_mode not in baseline_modes or args.max_concurrent is None or
             args.order_seed is None or args.baseline_max_depth != args.candidate_max_depth):
@@ -486,19 +548,28 @@ def main(argv=None):
         if unknown:
             parser.error(f'unknown case IDs: {", ".join(sorted(unknown))}')
         cohort = {**cohort, 'cases': [c for c in cohort['cases'] if c['id'] in args.cases]}
+    split = {'substantial': args.substantial or [], 'control': args.control or []}
+    if set(split['substantial'] + split['control']) - {c['id'] for c in cohort['cases']}:
+        parser.error('--substantial/--control name cases outside the selected cohort')
+    common = {'max_concurrent': args.max_concurrent,
+              'model': args.model, 'effort': args.effort, 'transport': args.transport,
+              'worker_model': worker_model, 'worker_effort': args.worker_effort,
+              'utility_effort': args.utility_effort,
+              'utility_model': args.utility_model, 'enable_jev': args.enable_jev,
+              'order_seed': args.order_seed, 'ultrasave_model': args.ultrasave_model}
     settings = {variant: {'ultracode': getattr(args, f'{variant}_ultracode'),
                           'execution_mode': getattr(args, f'{variant}_mode'),
-                          'max_depth': getattr(args, f'{variant}_max_depth'),
-                          'max_concurrent': args.max_concurrent,
-                          'model': args.model, 'effort': args.effort, 'transport': args.transport,
-                          'worker_model': args.worker_model, 'worker_effort': args.worker_effort,
-                          'utility_effort': args.utility_effort,
-                          'utility_model': args.utility_model, 'enable_jev': args.enable_jev,
-                          'order_seed': args.order_seed} for variant in VARIANTS}
+                          'max_depth': getattr(args, f'{variant}_max_depth'), **common} for variant in VARIANTS}
     binaries = {'baseline': args.baseline_binary, 'candidate': args.candidate_binary}
     declared_commits = {'baseline': args.baseline_commit, 'candidate': args.candidate_commit}
     variants = VARIANTS
-    if args.aa_arm:
+    if labels:
+        variants = tuple(labels)
+        settings = {label: {'ultracode': False, 'execution_mode': arm_mode(label), 'max_depth': None, **common}
+                    for label in labels}
+        binaries = {label: args.binary for label in labels}
+        declared_commits = {label: args.candidate_commit for label in labels}
+    elif args.aa_arm:
         variants = (*VARIANTS, AA_VARIANT)
         settings[AA_VARIANT] = settings['baseline']
         binaries[AA_VARIANT] = binaries['baseline']
@@ -507,9 +578,14 @@ def main(argv=None):
                else plan_runs(cohort, args.repetitions, args.order_seed, variants))
     if not args.execute:
         for variant, case, rep in planned:
-            print(f'plan: {variant} {case["id"]} ({case["kind"]}) rep {rep} -> {binaries[variant]} '
-                  f'{json.dumps(settings[variant], sort_keys=True)}')
-        print(f'dry run: {len(planned)} runs planned, nothing executed; pass --execute to run')
+            print(f'plan: {variant} {case["id"]} ({case["kind"]}) rep {rep} -> '
+                  f'{binaries[variant] or "<--binary>"} {json.dumps(settings[variant], sort_keys=True)}')
+        if labels:
+            print(f'dry run: {len(planned)} runs planned over {len(labels)} arms ({", ".join(labels)}), '
+                  f'model profile {"tiered" if args.ultrasave_model else "single"}, nothing executed; '
+                  'pass --execute to run')
+        else:
+            print(f'dry run: {len(planned)} runs planned, nothing executed; pass --execute to run')
         return 0
     for binary in binaries.values():
         if not binary.expanduser().resolve().is_file():
@@ -562,13 +638,21 @@ def main(argv=None):
                'verdict_policy': args.verdict, 'compare_versions': args.compare_versions,
                'jev_enabled': args.enable_jev, 'utility_model': args.utility_model,
                'jev_preflight': preflight, 'credit_basis': CREDIT_BASIS,
+               'model_profile': 'tiered' if args.ultrasave_model else 'single',
+               'ultrasave_model': args.ultrasave_model,
                'runs': runs, 'aggregates': aggregate(runs),
                'failed_run_dirs': [r.get('kept_run_dir') or r.get('output_dir') for r in runs if not r['passed']],
                'binaries': {v: {'path': str(b), 'sha256': frozen['binaries'][v], **commits[v]}
                             for v, b in binaries.items()}}
-    paired = {**results, 'runs': [r for r in runs if r['variant'] in VARIANTS]}
-    results['verdict'] = {'parallel': verdict, 'ultrafast': ultrafast_verdict,
-                          'ultrasave': ultrasave_verdict, 'auto': auto_verdict}[args.verdict](paired)
+    if labels:
+        results['arms'] = labels
+        if split['substantial'] or split['control']:
+            results['ultracode_cases'] = split
+        results['verdict'] = modes_verdict(results)
+    else:
+        paired = {**results, 'runs': [r for r in runs if r['variant'] in VARIANTS]}
+        results['verdict'] = {'parallel': verdict, 'ultrafast': ultrafast_verdict, 'ultrasave': ultrasave_verdict,
+                              'auto': auto_verdict, 'normal': normal_verdict}[args.verdict](paired)
     if args.aa_arm:
         results['aa_check'] = campaign_aa_check([r for r in runs if r['variant'] == 'baseline'],
                                                 [r for r in runs if r['variant'] == AA_VARIANT])

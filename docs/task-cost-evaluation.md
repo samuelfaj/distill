@@ -353,3 +353,64 @@ The result JSON also records:
   staged credential copies are. `--keep-failed-runs DIR` copies every failing
   run folder to `DIR` without credential files, so the evidence survives a
   temporary work root.
+
+`--verdict normal --compare-versions` runs Normal old against new: it passes
+when the credit and time ratios of totals stay at or under 1.10 and the new
+build accepts at least the old count minus 1 in 60 runs.
+
+## Matrix campaigns
+
+`--arms` replaces the fixed pair with N arms on one `--binary`. Listing
+`normal` twice adds the A/A arm (`normal_aa`); every other mode appears at most
+once. Arms of one case run next to each other and the leading arm rotates one
+step per case, so over a campaign each arm leads equally often. A dry run
+needs no binary, work root or output:
+
+```sh
+python3 -B -m tools.task_cost_eval.compare_parallel \
+  --arms normal,normal,ultrasave,ultrafast,ultracode,auto \
+  --cohort tools/task_cost_eval/cohort-ultrafast-v2.json --repetitions 3
+```
+
+An executed campaign adds `--binary`, `--transport acp`, `--work-root` and
+`--output`. The source commit of the binary can be given with
+`--candidate-commit`. Two model-set profiles are run as two campaigns and
+reported separately:
+
+- `single` (default): no worker model; the main model does all the work.
+- `tiered`: `--ultrasave-model <model>` writes `[modes.ultrasave] model` into
+  every run config.
+
+The result records `arms`, `model_profile` and `ultrasave_model`, and is
+judged by `modes_verdict.py` (`python3 -m tools.task_cost_eval.modes_verdict
+single.json tiered.json` prints both profiles):
+
+- `INCOMPLETE` without a Normal and an A/A arm, or with missing evidence;
+  `INVALID` when the A/A ratio of totals leaves 0.90-1.10 on credits or time.
+- Every other arm is compared with Normal on ratios of totals with a case
+  bootstrap. A saving counts only when it also clears twice the A/A
+  deviation.
+- UltraSave (tiered profile only): credits per accepted run at most 0.45x
+  Normal and 0.75x UltraFast. The single profile makes no UltraSave money
+  claim.
+- UltraFast: charged time at most 0.90x Normal and credits at most 1.15x.
+- Both: accepted at least Normal minus 1 in 60 runs and silent failures at
+  most 1 in 60. A silent failure is a failed grader on a run with no
+  escalation row and no failed-check fact, read from the optional run fields
+  `escalations` and `failed_check_facts`. A failing run without those fields
+  is counted as unknown, and an unknown blocks the claim.
+- A mode that misses its gate shows `no claim yet`; the separation of
+  UltraSave and UltraFast is reported, not gated.
+- Auto (`auto_verdict.matrix_verdict`): accepted at least the best pinned arm
+  minus 1 in 60. It reports regret, Auto's total over the best single pinned
+  mode's total on credits and on charged time (among pinned arms that meet
+  the same acceptance bar), and a per-case oracle chosen on odd repetitions
+  and scored on even ones.
+- UltraCode (`ultracode_verdict.py`, also runnable on its own): needs the case
+  split, given with `--substantial` and `--control`. GO needs at least +15
+  points of accepted runs on substantial cases with a one-sided 90% bootstrap
+  lower bound above 0, no extra control failures, credits at most 3.0x and
+  time at most 2.5x on substantial cases, review overhead at most 240 s p90
+  per code-edit turn on controls (`review_overhead_s`), and at least half of
+  the extra passes refuted before the fix (`refutation_before_fix`). A
+  missing optional field gives `INCONCLUSIVE`.

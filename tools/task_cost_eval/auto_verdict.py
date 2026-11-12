@@ -126,3 +126,87 @@ def verdict(results):
                        f'{ACCEPTANCE_SLACK_RUNS} runs may be lost')
     report['verdict'] = 'FAIL' if reasons else 'PASS'
     return apply_repetition_rule(report, results.get('repetitions'))
+
+
+PINNED_MODES = ('normal', 'ultrafast', 'ultrasave', 'ultracode')
+METRICS = ('credits', 'charged_completion_s')
+
+
+def _metric(row, metric):
+    return row['credits'] if metric == 'credits' else charged_completion_s(row)
+
+
+def _totals(rows):
+    return {'runs': len(rows), 'accepted': sum(row['passed'] for row in rows),
+            **{metric: sum(_metric(row, metric) for row in rows) for metric in METRICS}}
+
+
+def per_case_oracle(pinned, auto_rows, repetitions):
+    """Per case, pick the pinned arm on odd repetitions and score it on even ones.
+
+    Choosing and scoring on disjoint repetitions keeps the oracle from being
+    flattered by the noise it was chosen on. Needs at least two repetitions.
+    """
+    if repetitions < 2:
+        return None
+    index = {label: {(row['case'], row['repetition']): row for row in rows} for label, rows in pinned.items()}
+    auto = {(row['case'], row['repetition']): row for row in auto_rows}
+    odd = range(1, repetitions + 1, 2)
+    even = range(2, repetitions + 1, 2)
+    cases = sorted({case for case, _ in auto})
+    report = {}
+    for metric in METRICS:
+        chosen, oracle_total, auto_total, oracle_accepted, auto_accepted = {}, 0, 0, 0, 0
+        for case in cases:
+            def score(label):
+                rows = [index[label][case, rep] for rep in odd]
+                # Most accepted first, then the lowest total; the label breaks ties deterministically.
+                return (sum(row['passed'] for row in rows), -sum(_metric(row, metric) for row in rows), label)
+            label = max(index, key=score)
+            chosen[case] = label
+            for rep in even:
+                oracle_total += _metric(index[label][case, rep], metric)
+                oracle_accepted += index[label][case, rep]['passed']
+                auto_total += _metric(auto[case, rep], metric)
+                auto_accepted += auto[case, rep]['passed']
+        report[metric] = {'chosen_on_odd_repetitions': chosen, 'scored_repetitions': list(even),
+                          'oracle_total': oracle_total, 'auto_total': auto_total,
+                          'oracle_accepted': oracle_accepted, 'auto_accepted': auto_accepted,
+                          'regret': auto_total / oracle_total if oracle_total > 0 else None}
+    return report
+
+
+def matrix_verdict(arm_rows, repetitions, auto_arm='auto'):
+    """Auto against every pinned arm of one N-arm campaign (rows already validated).
+
+    Gate: Auto accepts at least the best pinned arm minus 1 in 60 runs. Reported:
+    regret on credits and on charged time against the best single pinned mode
+    that meets the same acceptance bar, and a per-case oracle.
+    """
+    pinned = {label: rows for label, rows in arm_rows.items()
+              if label != auto_arm and not label.endswith('_aa') and rows
+              and rows[0]['settings'].get('execution_mode') in PINNED_MODES}
+    report = {'verdict': 'INCOMPLETE', 'reasons': [], 'auto_arm': auto_arm, 'pinned_arms': sorted(pinned),
+              'target': {'minimum_auto_accepted': f'best pinned arm accepted - runs/{ACCEPTANCE_SLACK_RUNS}'},
+              'scope': 'regret and oracle are reported, not gated'}
+    if not pinned or not arm_rows.get(auto_arm):
+        report['reasons'].append('Auto matrix verdict needs an auto arm and at least one pinned arm')
+        return report
+    totals = {label: _totals(rows) for label, rows in pinned.items()}
+    auto = _totals(arm_rows[auto_arm])
+    best_accepted = max(t['accepted'] for t in totals.values())
+    eligible = [label for label, t in totals.items()
+                if not acceptance_shortfall(t['accepted'], best_accepted, t['runs'])]
+    report.update(arms=totals, auto=auto, best_pinned_accepted=best_accepted)
+    report['regret'] = {}
+    for metric in METRICS:
+        best = min(eligible, key=lambda label: (totals[label][metric], label))
+        report['regret'][metric] = {'best_pinned_arm': best, 'best_total': totals[best][metric],
+                                    'auto_total': auto[metric],
+                                    'regret': auto[metric] / totals[best][metric] if totals[best][metric] > 0 else None}
+    report['per_case_oracle'] = per_case_oracle(pinned, arm_rows[auto_arm], repetitions)
+    if acceptance_shortfall(auto['accepted'], best_accepted, auto['runs']):
+        report['reasons'].append(f'Auto accepted {auto["accepted"]} of {auto["runs"]} against {best_accepted} for '
+                                 f'the best pinned arm; at most 1 in {ACCEPTANCE_SLACK_RUNS} runs may be lost')
+    report['verdict'] = 'FAIL' if report['reasons'] else 'PASS'
+    return apply_repetition_rule(report, repetitions)

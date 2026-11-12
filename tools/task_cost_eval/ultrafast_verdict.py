@@ -31,18 +31,53 @@ def quality_reasons(report, label):
     return reasons
 
 
+# Head-to-head release comparison differs by binary on purpose; everything else must match.
+PROFILE_KEYS = ('model', 'effort', 'configured_models', 'configured_utility',
+                'configured_main_effort_auto', 'jev_enabled', 'utility_model', 'max_concurrent',
+                'capacity_env', 'max_depth', 'depth_env', 'timeout_s', 'order_seed', 'tools', 'permissions',
+                'configured_modes')
+
+
+def profile_of(row, compare_versions=False):
+    """Settings every compared run must share (plus the binary unless comparing versions)."""
+    keys = PROFILE_KEYS if compare_versions else ('binary_sha256', *PROFILE_KEYS)
+    return {key: row['settings'].get(key) for key in keys}
+
+
+def row_reasons(row, label, expected_modes):
+    """Shared per-run evidence: mode receipt, ACP setup/cleanup, accounting, frozen inputs."""
+    reasons = []
+    settings = row['settings']
+    mode = settings.get('execution_mode')
+    acp = row.get('acp') or {}
+    activation = (acp.get('activation_receipt') or {}).get('result') or {}
+    if (settings.get('transport') != 'acp' or mode not in expected_modes or
+            activation.get('choice', activation.get('mode')) != mode or not acp.get('setup_confirmed') or
+            not acp.get('cleanup_complete') or not row.get('execution_mode_activation_confirmed')):
+        reasons.append(f'{label}: missing mode/setup/cleanup confirmation')
+    jev_reason = jev_unavailable_reason(row)
+    if jev_reason:
+        reasons.append(f'{label}: {jev_reason}')
+    elif (not row.get('accounting_complete') or not (row.get('accounting_evidence') or {}).get('complete') or
+            not row.get('call_usage') or any(not call.get('complete') for call in row['call_usage'])):
+        reasons.append(f'{label}: incomplete all-call accounting')
+    if not row.get('frozen_inputs_unchanged') or not row.get('binary_unchanged'):
+        reasons.append(f'{label}: frozen input/binary evidence missing')
+    for field in ('wall_time_s', 'credits'):
+        value = row.get(field)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+            reasons.append(f'{label}: invalid {field}')
+    if not isinstance(settings.get('timeout_s'), (float, int)) or settings['timeout_s'] <= 0:
+        reasons.append(f'{label}: missing positive timeout')
+    return reasons
+
+
 def validated_pairs(results, *, candidate_mode, baseline_modes, compare_versions=False):
     """Check the shared frozen-input, ACP and accounting evidence for paired modes."""
     reasons, pairs = [], {}
     expected = {(case, rep) for case in results['cases']
                 for rep in range(1, results['repetitions'] + 1)}
     profiles = []
-    # Head-to-head release comparison differs by binary on purpose; everything else must match.
-    profile_keys = ['model', 'effort', 'configured_models', 'configured_utility',
-                    'configured_main_effort_auto', 'jev_enabled', 'utility_model', 'max_concurrent',
-                    'capacity_env', 'max_depth', 'depth_env', 'timeout_s', 'order_seed', 'tools', 'permissions']
-    if not compare_versions:
-        profile_keys.insert(0, 'binary_sha256')
     for row in results['runs']:
         variant = row['variant']
         key = (row['case'], row['repetition'])
@@ -51,30 +86,8 @@ def validated_pairs(results, *, candidate_mode, baseline_modes, compare_versions
             reasons.append(f'{label}: unexpected or duplicate run')
             continue
         pairs.setdefault(key, {})[variant] = row
-        settings = row['settings']
-        profiles.append({key: settings.get(key) for key in profile_keys})
-        mode = settings.get('execution_mode')
-        expected_mode = (candidate_mode,) if variant == 'candidate' else baseline_modes
-        acp = row.get('acp') or {}
-        activation = (acp.get('activation_receipt') or {}).get('result') or {}
-        if (settings.get('transport') != 'acp' or mode not in expected_mode or
-                activation.get('choice', activation.get('mode')) != mode or not acp.get('setup_confirmed') or
-                not acp.get('cleanup_complete') or not row.get('execution_mode_activation_confirmed')):
-            reasons.append(f'{label}: missing mode/setup/cleanup confirmation')
-        jev_reason = jev_unavailable_reason(row)
-        if jev_reason:
-            reasons.append(f'{label}: {jev_reason}')
-        elif (not row.get('accounting_complete') or not (row.get('accounting_evidence') or {}).get('complete') or
-                not row.get('call_usage') or any(not call.get('complete') for call in row['call_usage'])):
-            reasons.append(f'{label}: incomplete all-call accounting')
-        if not row.get('frozen_inputs_unchanged') or not row.get('binary_unchanged'):
-            reasons.append(f'{label}: frozen input/binary evidence missing')
-        for field in ('wall_time_s', 'credits'):
-            value = row.get(field)
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
-                reasons.append(f'{label}: invalid {field}')
-        if not isinstance(settings.get('timeout_s'), (float, int)) or settings['timeout_s'] <= 0:
-            reasons.append(f'{label}: missing positive timeout')
+        profiles.append(profile_of(row, compare_versions))
+        reasons.extend(row_reasons(row, label, (candidate_mode,) if variant == 'candidate' else baseline_modes))
     if not expected or set(pairs) != expected or any(set(pair) != {'baseline', 'candidate'} for pair in pairs.values()):
         reasons.append('missing declared case/repetition pairs')
     if not profiles or any(profile != profiles[0] for profile in profiles):

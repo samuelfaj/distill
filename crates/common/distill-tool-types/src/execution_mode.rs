@@ -515,6 +515,81 @@ impl V2Modes {
     }
 }
 
+impl ModePolicy {
+    /// The harness-enforced fields in which two rows differ, by name.
+    /// `effort.lean` and `prefix.directive` are left out: they are text that
+    /// asks Jev or the model for a behaviour, not a behaviour the harness
+    /// enforces. Prefix fields are named `prefix.*`; they apply to a pinned
+    /// mode only. A field added to the row is added here.
+    pub fn differing_fields(&self, other: &Self) -> Vec<&'static str> {
+        let (a, b) = (&self.runtime, &other.runtime);
+        let (p, q) = (&self.prefix, &other.prefix);
+        [
+            ("effort.cadence", a.effort.cadence != b.effort.cadence),
+            ("effort.quantile", a.effort.quantile != b.effort.quantile),
+            ("effort.ceiling", a.effort.ceiling != b.effort.ceiling),
+            (
+                "effort.floor_after_failure",
+                a.effort.floor_after_failure != b.effort.floor_after_failure,
+            ),
+            (
+                "effort.lowering_pass",
+                a.effort.lowering_pass != b.effort.lowering_pass,
+            ),
+            (
+                "effort.when_silent",
+                a.effort.when_silent != b.effort.when_silent,
+            ),
+            ("tier_routing", a.tier_routing != b.tier_routing),
+            (
+                "jev.await_turn_start",
+                a.jev.await_turn_start != b.jev.await_turn_start,
+            ),
+            ("jev.deadline_ms", a.jev.deadline_ms != b.jev.deadline_ms),
+            (
+                "jev.diff_risk_deadline_ms",
+                a.jev.diff_risk_deadline_ms != b.jev.diff_risk_deadline_ms,
+            ),
+            (
+                "utility_selection",
+                a.utility_selection != b.utility_selection,
+            ),
+            (
+                "context.mode_keys",
+                a.context.mode_keys != b.context.mode_keys,
+            ),
+            (
+                "context.cold_return",
+                a.context.cold_return != b.context.cold_return,
+            ),
+            (
+                "context.max_prompt_tokens",
+                a.context.max_prompt_tokens != b.context.max_prompt_tokens,
+            ),
+            (
+                "context.narrow_reads",
+                a.context.narrow_reads != b.context.narrow_reads,
+            ),
+            ("turn_end", a.turn_end != b.turn_end),
+            ("escalation", a.escalation != b.escalation),
+            ("subagent_depth", a.subagent_depth != b.subagent_depth),
+            (
+                "skill_descriptor_cap",
+                a.skill_descriptor_cap != b.skill_descriptor_cap,
+            ),
+            ("prefix.lean_tools", p.lean_tools != q.lean_tools),
+            ("prefix.model_key", p.model_key != q.model_key),
+            (
+                "prefix.provider_tier_key",
+                p.provider_tier_key != q.provider_tier_key,
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(name, differs)| differs.then_some(name))
+        .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -570,6 +645,35 @@ mod tests {
         assert_eq!(
             ModePolicy::v2(ExecutionMode::Normal),
             ModePolicy::today(ExecutionMode::Normal)
+        );
+    }
+
+    /// Modes that differ mostly in what they ask the model are one mode with
+    /// several names: every pair of v2 rows differs in at least five fields
+    /// the harness enforces, and in at least five runtime fields, which also
+    /// apply under Auto.
+    #[test]
+    fn every_pair_of_v2_rows_differs_in_at_least_five_enforced_fields() {
+        const MIN_DIFFERING_FIELDS: usize = 5;
+        for (index, a) in ExecutionMode::ALL.into_iter().enumerate() {
+            for b in ExecutionMode::ALL.into_iter().skip(index + 1) {
+                let fields = ModePolicy::v2(a).differing_fields(&ModePolicy::v2(b));
+                let runtime = fields
+                    .iter()
+                    .filter(|name| !name.starts_with("prefix."))
+                    .count();
+                assert!(
+                    fields.len() >= MIN_DIFFERING_FIELDS && runtime >= MIN_DIFFERING_FIELDS,
+                    "{a:?} vs {b:?}: {} fields ({runtime} runtime): {fields:?}",
+                    fields.len()
+                );
+            }
+        }
+        let row = ModePolicy::v2(ExecutionMode::Ultracode);
+        assert!(row.differing_fields(&row).is_empty());
+        assert!(
+            row.differing_fields(&ModePolicy::today(ExecutionMode::Ultracode))
+                .contains(&"turn_end")
         );
     }
 

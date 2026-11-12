@@ -21,8 +21,7 @@ use crate::session::helpers::session_compact::{
 };
 use crate::session::persistence::PersistenceMsg;
 use crate::session::two_pass::{
-    TWO_PASS_DEFAULT_SPLIT_FRACTION, build_two_pass_pass1_history, build_two_pass_pass2_history,
-    note_for_two_pass_pass2, split_conversation_for_two_pass,
+    build_two_pass_pass1_history, build_two_pass_pass2_history, note_for_two_pass_pass2,
 };
 use agent_client_protocol as acp;
 use distill_chat_state::compaction_utils::{
@@ -507,6 +506,9 @@ mod output_cap_tests {
     }
 }
 #[cfg(test)]
+#[path = "compaction_prefire_prefix_tests.rs"]
+mod prefire_prefix_tests;
+#[cfg(test)]
 #[path = "compaction_two_pass_prefire_helper_tests.rs"]
 mod two_pass_prefire_helper_tests;
 #[cfg(test)]
@@ -661,7 +663,7 @@ impl SessionActor {
         let start_pct = threshold.saturating_sub(prefire_lead_percent());
         distill_token_estimation::exceeds_threshold(estimated_total, cw, start_pct as u8)
     }
-    /// Background pass-1: summarize the ~95% prefix into NOTE₁ and cache it for a later pass-2 apply.
+    /// Background pass-1: summarize the history so far into NOTE₁ and cache it for a later pass-2 apply.
     /// Always releases the in-flight guard.
     /// Spawned via `spawn_local` from the turn loop; reads a conversation snapshot and does not mutate session state.
     #[tracing::instrument(
@@ -717,10 +719,16 @@ impl SessionActor {
         if conversation.len() < 4 {
             return PrefireOutcome::TooSmall.into();
         }
-        let split = split_conversation_for_two_pass(&conversation, TWO_PASS_DEFAULT_SPLIT_FRACTION);
-        if split.prefix.is_empty() || split.tail.is_empty() {
+        // The whole history the main request sends (less a trailing call still
+        // waiting for its result): only the instruction follows it, so the
+        // request ends where the last main request wrote its cache entry. A
+        // breakpoint cache keeps entries only at request tips, and a prefix that
+        // stops earlier finds none alive there and is written again in full.
+        let split_idx =
+            prepare_conversation_for_verbatim_summarization(conversation.clone(), false).len();
+        let Some(prefix) = conversation.get(..split_idx).filter(|p| !p.is_empty()) else {
             return PrefireOutcome::EmptySplit.into();
-        }
+        };
         let sampling_cfg = self.chat_state_handle.get_sampling_config().await;
         let model_slug = sampling_cfg
             .as_ref()
@@ -735,7 +743,7 @@ impl SessionActor {
         });
         let prefix_prepared = apply_turn_image_budget_and_prune(
             &self.chat_state_handle,
-            prepare_conversation_for_verbatim_summarization(split.prefix.to_vec(), strips),
+            prepare_conversation_for_verbatim_summarization(prefix.to_vec(), strips),
         )
         .await;
         let prefix_est_tokens = prefix_prepared
@@ -752,7 +760,7 @@ impl SessionActor {
         let pass1_latency_ms = started.elapsed().as_millis() as u64;
         let attempted = |outcome: PrefireOutcome, note1_chars: Option<usize>| PrefirePass1Run {
             outcome,
-            prefix_len: Some(split.split_idx),
+            prefix_len: Some(split_idx),
             prefix_est_tokens: Some(prefix_est_tokens),
             pass1_latency_ms: Some(pass1_latency_ms),
             note1_chars,
@@ -771,12 +779,9 @@ impl SessionActor {
         }
         self.compaction.prefire.unblock();
         let note1_chars = note1.chars().count();
-        let Some(prefix) = conversation.get(..split.split_idx) else {
-            return attempted(PrefireOutcome::SampleFailed, None);
-        };
         let cache = AsyncCompactionCache {
             note1,
-            prefix_len: split.split_idx,
+            prefix_len: split_idx,
             fingerprint: fingerprint_prefix(prefix),
             model_slug,
             pass1_latency_ms,

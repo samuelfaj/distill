@@ -1705,6 +1705,173 @@ async fn account_route_server_failure_after_output_still_reaches_the_session() {
 }
 
 // ---------------------------------------------------------------------------
+// Output cap: a response cut while the model was still reasoning
+// ---------------------------------------------------------------------------
+
+/// A chat-completions turn the output cap cut while the model was still reasoning: reasoning deltas, `finish_reason:
+/// "length"`, no text and no tool call.
+fn chat_completions_reasoning_cut_by_length(model: &str) -> Vec<SseEvent> {
+    let chunk = |delta: serde_json::Value, finish: serde_json::Value| {
+        SseEvent::data(
+            json!({
+                "id": "chatcmpl-test", "object": "chat.completion.chunk",
+                "created": 1234567890, "model": model,
+                "choices": [{ "index": 0, "delta": delta, "finish_reason": finish }]
+            })
+            .to_string(),
+        )
+    };
+    vec![
+        chunk(
+            json!({ "role": "assistant", "reasoning_content": "weighing every option at length" }),
+            json!(null),
+        ),
+        chunk(json!({}), json!("length")),
+        SseEvent::data(
+            json!({
+                "id": "chatcmpl-test", "object": "chat.completion.chunk",
+                "created": 1234567890, "model": model,
+                "choices": [],
+                "usage": { "prompt_tokens": 10, "completion_tokens": 1024, "total_tokens": 1034 }
+            })
+            .to_string(),
+        ),
+        SseEvent::data("[DONE]"),
+    ]
+}
+
+/// Serves `/v1/chat/completions`: the first `cut_attempts` calls are cut while reasoning, later ones answer.
+/// Every request body is kept for the test to read.
+fn chat_app_cut_while_reasoning(
+    bodies: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    cut_attempts: usize,
+) -> Router {
+    Router::new().route(
+        "/v1/chat/completions",
+        post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+            let bodies = Arc::clone(&bodies);
+            async move {
+                let attempt = {
+                    let mut bodies = bodies.lock().unwrap();
+                    bodies.push(body);
+                    bodies.len() - 1
+                };
+                let events = if attempt < cut_attempts {
+                    sse_events_to_axum(chat_completions_reasoning_cut_by_length("test-model"))
+                } else {
+                    sse::chat_completion_events("the next step", "test-model")
+                };
+                Sse::new(stream::iter(
+                    events.into_iter().map(Ok::<_, std::convert::Infallible>),
+                ))
+            }
+        }),
+    )
+}
+
+/// A model at a high reasoning effort can spend its whole output cap thinking and deliver nothing.
+/// That used to fail the request, and with it the agent turn, although the window had room for a shorter answer.
+/// The request is resampled with a reminder to reason less.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reasoning_cut_by_the_output_cap_is_resampled_with_a_reminder() {
+    let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let server = MockServer::spawn(chat_app_cut_while_reasoning(Arc::clone(&bodies), 1)).await;
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let handle = SamplerActor::spawn(
+        test_config(server.base_url(), "test-model"),
+        RetryPolicy::default(),
+        event_tx,
+    );
+
+    handle.submit(RequestId::from("req-output-cap"), user_request("hi"));
+    let events = drain_until_terminal(&mut event_rx, Duration::from_secs(30)).await;
+    server.shutdown();
+
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            SamplingEvent::Retrying { kind, .. } if *kind == SamplingErrorKind::MaxTokensTruncation
+        )),
+        "the cut is announced as a retry: {events:?}"
+    );
+    assert!(
+        matches!(events.last(), Some(SamplingEvent::Completed { .. })),
+        "the resample completes the request: {:?}",
+        events.last()
+    );
+    let bodies = bodies.lock().unwrap();
+    assert_eq!(bodies.len(), 2, "one resample");
+    assert!(
+        !bodies[0]
+            .to_string()
+            .contains("reached the output token limit"),
+        "the first request carries no reminder"
+    );
+    assert!(
+        bodies[1]
+            .to_string()
+            .contains("reached the output token limit"),
+        "the resample tells the model why it was cut: {}",
+        bodies[1]
+    );
+}
+
+/// The resample budget is small: a model that keeps spending the cap on reasoning fails as it did before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reasoning_cut_every_time_fails_after_two_resamples() {
+    let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let server = MockServer::spawn(chat_app_cut_while_reasoning(
+        Arc::clone(&bodies),
+        usize::MAX,
+    ))
+    .await;
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let handle = SamplerActor::spawn(
+        test_config(server.base_url(), "test-model"),
+        RetryPolicy::default(),
+        event_tx,
+    );
+
+    handle.submit(RequestId::from("req-output-cap-stuck"), user_request("hi"));
+    let events = drain_until_terminal(&mut event_rx, Duration::from_secs(30)).await;
+    server.shutdown();
+
+    match events.last() {
+        Some(SamplingEvent::Failed { error, .. }) => {
+            assert_eq!(error.kind, SamplingErrorKind::MaxTokensTruncation);
+        }
+        other => panic!("expected Failed(MaxTokensTruncation), got {other:?}"),
+    }
+    assert_eq!(
+        bodies.lock().unwrap().len(),
+        3,
+        "the first attempt and two resamples"
+    );
+}
+
+/// With no output cap configured, `Length` means the context window ran out, and a replay cannot fit either.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reasoning_cut_with_no_output_cap_is_not_resampled() {
+    let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let server = MockServer::spawn(chat_app_cut_while_reasoning(Arc::clone(&bodies), 1)).await;
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let mut config = test_config(server.base_url(), "test-model");
+    config.max_completion_tokens = None;
+    let handle = SamplerActor::spawn(config, RetryPolicy::default(), event_tx);
+
+    handle.submit(RequestId::from("req-window-exhausted"), user_request("hi"));
+    let events = drain_until_terminal(&mut event_rx, Duration::from_secs(30)).await;
+    server.shutdown();
+
+    assert!(
+        matches!(events.last(), Some(SamplingEvent::Failed { .. })),
+        "the truncation is surfaced: {:?}",
+        events.last()
+    );
+    assert_eq!(bodies.lock().unwrap().len(), 1, "no replay");
+}
+
+// ---------------------------------------------------------------------------
 // Helpers for draining the event channel
 // ---------------------------------------------------------------------------
 

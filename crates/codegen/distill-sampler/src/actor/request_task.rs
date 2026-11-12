@@ -66,6 +66,12 @@ enum AttemptOutcome {
         doom_loop_signals: Vec<String>,
         recovery_items: Vec<distill_sampling_types::ConversationItem>,
     },
+    /// A `Length` stop the request's length policy rejected (`MaxTokensTruncation`).
+    /// `empty` says the cut response delivered nothing: no text and no tool call, only reasoning at most.
+    Truncated {
+        doom_loop_signals: Vec<String>,
+        empty: bool,
+    },
     /// `cancel_token` fired mid-attempt.
     /// The retry loop bails out without further attempts.
     Cancelled,
@@ -138,12 +144,14 @@ pub(crate) async fn run_request_task(
     let doom_policy = config.doom_loop_recovery;
     let doom_max_retries = doom_policy.map_or(0, |p| p.max_retries);
     let mut doom_retry_count: u32 = 0;
+    // A response the output cap swallowed whole is resampled on its own small budget, like a doom loop
+    let mut output_cap_resamples: u32 = 0;
     let output_observed = Arc::clone(&completion.output_observed);
 
     loop {
         sampling_span.record(
             "total_attempts",
-            (retry_count + doom_retry_count + 1) as i64,
+            (retry_count + doom_retry_count + output_cap_resamples + 1) as i64,
         );
         if cancel_token.is_cancelled() {
             handle_cancellation(&event_tx, &request_id, &mut completion);
@@ -324,6 +332,62 @@ pub(crate) async fn run_request_task(
                     &error,
                     &mut retry_count,
                     failed_max_retries,
+                    &retry_policy,
+                    &event_tx,
+                    &request_id,
+                    &mut request,
+                    &mut client,
+                    &config,
+                    &cancel_token,
+                    &mut completion,
+                    &sampling_span,
+                )
+                .await
+                {
+                    return request_id;
+                }
+            }
+            AttemptOutcome::Truncated {
+                doom_loop_signals,
+                empty,
+            } => {
+                completion.merge_doom_loop_signals(doom_loop_signals);
+                let error = SamplingError::MaxTokensTruncation;
+                // The model spent its whole output cap reasoning and delivered nothing, with room left in the window.
+                // Failing here ended the agent turn; a nudge to reason less usually gets the next step out
+                let caller_cannot_retract =
+                    caller_retries_only_before_output && output_observed.load(Ordering::Relaxed);
+                if empty
+                    && output_cap_resamples < MAX_OUTPUT_CAP_RESAMPLES
+                    && !caller_cannot_retract
+                    && cut_at_model_output_cap(&request, &config)
+                {
+                    output_cap_resamples += 1;
+                    request
+                        .items
+                        .push(distill_sampling_types::ConversationItem::system_reminder(
+                            OUTPUT_CAP_REMINDER,
+                        ));
+                    tracing::warn!(
+                        target: crate::sampling_log::TARGET,
+                        attempt = output_cap_resamples,
+                        max_retries = MAX_OUTPUT_CAP_RESAMPLES,
+                        outcome = "resampled_with_reminder",
+                        "output cap reached with nothing delivered: retrying with guidance"
+                    );
+                    emit_retrying(
+                        &event_tx,
+                        &request_id,
+                        output_cap_resamples,
+                        MAX_OUTPUT_CAP_RESAMPLES,
+                        &error,
+                    );
+                    continue;
+                }
+                if !apply_retry_decision(
+                    &error,
+                    &mut retry_count,
+                    effective_max_retries,
                     &retry_policy,
                     &event_tx,
                     &request_id,
@@ -721,9 +785,16 @@ async fn drive_l2(
                     }
                     // Fail-vs-salvage is centralized in `apply_length_policy`; detector metadata survives a failing verdict
                     // A salvaged response has no empty reason, so it falls through to `Completed` below
+                    let empty = response.is_empty();
                     let response =
                         match crate::client::apply_length_policy(length_policy, *response) {
                             Ok(response) => Box::new(response),
+                            Err(SamplingError::MaxTokensTruncation) => {
+                                return AttemptOutcome::Truncated {
+                                    doom_loop_signals: all_triggers,
+                                    empty,
+                                };
+                            }
                             Err(error) => {
                                 return AttemptOutcome::Failed {
                                     error,
@@ -808,6 +879,23 @@ fn retag(event: SamplingEvent, _request_id: &RequestId) -> SamplingEvent {
 }
 
 /// Reconstruct a [`SamplingError`] from a [`SamplingErrorInfo`] when there is no captured raw error in the cell.
+/// Resamples of a response the output cap swallowed whole, per request.
+const MAX_OUTPUT_CAP_RESAMPLES: u32 = 2;
+
+/// Appended before each such resample.
+const OUTPUT_CAP_REMINDER: &str = "<system_reminder>Your previous response reached the output token limit while you were still reasoning, so none of it was delivered. Do not redo that analysis. Reason only as much as the next step needs, then act: make the next tool call, or give a short answer.</system_reminder>";
+
+/// Whether a `Length` stop hit the model's own output cap rather than a budget the context window had already shrunk.
+/// The session bounds `max_output_tokens` to what is left of the window, so a request still entitled to the full cap
+/// had room to answer; replaying one that was already squeezed, or one with no cap at all, cannot succeed.
+fn cut_at_model_output_cap(request: &ConversationRequest, config: &SamplerConfig) -> bool {
+    match (request.max_output_tokens, config.max_completion_tokens) {
+        (Some(bound), Some(cap)) => bound >= cap,
+        (None, Some(_)) => true,
+        (_, None) => false,
+    }
+}
+
 /// The response body broke off before the provider finished it: a transport failure, not a server-reported error.
 fn is_dropped_stream(error: &SamplingError) -> bool {
     matches!(error, SamplingError::EventStreamError(_))
@@ -1162,7 +1250,7 @@ mod tests {
         .await;
         assert!(matches!(
             length,
-            AttemptOutcome::Failed {
+            AttemptOutcome::Truncated {
                 doom_loop_signals,
                 ..
             } if doom_loop_signals == ["exact_repetition:42x3@thinking".to_string()]
@@ -1215,7 +1303,7 @@ mod tests {
         )
         .await;
 
-        let AttemptOutcome::Failed {
+        let AttemptOutcome::Truncated {
             doom_loop_signals, ..
         } = outcome
         else {
@@ -1242,12 +1330,10 @@ mod tests {
             distill_sampling_types::LengthPolicy::Fail,
         )
         .await;
+        // Text was delivered, so this is not the cut the loop resamples
         assert!(matches!(
             outcome,
-            AttemptOutcome::Failed {
-                error: SamplingError::MaxTokensTruncation,
-                ..
-            }
+            AttemptOutcome::Truncated { empty: false, .. }
         ));
     }
 
@@ -1295,10 +1381,9 @@ mod tests {
             let event = with_tool_call(length_completed_event("partial"), "{\"x\": \"trunc");
             let outcome = drive_length_event(event, policy).await;
             match outcome {
-                AttemptOutcome::Failed { error, .. } => {
-                    assert!(matches!(error, SamplingError::MaxTokensTruncation));
-                }
-                other => panic!("expected Failed(MaxTokensTruncation), got {other:?}"),
+                // A truncated call is visible output: it is failed, not resampled
+                AttemptOutcome::Truncated { empty, .. } => assert!(!empty),
+                other => panic!("expected Truncated, got {other:?}"),
             }
         }
     }
@@ -1332,12 +1417,53 @@ mod tests {
             distill_sampling_types::LengthPolicy::CompletePartial,
         )
         .await;
+        // Nothing was delivered: the attempt fails here, and the request loop decides whether to resample it
         assert!(matches!(
             outcome,
-            AttemptOutcome::Failed {
-                error: SamplingError::MaxTokensTruncation,
-                ..
-            }
+            AttemptOutcome::Truncated { empty: true, .. }
+        ));
+    }
+
+    fn request_with_output_bound(bound: Option<u32>) -> ConversationRequest {
+        ConversationRequest {
+            max_output_tokens: bound,
+            ..Default::default()
+        }
+    }
+
+    fn config_with_output_cap(cap: Option<u32>) -> SamplerConfig {
+        SamplerConfig {
+            max_completion_tokens: cap,
+            context_window: 1_000_000,
+            ..Default::default()
+        }
+    }
+
+    /// `Length` means two different things. With the model's full cap available the cap itself cut the answer, and a
+    /// shorter one fits; with a bound the window already squeezed, or no cap at all, the context is exhausted.
+    #[test]
+    fn output_cap_cut_is_told_from_an_exhausted_window() {
+        let capped = config_with_output_cap(Some(65_536));
+        assert!(cut_at_model_output_cap(
+            &request_with_output_bound(None),
+            &capped
+        ));
+        assert!(cut_at_model_output_cap(
+            &request_with_output_bound(Some(65_536)),
+            &capped
+        ));
+        assert!(!cut_at_model_output_cap(
+            &request_with_output_bound(Some(4_096)),
+            &capped
+        ));
+        let uncapped = config_with_output_cap(None);
+        assert!(!cut_at_model_output_cap(
+            &request_with_output_bound(None),
+            &uncapped
+        ));
+        assert!(!cut_at_model_output_cap(
+            &request_with_output_bound(Some(4_096)),
+            &uncapped
         ));
     }
 

@@ -51,6 +51,8 @@ d4_compaction_timing  = true # D4: compact early when the next step no longer ne
 d5_memory_capture_gate = true # D5: gate durable memory capture
 d6_history_eviction   = true # D6: evict old large tool output from history at cold moments (no Jev call)
 b7_subagent_model     = true # B7: choose worker or main model for a subagent
+b8_criteria_v2        = true # Auto: the mode question judges the whole request; each mode says what it is for, what it is not for, with example requests; false restores the first question; not yet through replay, shadow or a benchmark
+b8_up_only            = true # Auto: inside a request the mode only moves up (a review needs 0.25 over the current mode, or the escalation ratchet); a leaner pick waits for the next request; false restores the review that moves either way; not yet through replay, shadow or a benchmark
 
 # Off until their own gate passes (the plan's standing rule):
 b2_model_tier         = false # money lever: only ever downgrades a routine turn

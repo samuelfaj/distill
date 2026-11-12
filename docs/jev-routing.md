@@ -394,6 +394,54 @@ These levers are on by default:
 | `b2_model_tier` | Whether a call can run on a cheaper tier | Downgrades only, and only in automatic effort mode |
 | `c1_premature_stop` / `c3_completion_check` | Whether the main turn is ending with requested work or proof missing | One advisory reminder per user turn, then the turn ends normally |
 
+## Auto mode
+
+Under Auto one Jev question (`b8_execution_mode`) picks the effective mode
+when a request starts, and a review after each completed tool round may move
+it. Two `[jev.ladder]` keys shape both, and both are on by default:
+
+- `b8_criteria_v2`: the question judges the whole request, not the next step.
+  Each option is an object with the same three fields: what the mode is for,
+  what it is not for, and two or three example requests. UltraSave covers
+  mechanical, fully specified work that is cheap to verify; UltraFast a quick
+  answer or a small fix where waiting is the cost; Normal ordinary multi-step
+  work; UltraCode changes where a wrong result is expensive (hidden
+  invariants, migrations, concurrency, public contracts). The state carries
+  the request once, the mode in force and the switch cost as numbers; from a
+  session's second request on it adds how the previous request ended (failed
+  tool calls, and checks passed, failed and unknown), and a review adds its
+  progress and latest step. UltraSave is left out of the options only when it
+  could change nothing here: no cheaper model, no tier routing, and a runtime
+  row that equals Normal's apart from tier routing (every shipped row differs,
+  so in practice it stays). Below the request-start floor (0.0 until it is
+  fitted) a session's first request falls to Normal and later requests keep
+  their mode. With `[jev] shadow_packs = true` the first wording rides the
+  same request and is recorded as `shadow:mode_v1:<choice>`, so the two can be
+  compared from recorded decisions. `false` restores the first question and
+  state exactly.
+- `b8_up_only`: inside a request the mode only moves up (UltraSave or
+  UltraFast to Normal, Normal to UltraCode): by a review whose probability for
+  the higher mode exceeds the current mode's by at least the climb margin
+  (0.25, `mode_review_up_margin` in the thresholds table), or by the
+  escalation ratchet. A leaner or sideways answer is recorded as `keep` and
+  waits for the next request, whose pick may choose it. At UltraCode the
+  review asks nothing. In UltraFast on its v2 row (no turn-start waits) the
+  review does not hold the next main request: it runs on its own task and its
+  answer applies at the first review after it arrives; a new request drops
+  it. A mid-turn switch appends the mode directive only when the model has
+  something new to read: the tools array changed, or the live history after
+  the last compaction does not already end on the new mode's directive.
+  Normal and UltraSave turns under Auto take the UltraCode review's snapshot
+  before their first tool call, so a climb to UltraCode ends the turn through
+  that review and the review sees the edits made before the climb; a climb
+  from UltraFast is reviewed from the first tool round after it.
+  `b8_review_hygiene` still applies to the climbs that remain. `false`
+  restores the review that moves either way.
+
+Both keys are on by the owner's choice. Neither the new criteria nor the
+up-only rule has been through the replay, shadow and paired-benchmark
+sequence below; that work is still to be done.
+
 ## Escalation ratchet
 
 UltraSave and UltraFast give up capacity on purpose (a cheaper tier, a lower

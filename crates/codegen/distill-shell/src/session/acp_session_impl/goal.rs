@@ -3013,6 +3013,17 @@ impl SessionActor {
     }
 }
 
+/// One review run over a turn's patch (see `run_turn_patch_review`).
+pub(super) struct TurnPatchReviewRun<'a> {
+    pub(super) verifier_id: &'a str,
+    /// 1-based run within the turn; names this run's files.
+    pub(super) review: u32,
+    pub(super) prior_gaps: Option<&'a str>,
+    pub(super) skeptic_count: u32,
+    /// An escalation review: the session's own model, no UltraCode event.
+    pub(super) escalation: bool,
+}
+
 /// UltraCode v2: the independent turn-end review (see
 /// `goal_classifier::turn_review`). Every entry point is inert unless the
 /// contract is configured.
@@ -3144,15 +3155,6 @@ impl SessionActor {
         patch: &crate::session::goal_classifier::turn_snapshot::TurnPatch,
         skeptic_count: u32,
     ) -> crate::session::goal_classifier::turn_review::TurnReviewVerdict {
-        use crate::session::goal_classifier::turn_review::{
-            TurnReviewInputs, TurnReviewVerdict, run_turn_review,
-        };
-        use crate::session::goal_classifier::{ChannelSpawner, expand_skeptic_assignment};
-        let Some(event_tx) = self.tool_context.subagent_event_tx.clone() else {
-            return TurnReviewVerdict::Unavailable {
-                reason: "no subagent coordinator to run the review".to_owned(),
-            };
-        };
         let (verifier_id, review, prior_gaps) = {
             let ledger = self.jev_ledger.borrow();
             let state = &ledger.ultracode_review;
@@ -3162,6 +3164,46 @@ impl SessionActor {
                 state.prior_gaps().map(str::to_owned),
             )
         };
+        Box::pin(self.run_turn_patch_review(
+            root,
+            patch,
+            TurnPatchReviewRun {
+                verifier_id: &verifier_id,
+                review,
+                prior_gaps: prior_gaps.as_deref(),
+                skeptic_count,
+                escalation: false,
+            },
+        ))
+        .await
+    }
+
+    /// Runs `run.skeptic_count` reviewers over a turn's patch through the
+    /// goal verification stage. The UltraCode review draws skeptics from the
+    /// configured pool; an escalation review runs one reviewer on the
+    /// session's model and reports through its own decision row.
+    pub(super) async fn run_turn_patch_review(
+        &self,
+        root: &std::path::Path,
+        patch: &crate::session::goal_classifier::turn_snapshot::TurnPatch,
+        run: TurnPatchReviewRun<'_>,
+    ) -> crate::session::goal_classifier::turn_review::TurnReviewVerdict {
+        use crate::session::goal_classifier::turn_review::{
+            TurnReviewInputs, TurnReviewVerdict, run_turn_review,
+        };
+        use crate::session::goal_classifier::{ChannelSpawner, expand_skeptic_assignment};
+        let Some(event_tx) = self.tool_context.subagent_event_tx.clone() else {
+            return TurnReviewVerdict::Unavailable {
+                reason: "no subagent coordinator to run the review".to_owned(),
+            };
+        };
+        let TurnPatchReviewRun {
+            verifier_id,
+            review,
+            prior_gaps,
+            skeptic_count,
+            escalation,
+        } = run;
         let request = self.jev_last_human_request().await.unwrap_or_default();
         let final_response = self
             .chat_state_handle
@@ -3181,7 +3223,7 @@ impl SessionActor {
             .clone();
         let task_tool_name = self.resolve_goal_tool_names().await.task;
         let inherit_tool_names = self.resolve_inherit_role_tool_names().await;
-        let (skeptic_overrides, tool_names) = if self.goal_use_current_model_only {
+        let (skeptic_overrides, tool_names) = if self.goal_use_current_model_only || escalation {
             (
                 vec![
                     crate::session::goal_planner::RoleSpawnOverride::default();
@@ -3213,8 +3255,8 @@ impl SessionActor {
                 // review reports through its own events.
                 events: None,
             });
-        let scratch_dir = crate::session::goal_tracker::implementer_scratch_dir(&verifier_id);
-        let scratch_dir_ready = crate::session::goal_tracker::ensure_goal_scratch_root(&verifier_id)
+        let scratch_dir = crate::session::goal_tracker::implementer_scratch_dir(verifier_id);
+        let scratch_dir_ready = crate::session::goal_tracker::ensure_goal_scratch_root(verifier_id)
             .is_ok()
             && tokio::fs::create_dir_all(&scratch_dir).await.is_ok();
         let harness_checks = self.recorded_harness_checks();
@@ -3225,18 +3267,23 @@ impl SessionActor {
                 final_response: &final_response,
                 patch,
                 workspace_root: root,
-                verifier_id: &verifier_id,
+                verifier_id,
                 review,
                 model_id: &model_id,
                 scratch_dir: &scratch_dir,
                 scratch_dir_ready,
                 skeptic_count,
-                prior_gaps: prior_gaps.as_deref(),
+                prior_gaps,
                 tool_names: &tool_names,
                 inherit_tool_names: &inherit_tool_names,
                 harness_checks: &harness_checks,
             },
-            &|event| self.events.emit(event),
+            // The UltraCode review event would count this run as UltraCode's.
+            &|event| {
+                if !escalation {
+                    self.events.emit(event);
+                }
+            },
         )
         .await;
         self.chat_state_handle.flush_harness_trace_turn();

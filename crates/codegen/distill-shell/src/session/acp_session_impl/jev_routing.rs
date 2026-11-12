@@ -359,7 +359,8 @@ impl SessionActor {
             state["candidate_facts"] = serde_json::Value::Array(facts);
         }
         state["reasoning_effort_policy"] = serde_json::json!("auto");
-        state["execution_policy"] = serde_json::json!(effort_execution_policy(self.execution_mode.load()));
+        state["execution_policy"] =
+            serde_json::json!(effort_execution_policy(self.escalation_effort_mode()));
         if let Some(note) = provider_effort_note(&cfg.model) {
             state["provider_effort_note"] = serde_json::json!(note);
         }
@@ -449,7 +450,7 @@ impl SessionActor {
     /// never raises one below it.
     fn apply_effort_fallback(&self, cfg: &mut SamplingConfig, reason: &str) {
         let menu = self.model_effort_menu(&cfg.model).unwrap_or_default();
-        let Some(level) = mode_fallback_effort(self.execution_mode.load(), &menu) else {
+        let Some(level) = mode_fallback_effort(self.escalation_effort_mode(), &menu) else {
             return;
         };
         // Only ever lowers: a session already below the baseline stays there.
@@ -2533,6 +2534,10 @@ impl SessionActor {
         request: &mut ConversationRequest,
         error: &distill_sampler::SamplingErrorInfo,
     ) -> SamplingConfig {
+        let tier_routed = self.jev_ledger.borrow().tier_route_active;
+        if tier_routed {
+            self.note_escalation(super::escalation::EscalationTrigger::RoutedError);
+        }
         self.signals_handle().clear_active_dispatch();
         {
             let mut ledger = self.jev_ledger.borrow_mut();

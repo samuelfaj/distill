@@ -131,6 +131,9 @@ pub(crate) struct JevTurnLedger {
     /// How the last drained request ended, for Auto's next request-start
     /// pick. Session-scoped: each drain replaces it.
     pub(crate) previous_turn: Option<crate::session::acp_session::jev_auto_mode::PreviousTurn>,
+    /// Escalation ratchet of the current turn: triggers recorded, climbs,
+    /// effort level, tier floor. Cleared when the turn drains.
+    pub(crate) escalation: super::escalation::EscalationState,
 }
 
 /// Prompt size under which a main round may still change its effort mid-turn.
@@ -434,6 +437,7 @@ impl JevTurnLedger {
         self.tier_route_active = false;
         self.tier_route_slug = None;
         self.auto_mode = Default::default();
+        self.escalation = Default::default();
         rows.sort_by(|a, b| {
             b.tokens()
                 .cmp(&a.tokens())

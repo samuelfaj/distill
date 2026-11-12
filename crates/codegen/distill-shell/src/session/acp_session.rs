@@ -190,6 +190,8 @@ mod jev_memory;
 mod jev_routing;
 #[path = "acp_session_impl/jev_tier_route.rs"]
 mod jev_tier_route;
+#[path = "acp_session_impl/escalation.rs"]
+mod escalation;
 #[path = "acp_session_impl/jev_auto_mode.rs"]
 pub(crate) mod jev_auto_mode;
 #[path = "acp_session_impl/jev_tool_result.rs"]

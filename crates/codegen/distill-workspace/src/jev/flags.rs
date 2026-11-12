@@ -541,6 +541,9 @@ impl JevFlags {
             JevLever::B8ExecutionMode => self.b8_execution_mode,
             JevLever::B8StableTools => self.b8_stable_tools,
             JevLever::B8ReviewHygiene => self.b8_review_hygiene,
+            // Harness-internal: names the escalation ratchet's rows and asks
+            // Jev nothing, so there is no flag to switch it on.
+            JevLever::Escalation => false,
         }
     }
 
@@ -591,6 +594,8 @@ pub enum JevLever {
     D4CompactionTiming,
     D5MemoryCaptureGate,
     D6HistoryEviction,
+    /// The escalation ratchet's deterministic rows (`[modes] escalation`).
+    Escalation,
 }
 
 impl JevLever {
@@ -633,6 +638,7 @@ impl JevLever {
             Self::D4CompactionTiming => "d4_compaction_timing",
             Self::D5MemoryCaptureGate => "d5_memory_capture_gate",
             Self::D6HistoryEviction => "d6_history_eviction",
+            Self::Escalation => "escalation",
         }
     }
 }

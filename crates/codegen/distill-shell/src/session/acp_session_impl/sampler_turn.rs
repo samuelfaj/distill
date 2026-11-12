@@ -1363,6 +1363,7 @@ impl SessionActor {
             session_id, turn_id, round_id, requested_model = sampler_config.model,
             requested_effort = sampler_config.reasoning_effort.map(|effort| effort.as_ref().to_owned()),
             "model round before Jev routing");
+        Box::pin(self.escalation_before_round()).await;
         // E6: a utility `explore` child runs this round on the utility model at
         // its own effort; the effort passes below belong to the session model.
         if !self.jev_route_cheap_agent(&mut sampler_config).await {
@@ -1390,6 +1391,8 @@ impl SessionActor {
             // A redo the change review asked for runs at the setting it asked for:
             // the floor wins over anything cheaper chosen above.
             self.jev_apply_effort_floor(&mut sampler_config).await;
+            // A live escalation keeps its effort level for the rest of the turn.
+            self.escalation_apply_effort_floor(&mut sampler_config);
         }
         if self.tool_context.task_output_token_budget.is_some()
             || self.tool_context.sampler_retry_only_before_output

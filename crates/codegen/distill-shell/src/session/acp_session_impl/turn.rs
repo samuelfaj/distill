@@ -2973,6 +2973,7 @@ impl SessionActor {
                         tool_name: tool_name.clone(),
                     },
                 );
+                self.note_escalation(super::escalation::EscalationTrigger::IdenticalCalls);
                 let reminder = self
                     .tool_bridge_handle()
                     .render_prompt(
@@ -4098,6 +4099,7 @@ impl SessionActor {
                 return Ok(TurnOutcome::MaxTurnsReached { limit });
             }
             tool_turn_count = next_turn;
+            Box::pin(self.escalation_after_round()).await;
             if self.execution_mode.is_auto()
                 && let Some(request) = self.jev_last_human_request().await
             {

@@ -4226,6 +4226,7 @@ impl SessionActor {
                         review.confidence,
                         Some(&answers),
                     );
+                    self.note_c4_escalation(review.verdict, review.confidence, output);
                     let mut raised_level = None;
                     if !prose_only
                         && matches!(

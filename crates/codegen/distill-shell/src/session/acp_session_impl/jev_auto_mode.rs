@@ -237,6 +237,10 @@ impl SessionActor {
     /// review must keep the current mode instead of switching to `mode`.
     /// Below that a cache miss is cheap, so switching stays free.
     fn review_hold_reason(&self, mode: ExecutionMode, rounds: usize) -> Option<&'static str> {
+        // An escalation holds whatever the lever and the prompt size.
+        if self.escalation_holds_auto_mode(mode) {
+            return Some("escalated this request");
+        }
         if !crate::jev::lever_active(JevLever::B8ReviewHygiene) {
             return None;
         }
@@ -431,6 +435,23 @@ impl SessionActor {
             self.note_review_switch(current, rounds);
         }
         switched
+    }
+
+    /// The escalation ratchet's step under Auto: one mode up (UltraSave or
+    /// UltraFast to Normal, Normal to UltraCode) without asking Jev. `None`
+    /// outside Auto or at the top. The review keeps the new mode for the rest
+    /// of the request (see `escalation_holds_auto_mode`).
+    pub(super) fn escalate_auto_mode(&self) -> Option<ExecutionMode> {
+        if !self.auto_mode_active() {
+            return None;
+        }
+        let next = match self.execution_mode.load() {
+            ExecutionMode::Ultrasave | ExecutionMode::Ultrafast => ExecutionMode::Normal,
+            ExecutionMode::Normal => ExecutionMode::Ultracode,
+            ExecutionMode::Ultracode => return None,
+        };
+        self.publish_auto_mode(next, "escalated after a harness signal")
+            .then_some(next)
     }
 }
 

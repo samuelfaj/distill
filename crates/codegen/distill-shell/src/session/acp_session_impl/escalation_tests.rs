@@ -151,8 +151,8 @@ fn mode_answer(choice: &str, probability: f64) -> distill_workspace::jev::JevAns
     }
 }
 
-/// An unfitted trigger must stay in shadow, so only the names the user lists
-/// act; a typo is ignored rather than switching on something else.
+/// An explicit list is authoritative: only the names the user lists act, and
+/// a typo is ignored rather than switching on something else.
 #[test]
 fn the_config_names_the_live_triggers_and_ignores_the_rest() {
     let root: toml::Value = toml::from_str(
@@ -166,13 +166,35 @@ fn the_config_names_the_live_triggers_and_ignores_the_rest() {
         assert!(!live.contains(trigger), "{}", trigger.id());
     }
     assert_eq!(unknown, vec!["\"budget\"".to_owned()]);
-    let (none, unknown) = live_triggers_in(None);
-    assert!(
-        none.is_empty() && unknown.is_empty(),
-        "no key: everything in shadow"
-    );
     let empty: toml::Value = toml::from_str("[modes]\nescalation = []\n").unwrap();
-    assert!(live_triggers_in(Some(&empty)).0.is_empty());
+    assert!(
+        live_triggers_in(Some(&empty)).0.is_empty(),
+        "an empty list is the off switch: every trigger in shadow only"
+    );
+}
+
+/// With no `[modes] escalation` key every trigger acts, so a lean turn that
+/// keeps failing climbs without the user having to name each trigger.
+#[test]
+fn with_no_key_every_trigger_is_live() {
+    let no_key: toml::Value = toml::from_str("[modes.ultrasave]\nmodel = \"worker\"\n").unwrap();
+    for root in [None, Some(&no_key)] {
+        let (live, unknown) = live_triggers_in(root);
+        assert!(unknown.is_empty());
+        for trigger in [
+            RoutedError,
+            C4Break,
+            CheckFailedTwice,
+            IdenticalCalls,
+            StalledRounds,
+        ] {
+            assert!(
+                live.contains(trigger),
+                "{} must be live by default",
+                trigger.id()
+            );
+        }
+    }
 }
 
 /// The shadow rows are what fits a trigger: one per trigger per turn, so a

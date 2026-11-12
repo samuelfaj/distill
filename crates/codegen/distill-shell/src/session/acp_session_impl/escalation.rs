@@ -3,8 +3,10 @@
 //!
 //! Every trigger is recorded in shadow, as a content-free `escalation`
 //! decision row labelled `shadow:<trigger>`, at most once per turn and only in
-//! root sessions, so its fire rate can be measured before it changes anything.
-//! Only the triggers named in `[modes] escalation` act. They act without Jev
+//! root sessions, so its fire rate can be measured. With no `[modes]
+//! escalation` key every trigger also acts (not benchmarked); an explicit list
+//! names the ones that act, and `escalation = []` leaves all of them in shadow
+//! only. Live triggers act without Jev
 //! (every signal is a harness fact or an answer Jev already gave), move up
 //! only, and climb at most twice and change the model tier at most once per
 //! turn. The state lives in the turn ledger and is dropped when the turn ends.
@@ -112,17 +114,19 @@ impl LiveTriggers {
     }
 }
 
-/// The triggers `root`, an effective config, names in `[modes] escalation`,
-/// and the entries it names that are not triggers.
+/// The triggers `root`, an effective config, names in `[modes] escalation`
+/// (every trigger when the key is absent or not a list), and the entries it
+/// names that are not triggers.
 pub(crate) fn live_triggers_in(root: Option<&toml::Value>) -> (LiveTriggers, Vec<String>) {
+    let all = LiveTriggers::of(&EscalationTrigger::ALL);
     let mut live = LiveTriggers::default();
     let mut unknown = Vec::new();
     let Some(value) = root.and_then(|root| root.get("modes")?.get("escalation")) else {
-        return (live, unknown);
+        return (all, unknown);
     };
     let Some(names) = value.as_array() else {
         unknown.push(value.to_string());
-        return (live, unknown);
+        return (all, unknown);
     };
     for name in names {
         match name
@@ -151,7 +155,7 @@ pub(crate) fn set_live_triggers_for_tests(triggers: Option<&[EscalationTrigger]>
 
 /// The live triggers in the effective config, read once per process (config
 /// does not change mid-run). Unknown names are ignored with one warning; a
-/// config that fails to load leaves every trigger in shadow.
+/// config that fails to load keeps the default, every trigger live.
 pub(crate) fn live_triggers() -> LiveTriggers {
     #[cfg(test)]
     if let Some(live) = LIVE_FOR_TESTS.with(std::cell::Cell::get) {

@@ -462,13 +462,15 @@ not buy the expensive model because a turn spent money.
 
 Every trigger is always recorded in shadow, once per turn and only in root
 sessions, as a content-free `escalation` decision row labelled
-`shadow:<trigger>`; nothing else changes. No trigger acts by default, because
-none has been fitted yet: a trigger is switched on only after its shadow rows
-show it fires rarely on runs that pass. To make triggers live:
+`shadow:<trigger>`. With no `[modes] escalation` key all five triggers also
+act. This default has not been benchmarked: no trigger has been fitted
+against its shadow rows yet. An explicit list names the triggers that act, and
+an empty list turns every trigger off, leaving only the shadow rows:
 
 ```toml
 [modes]
-escalation = ["check_failed_twice", "c4_break"]
+escalation = ["check_failed_twice", "c4_break"]   # only these two act
+# escalation = []                                 # none acts; shadow rows only
 ```
 
 Unknown names are ignored with one warning. A live trigger climbs a turn-scoped

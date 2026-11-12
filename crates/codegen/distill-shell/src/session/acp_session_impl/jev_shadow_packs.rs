@@ -1,7 +1,7 @@
 // Modified for Distill by Samuel Fajreldines, 2026.
 //! Jev questions asked only to be recorded: they ride a request a live pack
 //! already makes, are recorded with a `shadow:` label, and nothing acts on
-//! their answers. All of it is off unless `[jev] shadow_packs` is on. Also
+//! their answers. All of it is off when `[jev] shadow_packs` is `false`. Also
 //! the check that a calibrated floor of the mode question still matches its
 //! wording (the other floors are checked where their questions are built).
 

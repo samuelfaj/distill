@@ -556,12 +556,14 @@ this order, and stops at the first it fails:
 2. **Shadow.** The candidate rides as a shadow pack in the request its lever
    already sends, on the same state, and is recorded as a `jev_decision`
    with a `shadow:` label. Nothing acts on it and it never sends a request
-   of its own. With `[jev] shadow_packs = true`, a session pinned to a mode
-   also gets the mode question in its request-start skill ranking, and
-   UltraCode's diff review carries two more notes (an unhandled edge case,
-   an invariant at risk) plus what alert and second-opinion floors of 0.55
-   and 0.50 would have flagged. This is a separate key from `shadow`, which
-   stops the levers that read it from acting at all.
+   of its own. Shadow packs are on by default and have not been
+   benchmarked; `[jev] shadow_packs = false` turns them off. With them on, a
+   session pinned to a mode also gets the mode question in its request-start
+   skill ranking, and UltraCode's diff review carries two more notes (an
+   unhandled edge case, an invariant at risk) plus what alert and
+   second-opinion floors of 0.55 and 0.50 would have flagged. This is a
+   separate key from `shadow`, which stops the levers that read it from
+   acting at all.
 3. **Paired benchmark** against the same binary, with no extra regression.
 
 `tools/task_cost_eval/jev_calibrate.py` reads the decision events and

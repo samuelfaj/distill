@@ -1311,8 +1311,9 @@ pub struct JevConfig {
     /// Unset ⇒ active (the harness default).
     pub shadow: Option<bool>,
     /// Shadow packs: extra questions that join a request a live pack already
-    /// makes, recorded with a `shadow:` label and never acted on. Unset ⇒ off.
-    /// Separate from `shadow`, which stops the levers that read it from acting.
+    /// makes, recorded with a `shadow:` label and never acted on. Unset ⇒ on
+    /// (not benchmarked); `false` turns them off. Separate from `shadow`,
+    /// which stops the levers that read it from acting.
     pub shadow_packs: Option<bool>,
     /// Append the state and questions of every Jev request to
     /// `<distill home>/jev/states/` for offline replay. Unset ⇒ off. The file

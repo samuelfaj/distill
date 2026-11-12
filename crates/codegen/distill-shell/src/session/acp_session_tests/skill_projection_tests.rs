@@ -77,6 +77,10 @@ where
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
+            // The test actor is pinned to a mode, where the default shadow pack would put the
+            // mode question on the P6 request; these tests script P6 alone (shadow packs have
+            // their own tests in `jev_shadow_packs`).
+            crate::jev_shadow::set_test_switches(Some(false), None);
             let (gateway_tx, _) =
                 tokio::sync::mpsc::unbounded_channel::<distill_acp_lib::AcpClientMessage>();
             let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
@@ -85,6 +89,7 @@ where
             test(actor).await;
             crate::jev::clear_test_decision_answers();
             crate::jev::clear_test_flags();
+            crate::jev_shadow::set_test_switches(None, None);
         })
         .await;
 }

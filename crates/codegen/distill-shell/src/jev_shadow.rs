@@ -4,9 +4,10 @@
 //! `distill_workspace::jev::replay`), shadow (candidate questions riding live
 //! requests), then a paired benchmark.
 //!
-//! Both switches are off by default and resolved once per process:
-//! - `[jev] shadow_packs`: shadow packs join requests a live pack already makes.
-//! - `[jev] capture_states`: every Jev request's state and questions are
+//! Both switches are resolved once per process:
+//! - `[jev] shadow_packs` (on by default, not benchmarked; `false` turns it
+//!   off): shadow packs join requests a live pack already makes.
+//! - `[jev] capture_states` (off by default): every Jev request's state and questions are
 //!   appended to [`capture_dir`]. The state holds user content (the request,
 //!   diffs, the final message), so the capture stays on this machine, in a
 //!   directory beside the payload store and never inside a session folder:
@@ -26,11 +27,17 @@ pub fn packs_on() -> bool {
         return on;
     }
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| {
-        crate::jev::resolve_config_from_disk()
-            .shadow_packs
-            .unwrap_or(false)
-    })
+    *ON.get_or_init(|| packs_on_with(crate::jev::resolve_config_from_disk().shadow_packs))
+}
+
+/// `[jev] shadow_packs` resolved: on unless the key says `false`. A shadow
+/// pack only joins a request a live pack already makes and nothing acts on
+/// its answers, so it writes nothing and changes no decision.
+const fn packs_on_with(key: Option<bool>) -> bool {
+    match key {
+        Some(on) => on,
+        None => true,
+    }
 }
 
 /// Whether Jev requests are captured for replay (`[jev] capture_states`).
@@ -133,13 +140,16 @@ pub(crate) fn set_test_switches(shadow_packs: Option<bool>, capture_states: Opti
 mod tests {
     use super::*;
 
-    /// Both switches default off: an unset `[jev]` neither adds questions to
-    /// live requests nor writes user content to disk.
+    /// Shadow packs default on and `false` turns them off. Capture stays
+    /// off by default: an unset `[jev]` never writes user content to disk.
     #[test]
-    fn both_switches_default_off() {
+    fn shadow_packs_default_on_and_capture_defaults_off() {
         let config = crate::agent::config::JevConfig::default();
         assert_eq!(config.shadow_packs, None);
         assert_eq!(config.capture_states, None);
+        assert!(packs_on_with(config.shadow_packs), "unset: shadow packs on");
+        assert!(!packs_on_with(Some(false)), "false is the off switch");
+        assert!(packs_on_with(Some(true)));
         let parsed: crate::agent::config::JevConfig =
             toml::from_str("shadow_packs = true\ncapture_states = true").expect("keys parse");
         assert_eq!(

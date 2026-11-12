@@ -22,6 +22,10 @@ Claims (a mode that misses its own gate shows 'no claim yet'):
 - Separation of UltraSave and UltraFast is reported, not gated.
 Auto is judged by auto_verdict.matrix_verdict and UltraCode by
 ultracode_verdict.analyze (when the campaign declares its case split).
+Lever-off arms (`<mode>-no-<lever>`, --jev-off) are compared with Normal and
+reported, with no claim. Each arm also gets a decision gate line (its
+decision metrics against Normal within the A/A deviation: PASS, FAIL or NO
+DATA); no claim here depends on it, so it is reported only.
 """
 from __future__ import annotations
 
@@ -29,6 +33,7 @@ import argparse
 import json
 
 from .auto_verdict import acceptance_shortfall, matrix_verdict
+from .decision_quality import LEVER_OFF_TAG, decision_gate
 from .gates import AA_BAND, aa_check, apply_repetition_rule, case_bootstrap, ratio_of_totals
 from .ultracode_verdict import analyze as ultracode_analyze
 from .ultrafast_verdict import charged_completion_s, profile_of, row_reasons, validated_pairs
@@ -54,6 +59,7 @@ def arm_labels(arms):
 
 
 def arm_mode(label):
+    label = label.split(LEVER_OFF_TAG)[0]
     return 'normal' if label == AA_ARM else label
 
 
@@ -190,16 +196,21 @@ def verdict(results):
         return report
     margins = {key: AA_MARGIN_FACTOR * value for key, value in aa['deviation'].items()}
     report['aa_margins'] = margins
+    report['decision_gate'] = {}
     for arm in arms:
         if arm not in ('normal', AA_ARM):
             report['comparisons'][arm] = compare(arm_rows[arm], arm_rows['normal'])
+            report['decision_gate'][arm] = decision_gate(arm_rows[arm], arm_rows['normal'], arm_rows[AA_ARM])
     for arm, result in report['comparisons'].items():
         report['claims'][arm] = claim(arm, result, profile=results.get('model_profile'), margins=margins,
                                       fast_result=report['comparisons'].get('ultrafast'))
     if 'ultrasave' in arms and 'ultrafast' in arms:
         report['separation'] = separation(arm_rows['ultrasave'], arm_rows['ultrafast'], margins)
     if 'auto' in arms:
-        report['auto'] = matrix_verdict({arm: arm_rows[arm] for arm in arms}, results['repetitions'])
+        report['auto'] = matrix_verdict({arm: arm_rows[arm] for arm in arms}, results['repetitions'],
+                                        tie_band={'credits': aa['deviation']['credits'],
+                                                  'charged_completion_s': aa['deviation']['time']},
+                                        expected_modes=results.get('expected_modes'))
     if 'ultracode' in arms:
         split = results.get('ultracode_cases') or {}
         report['ultracode'] = (ultracode_analyze(results['runs'], split['substantial'], split['control'],

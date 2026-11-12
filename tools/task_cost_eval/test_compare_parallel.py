@@ -819,6 +819,54 @@ class MatrixCampaignTest(unittest.TestCase):
                 self.assertIn('"execution_mode": "normal"', plan[0] + plan[1])
                 self.assertIn('"worker_model": ""', plan[0], 'the single profile has no worker model')
 
+    def test_jev_off_plans_one_extra_arm_per_lever_in_a_dry_run(self):
+        plan, text = self.dry_run('normal,normal,ultrafast,auto', '--jev-off', 'final_check',
+                                  '--jev-off', 'auto:c4_diff_risk')
+        labels = ['normal', 'normal_aa', 'ultrafast', 'auto', 'normal-no-final_check', 'auto-no-c4_diff_risk']
+        self.assertIn(f'over {len(labels)} arms ({", ".join(labels)})', text)
+        off = [line for line in plan if line.split()[1] == 'normal-no-final_check']
+        self.assertTrue(off and all('"jev_off": ["c1_premature_stop", "c3_completion_check"]' in line
+                                    and '"execution_mode": "normal"' in line for line in off))
+        self.assertTrue(all('"execution_mode": "auto"' in line and '"jev_off": ["c4_diff_risk"]' in line
+                            for line in plan if line.split()[1] == 'auto-no-c4_diff_risk'))
+        self.assertTrue(all('jev_off' not in line for line in plan if '-no-' not in line.split()[1]))
+
+    def test_jev_off_rejects_unknown_levers_modes_repeats_and_paired_campaigns(self):
+        for extra in (['--arms', 'normal,auto', '--jev-off', 'c4'],
+                      ['--arms', 'normal,auto', '--jev-off', 'ultrafast:c4_diff_risk'],
+                      ['--arms', 'normal,normal,auto', '--jev-off', 'normal_aa:c4_diff_risk'],
+                      ['--arms', 'normal,auto', '--jev-off', 'c4_diff_risk', '--jev-off', 'normal:c4_diff_risk'],
+                      ['--baseline-binary', '/a', '--candidate-binary', '/b', '--work-root', '/w', '--output', '/o',
+                       '--jev-off', 'c4_diff_risk']):
+            with self.subTest(extra=extra), contextlib.redirect_stderr(io.StringIO()), \
+                    mock.patch.object(compare_parallel, 'run_one') as run_one, self.assertRaises(SystemExit) as error:
+                compare_parallel.main(['--cohort', str(self.COHORT), *extra])
+            self.assertEqual(error.exception.code, 2)
+            run_one.assert_not_called()
+
+    def test_jev_off_writes_the_ladder_key_into_the_isolated_run_config(self):
+        case = COHORT['cases'][0]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            peer = fake_peer(root)
+            (root / 'profile').mkdir()
+            (root / 'profile' / 'codex-auth.json').write_text('{}')
+            with mock.patch.object(compare_parallel, 'distill_accounting', return_value=ACCOUNTED), \
+                    mock.patch.object(compare_parallel, 'run_grader', return_value={
+                        'exit_code': 0, 'timed_out': False, 'wall_time_s': .01}):
+                result = compare_parallel.run_one(peer, 'normal-no-final_check', case, 1, root / 'runs',
+                    root / 'profile', 3, frozen_inputs=compare_parallel.case_hashes(case),
+                    binary_hash=compare_parallel._sha256_file(peer), transport='acp', execution_mode='normal',
+                    worker_model='', jev_off=['c1_premature_stop', 'c3_completion_check'])
+                config = (Path(result['output_dir']) / 'distill-home/config.toml').read_text()
+                with self.assertRaises(ValueError):
+                    compare_parallel.run_one(peer, 'x', case, 1, root / 'other', root / 'profile', 3,
+                                             frozen_inputs=(), binary_hash='', jev_off=['c4'])
+        self.assertIn('[jev.ladder]\nc1_premature_stop = false\nc3_completion_check = false\n', config)
+        self.assertEqual(result['settings']['configured_jev_ladder'],
+                         {'c1_premature_stop': False, 'c3_completion_check': False})
+        self.assertEqual(result['settings']['jev_off'], ['c1_premature_stop', 'c3_completion_check'])
+
     def test_tiered_profile_writes_the_ultrasave_model_into_every_arm(self):
         plan, text = self.dry_run('normal,normal,ultrasave,ultrafast', '--ultrasave-model', 'vendor/cheap')
         self.assertIn('model profile tiered', text)

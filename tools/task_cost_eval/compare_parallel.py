@@ -172,6 +172,21 @@ def arms_from_argument(parser, args):
     return arm_labels(arms)
 
 
+def lever_off_arms(parser, args, labels):
+    """--jev-off [MODE:]LEVER values -> {arm label: (mode, [jev.ladder] keys)}; MODE defaults to normal."""
+    arms = {}
+    for value in args.jev_off or []:
+        mode, _, name = value.rpartition(':')
+        mode = mode or 'normal'
+        levers = decision_quality.jev_off_levers(name)
+        label = f'{mode}{decision_quality.LEVER_OFF_TAG}{name}'
+        if levers is None or mode not in labels or mode not in EXECUTION_MODES or label in arms:
+            parser.error(f'--jev-off takes [MODE:]LEVER with MODE one of the --arms modes and LEVER a [jev.ladder] '
+                         f'key or {", ".join(decision_quality.JEV_OFF_GROUPS)}, each at most once; got {value!r}')
+        arms[label] = (mode, levers)
+    return arms
+
+
 def call_summary(calls):
     """Per-run time and round split from per-call usage rows."""
     durations = [call.get('api_duration_ms') for call in calls]
@@ -266,7 +281,9 @@ def run_one(binary, variant, case, repetition, work_root, profile, timeout, *,
             ultracode=False, max_depth=None, model=MODEL, effort=None, transport='cli',
             worker_model='chatgpt/gpt-6-luna', worker_effort='auto', utility_effort='auto', order_seed=None,
             execution_mode=None, max_concurrent=None, enable_jev=False, utility_model=UTILITY_MODEL,
-            ultrasave_model=None, workspace_profile='plain'):
+            ultrasave_model=None, workspace_profile='plain', jev_off=()):
+    if any(lever not in decision_quality.LADDER_KEYS for lever in jev_off):
+        raise ValueError('jev_off takes [jev.ladder] keys')
     if execution_mode is not None and (execution_mode not in EXECUTION_MODES or ultracode):
         raise ValueError('Use one execution_mode or the legacy ultracode flag')
     if case.get('followup_prompt_ref') and transport != 'acp':
@@ -299,6 +316,8 @@ def run_one(binary, variant, case, repetition, work_root, profile, timeout, *,
     config_text = distill_config(main_model=model, worker_model=worker_model, worker_effort=worker_effort,
                                  utility_effort=utility_effort, enable_jev=enable_jev, utility_model=utility_model,
                                  ultrasave_model=ultrasave_model) + profile_config
+    if jev_off:
+        config_text += '[jev.ladder]\n' + ''.join(f'{lever} = false\n' for lever in jev_off)
     (home / 'config.toml').write_text(config_text)
     configured = tomllib.loads(config_text)
     session = str(uuid.uuid4()) if transport == 'cli' else None
@@ -348,6 +367,7 @@ def run_one(binary, variant, case, repetition, work_root, profile, timeout, *,
                 'configured_main_effort_auto': configured['jev']['effort_auto'],
                 'jev_enabled': bool(enable_jev), 'utility_model': utility_model,
                 'configured_modes': configured.get('modes'),
+                'jev_off': list(jev_off), 'configured_jev_ladder': configured['jev'].get('ladder'),
                 'order_seed': order_seed, 'timeout_s': timeout,
                 'followup_prompt': followup is not None, 'workspace_profile': workspace_profile,
                 'environment_policy': 'remove inherited model/effort/depth overrides' if sanitize else 'historical inheritance',
@@ -501,6 +521,11 @@ def main(argv=None):
     parser.add_argument('--ultrasave-model',
                         help='tiered profile: write [modes.ultrasave] model into every run config; without it the '
                              'campaign is the single-model profile')
+    parser.add_argument('--jev-off', action='append', metavar='[MODE:]LEVER',
+                        help='--arms only, repeatable: add an arm MODE-no-LEVER (MODE defaults to normal) whose run '
+                             'config sets [jev.ladder] LEVER = false; final_check turns off c1_premature_stop and '
+                             'c3_completion_check together. Planned order, one per campaign: final_check, '
+                             'c4_diff_risk, p6_skill_suggestion, b2_model_tier')
     parser.add_argument('--substantial', action='append', help='--arms with ultracode: substantial case ID (repeatable)')
     parser.add_argument('--control', action='append', help='--arms with ultracode: control case ID (repeatable)')
     parser.add_argument('--transport', choices=('cli', 'acp'), default='cli',
@@ -570,8 +595,13 @@ def main(argv=None):
     if args.max_concurrent is not None and args.max_concurrent < 1:
         parser.error('--max-concurrent must be at least 1')
     labels = None
+    lever_off = {}
     if args.arms is not None:
         labels = arms_from_argument(parser, args)
+        lever_off = lever_off_arms(parser, args, labels)
+        labels = [*labels, *lever_off]
+    elif args.jev_off:
+        parser.error('--jev-off adds arms to an --arms campaign')
     else:
         missing = [flag for flag, value in (('--baseline-binary', args.baseline_binary),
                                             ('--candidate-binary', args.candidate_binary),
@@ -633,7 +663,8 @@ def main(argv=None):
     variants = VARIANTS
     if labels:
         variants = tuple(labels)
-        settings = {label: {'ultracode': False, 'execution_mode': arm_mode(label), 'max_depth': None, **common}
+        settings = {label: {'ultracode': False, 'execution_mode': arm_mode(label), 'max_depth': None, **common,
+                            **({'jev_off': lever_off[label][1]} if label in lever_off else {})}
                     for label in labels}
         binaries = {label: args.binary for label in labels}
         declared_commits = {label: args.candidate_commit for label in labels}
@@ -711,6 +742,7 @@ def main(argv=None):
                'jev_preflight': preflight, 'credit_basis': CREDIT_BASIS,
                'model_profile': 'tiered' if args.ultrasave_model else 'single',
                'ultrasave_model': args.ultrasave_model,
+               'expected_modes': {c['id']: c['expected_mode'] for c in cohort['cases'] if c.get('expected_mode')},
                'runs': runs, 'aggregates': aggregate(runs),
                'failed_run_dirs': [r.get('kept_run_dir') or r.get('output_dir') for r in runs if not r['passed']],
                'binaries': {v: {'path': str(b), 'sha256': frozen['binaries'][v], **commits[v]}
@@ -721,7 +753,8 @@ def main(argv=None):
             results['ultracode_cases'] = split
         results['verdict'] = modes_verdict(results)
     else:
-        paired = {**results, 'runs': [r for r in runs if r['variant'] in VARIANTS]}
+        paired = {**results, 'runs': [r for r in runs if r['variant'] in VARIANTS],
+                  'aa_runs': [r for r in runs if r['variant'] == AA_VARIANT]}
         results['verdict'] = {'parallel': verdict, 'ultrafast': ultrafast_verdict, 'ultrasave': ultrasave_verdict,
                               'auto': auto_verdict, 'normal': normal_verdict}[args.verdict](paired)
     if args.aa_arm:

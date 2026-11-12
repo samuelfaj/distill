@@ -4,11 +4,17 @@ Ratios are ratios of totals (credits with failed attempts charged at least the
 baseline's, completion time with failures charged the timeout); medians of
 paired ratios are reported for continuity only. Quality: Auto must accept at
 least the compared arm's count minus 1 in 60 runs, pooled over repetitions.
+The decision gate line (decision_quality.decision_gate) is required only when
+Auto is compared with a previous Auto (--compare-versions): there the claim
+depends on decision metrics, so NO DATA or FAIL blocks it; otherwise it is
+reported only.
 """
 from __future__ import annotations
 
 import statistics
+from collections import Counter
 
+from .decision_quality import LEVER_OFF_TAG, decision_gate
 from .gates import apply_repetition_rule, case_bootstrap, ratio_of_totals
 from .ultrafast_verdict import charged_completion_s, validated_pairs
 from .ultrasave_verdict import gate_credits, summarize, token_reasons
@@ -120,6 +126,11 @@ def verdict(results):
         if min(credit_ratio, completion_ratio) > MIN_SAVING_RATIO:
             reasons.append(f'neither credit ratio nor completion ratio of totals reached {MIN_SAVING_RATIO}')
     runs = report['candidate']['runs']
+    gate = report['decision_gate'] = decision_gate([pair['candidate'] for pair in pairs.values()],
+                                                   [pair['baseline'] for pair in pairs.values()],
+                                                   results.get('aa_runs') or [], required=baseline_mode == 'auto')
+    if gate['required'] and gate['status'] != 'PASS':
+        reasons.append(f'decision metrics against the A/A deviation: {gate["status"]}')
     if acceptance_shortfall(report['candidate']['accepted'], report['baseline']['accepted'], runs):
         reasons.append(f'Auto accepted {report["candidate"]["accepted"]} of {runs} against '
                        f'{report["baseline"]["accepted"]} for {baseline_mode}; at most 1 in '
@@ -141,11 +152,26 @@ def _totals(rows):
             **{metric: sum(_metric(row, metric) for row in rows) for metric in METRICS}}
 
 
-def per_case_oracle(pinned, auto_rows, repetitions):
+def confusion(pairs):
+    """(reference mode, Auto's first pick) pairs -> counts; an unknown pick is counted but not scored."""
+    table = {}
+    for reference, pick in pairs:
+        table.setdefault(reference, Counter())[pick or 'unknown'] += 1
+    scored = sum(n for row in table.values() for pick, n in row.items() if pick != 'unknown')
+    agreed = sum(row.get(reference, 0) for reference, row in table.items())
+    return {'confusion': {reference: dict(sorted(row.items())) for reference, row in sorted(table.items())},
+            'scored': scored, 'unknown': sum(row.get('unknown', 0) for row in table.values()),
+            'agreement': agreed / scored if scored else None}
+
+
+def per_case_oracle(pinned, auto_rows, repetitions, tie_band=None):
     """Per case, pick the pinned arm on odd repetitions and score it on even ones.
 
     Choosing and scoring on disjoint repetitions keeps the oracle from being
     flattered by the noise it was chosen on. Needs at least two repetitions.
+    Arms with the best acceptance whose total is within tie_band[metric] (the
+    A/A deviation) of the chosen arm's are tied with it: Auto's first pick
+    (row field first_mode_pick) agrees with the oracle when it is any tied mode.
     """
     if repetitions < 2:
         return None
@@ -156,7 +182,8 @@ def per_case_oracle(pinned, auto_rows, repetitions):
     cases = sorted({case for case, _ in auto})
     report = {}
     for metric in METRICS:
-        chosen, oracle_total, auto_total, oracle_accepted, auto_accepted = {}, 0, 0, 0, 0
+        band = (tie_band or {}).get(metric) or 0.0
+        chosen, tied, picks, oracle_total, auto_total, oracle_accepted, auto_accepted = {}, {}, [], 0, 0, 0, 0
         for case in cases:
             def score(label):
                 rows = [index[label][case, rep] for rep in odd]
@@ -164,27 +191,36 @@ def per_case_oracle(pinned, auto_rows, repetitions):
                 return (sum(row['passed'] for row in rows), -sum(_metric(row, metric) for row in rows), label)
             label = max(index, key=score)
             chosen[case] = label
+            best_accepted, best_total = score(label)[:2]
+            tied[case] = sorted(other for other in index if score(other)[0] == best_accepted
+                                and -score(other)[1] <= -best_total * (1 + band))
             for rep in even:
                 oracle_total += _metric(index[label][case, rep], metric)
                 oracle_accepted += index[label][case, rep]['passed']
                 auto_total += _metric(auto[case, rep], metric)
                 auto_accepted += auto[case, rep]['passed']
-        report[metric] = {'chosen_on_odd_repetitions': chosen, 'scored_repetitions': list(even),
+                pick = auto[case, rep].get('first_mode_pick')
+                picks.append((pick if pick in tied[case] else label, pick))
+        report[metric] = {'chosen_on_odd_repetitions': chosen, 'tied_on_odd_repetitions': tied, 'tie_band': band,
+                          'scored_repetitions': list(even),
                           'oracle_total': oracle_total, 'auto_total': auto_total,
                           'oracle_accepted': oracle_accepted, 'auto_accepted': auto_accepted,
-                          'regret': auto_total / oracle_total if oracle_total > 0 else None}
+                          'regret': auto_total / oracle_total if oracle_total > 0 else None,
+                          'regret_delta': auto_total - oracle_total, 'first_pick': confusion(picks)}
     return report
 
 
-def matrix_verdict(arm_rows, repetitions, auto_arm='auto'):
+def matrix_verdict(arm_rows, repetitions, auto_arm='auto', *, tie_band=None, expected_modes=None):
     """Auto against every pinned arm of one N-arm campaign (rows already validated).
 
     Gate: Auto accepts at least the best pinned arm minus 1 in 60 runs. Reported:
     regret on credits and on charged time against the best single pinned mode
-    that meets the same acceptance bar, and a per-case oracle.
+    that meets the same acceptance bar, a per-case oracle with ties inside
+    tie_band, and the confusion matrix of Auto's first pick against the oracle
+    and against the cases' expected_modes. Lever-off arms are not pinned arms.
     """
     pinned = {label: rows for label, rows in arm_rows.items()
-              if label != auto_arm and not label.endswith('_aa') and rows
+              if label != auto_arm and not label.endswith('_aa') and LEVER_OFF_TAG not in label and rows
               and rows[0]['settings'].get('execution_mode') in PINNED_MODES}
     report = {'verdict': 'INCOMPLETE', 'reasons': [], 'auto_arm': auto_arm, 'pinned_arms': sorted(pinned),
               'target': {'minimum_auto_accepted': f'best pinned arm accepted - runs/{ACCEPTANCE_SLACK_RUNS}'},
@@ -204,7 +240,11 @@ def matrix_verdict(arm_rows, repetitions, auto_arm='auto'):
         report['regret'][metric] = {'best_pinned_arm': best, 'best_total': totals[best][metric],
                                     'auto_total': auto[metric],
                                     'regret': auto[metric] / totals[best][metric] if totals[best][metric] > 0 else None}
-    report['per_case_oracle'] = per_case_oracle(pinned, arm_rows[auto_arm], repetitions)
+    report['per_case_oracle'] = per_case_oracle(pinned, arm_rows[auto_arm], repetitions, tie_band)
+    if expected_modes:
+        report['first_pick_vs_expected'] = confusion(
+            (expected_modes[row['case']], row.get('first_mode_pick')) for row in arm_rows[auto_arm]
+            if expected_modes.get(row['case']))
     if acceptance_shortfall(auto['accepted'], best_accepted, auto['runs']):
         report['reasons'].append(f'Auto accepted {auto["accepted"]} of {auto["runs"]} against {best_accepted} for '
                                  f'the best pinned arm; at most 1 in {ACCEPTANCE_SLACK_RUNS} runs may be lost')

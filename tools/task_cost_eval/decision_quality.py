@@ -114,6 +114,21 @@ RATES = {
 }
 COVERAGE = {'mode': ('mode.labelled', 'mode.picks'), 'final_check': ('final_check.labelled', 'final_check.reminders'),
             'c4': ('c4.labelled', 'c4.verdicts')}
+# Arm label of a lever-off arm: <mode>-no-<lever>.
+LEVER_OFF_TAG = '-no-'
+# The [jev.ladder] keys distill-workspace accepts (JevLadderOverlay in jev/flags.rs; a test compares).
+LADDER_KEYS = (
+    'e_crushers', 'e_retention', 'e_importance', 'e_cheap_compress', 'e_read_reuse', 'e_cheap_agent',
+    'e_prompt_blocks', 'p1_tool_family', 'p2_read_shortlist', 'p3_compaction_recorte', 'p6_skill_suggestion',
+    'a1_file_to_edit', 'a4_web_results', 'a5_memory_rank', 'a6_test_to_run', 'b1_intent_routing', 'b2_model_tier',
+    'b2_micro_effort', 'b2_execution_tier', 'b2_local_model', 'b3_subagent_type', 'b6_delegation_hint',
+    'c1_premature_stop', 'c3_completion_check', 'c4_diff_risk', 'c5_error_priority', 'c6_injection_screen',
+    'd2_big_output_retention', 'd3_post_compaction', 'd4_compaction_timing', 'd5_memory_capture_gate',
+    'd6_history_eviction', 'd6_warm_batches', 'b7_subagent_model', 'b8_execution_mode', 'b8_stable_tools',
+    'b8_review_hygiene',
+)
+# The final check asks C1 and C3 together; turning it off means both.
+JEV_OFF_GROUPS = {'final_check': ('c1_premature_stop', 'c3_completion_check')}
 _SAFE = re.compile(r'(h:[0-9a-f]{12}|[A-Za-z0-9][A-Za-z0-9_:+-]{0,39})')
 _WANTED = tuple(E.values())
 
@@ -121,6 +136,13 @@ _WANTED = tuple(E.values())
 def safe_label(value):
     """A short identifier or a hash passes; anything else (paths, prose, model ids) prints as 'other'."""
     return value if isinstance(value, str) and _SAFE.fullmatch(value) else 'other'
+
+
+def jev_off_levers(name):
+    """[jev.ladder] keys for one --jev-off value; None when the name is unknown."""
+    if name in JEV_OFF_GROUPS:
+        return list(JEV_OFF_GROUPS[name])
+    return [name] if name in LADDER_KEYS else None
 
 
 # ---------------------------------------------------------------- reading
@@ -572,3 +594,33 @@ def quality_block(rows):
                        for lever, entry in sorted(levers.items())},
             'outcomes': dict(sorted(facts.items())), 'rates': rates(facts), 'coverage': coverage(facts),
             'label_agreement': label_agreement(rows)}
+
+
+def _arm_facts(rows):
+    facts = Counter()
+    for row in rows:
+        facts.update(row.get('decision_labels') or {})
+    return facts if any(row.get('decision_events_found') for row in rows) else None
+
+
+def decision_gate(candidate_rows, control_rows, aa_rows, *, required=False):
+    """Decision rates of the candidate within the A/A deviation of the control (|aa - control|).
+
+    PASS / FAIL over the rates measurable in all three arms; NO DATA when none
+    is. `required` is set only for a claim that depends on decision metrics:
+    then anything but PASS blocks it; otherwise the line is reported only.
+    """
+    arms = {'candidate': _arm_facts(candidate_rows), 'control': _arm_facts(control_rows),
+            'aa': _arm_facts(aa_rows or [])}
+    metrics = {}
+    if all(facts is not None for facts in arms.values()):
+        for name, (top, bottom) in RATES.items():
+            if all(facts[bottom] for facts in arms.values()):
+                value = {arm: facts[top] / facts[bottom] for arm, facts in arms.items()}
+                deviation = abs(value['aa'] - value['control'])
+                difference = abs(value['candidate'] - value['control'])
+                metrics[name] = {**value, 'aa_deviation': deviation, 'difference': difference,
+                                 'within': difference <= deviation + 1e-12}
+    status = 'NO DATA' if not metrics else 'PASS' if all(m['within'] for m in metrics.values()) else 'FAIL'
+    return {'gate': 'decision metrics within the A/A deviation', 'status': status, 'required': required,
+            'metrics': metrics}

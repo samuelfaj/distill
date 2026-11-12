@@ -7,7 +7,7 @@ CASES = ('a', 'b', 'c', 'd')
 
 def row(arm, case, rep, *, credits=10.0, wall=100.0, passed=True, **extra):
     """One complete ACP run row of an N-arm campaign (synthetic; no model call)."""
-    mode = 'normal' if arm in ('normal_aa', 'baseline', 'candidate') else arm
+    mode = 'normal' if arm in ('normal_aa', 'baseline', 'candidate') else arm.split('-no-')[0]
     activation = {'mode': 'normal', 'choice': 'auto'} if mode == 'auto' else {'mode': mode}
     return {'variant': arm, 'case': case, 'kind': 'divisible', 'repetition': rep, 'passed': passed,
             'wall_time_s': wall, 'credits': credits, 'grader': {'wall_time_s': 0, 'exit_code': 0 if passed else 1},
@@ -32,6 +32,24 @@ def per_arm(**by_arm):
 
 
 class ModesVerdictTest(unittest.TestCase):
+    def test_a_lever_off_arm_is_reported_beside_its_decision_gate_line(self):
+        # No mode claim depends on decision metrics: NO DATA is reported and blocks nothing.
+        report = verdict(campaign(('normal', 'normal_aa', 'normal-no-c4_diff_risk')))
+        self.assertEqual(report['verdict'], 'PASS', report['reasons'])
+        self.assertEqual(report['claims']['normal-no-c4_diff_risk']['status'], 'reported')
+        self.assertEqual(report['decision_gate']['normal-no-c4_diff_risk']['status'], 'NO DATA')
+        self.assertFalse(report['decision_gate']['normal-no-c4_diff_risk']['required'])
+
+    def test_decision_gate_line_compares_each_arm_with_normal_inside_the_aa_deviation(self):
+        def values(arm, case, rep):
+            abandoned = {'normal': 2, 'normal_aa': 3, 'ultrafast': 6}[arm]
+            return {'decision_events_found': True, 'decision_labels': {'mode.picks': 10, 'mode.abandoned': abandoned}}
+        report = verdict(campaign(('normal', 'normal_aa', 'ultrafast'), values=values))
+        gate = report['decision_gate']['ultrafast']
+        self.assertEqual(gate['status'], 'FAIL')
+        self.assertAlmostEqual(gate['metrics']['mode.abandoned_rate']['aa_deviation'], 0.1)
+        self.assertNotIn('decision', ' '.join(report['reasons']), 'reported only')
+
     def test_arm_labels_name_the_second_normal_as_the_aa_arm(self):
         self.assertEqual(arm_labels(['normal', 'ultrasave', 'normal', 'auto']),
                          ['normal', 'ultrasave', 'normal_aa', 'auto'])

@@ -1,5 +1,6 @@
 """Synthetic event streams and run rows only; no real session data and no model calls."""
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +9,7 @@ from . import decision_quality as dq
 from .test_session_usage import call, run_main, write_session
 
 TS = '2026-01-10T10:00:00+00:00'
+REPO = Path(__file__).resolve().parents[2]
 
 
 def ev(event_type, **fields):
@@ -398,6 +400,43 @@ class QualityBlockTest(unittest.TestCase):
                          {'claim': 'good', 'labelled': 4, 'agreed': 3, 'agreement': 0.75, 'discarded': True})
         self.assertEqual(agreement['mode.lean_ended_clean'],
                          {'claim': 'good', 'labelled': 0, 'agreed': 0, 'agreement': None, 'discarded': False})
+
+
+class DecisionGateTest(unittest.TestCase):
+    @staticmethod
+    def arm(abandoned, picks=10, found=True):
+        return [bench_row(True, {'mode.picks': picks, 'mode.abandoned': abandoned}, found=found)]
+
+    def test_pass_inside_the_aa_deviation(self):
+        # Control 0.2, A/A 0.3: candidate within 0.1 of the control passes.
+        gate = dq.decision_gate(self.arm(3), self.arm(2), self.arm(3))
+        self.assertEqual(gate['status'], 'PASS')
+        self.assertEqual(set(gate['metrics']), {'mode.abandoned_rate', 'mode.held_rate', 'mode.flip_flop_rate',
+                                                'mode.lean_ended_failing_rate'})
+
+    def test_fail_outside_the_aa_deviation(self):
+        gate = dq.decision_gate(self.arm(4), self.arm(2), self.arm(3))
+        self.assertEqual(gate['status'], 'FAIL')
+        self.assertFalse(gate['metrics']['mode.abandoned_rate']['within'])
+
+    def test_no_data_without_events_in_any_arm_or_without_an_aa_arm(self):
+        for candidate, aa in ((self.arm(3, found=False), self.arm(3)), (self.arm(3), []),
+                              (self.arm(0, picks=0), self.arm(0, picks=0))):
+            with self.subTest(aa=aa):
+                gate = dq.decision_gate(candidate, self.arm(2), aa, required=True)
+                self.assertEqual((gate['status'], gate['metrics'], gate['required']), ('NO DATA', {}, True))
+
+
+class LadderKeysTest(unittest.TestCase):
+    def test_ladder_keys_match_the_rust_overlay(self):
+        source = (REPO / 'crates/codegen/distill-workspace/src/jev/flags.rs').read_text()
+        body = re.search(r'pub struct JevLadderOverlay \{(.*?)\n\}', source, re.S).group(1)
+        self.assertEqual(sorted(dq.LADDER_KEYS), sorted(re.findall(r'pub (\w+): Option<bool>', body)))
+
+    def test_jev_off_names_resolve_to_ladder_keys(self):
+        self.assertEqual(dq.jev_off_levers('c4_diff_risk'), ['c4_diff_risk'])
+        self.assertEqual(dq.jev_off_levers('final_check'), ['c1_premature_stop', 'c3_completion_check'])
+        self.assertIsNone(dq.jev_off_levers('c4'))
 
 
 if __name__ == '__main__':

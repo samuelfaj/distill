@@ -4994,6 +4994,22 @@ async fn hour_entries_keep_the_history_warm_past_a_shorter_last_lifetime() {
     assert!(!handle.cache_expired_while_idle().await);
 }
 
+/// With `[cache] extended_ttl = "off"` (the default) every request reports the five-minute
+/// lifetime, even the one before a subagent wait, so no hour entry postpones the idle check.
+/// Decided: idle past five minutes the provider has dropped the prefix, so history batches and
+/// the cold-return offer apply then, not up to an hour later.
+#[tokio::test]
+async fn without_hour_entries_idle_past_the_short_lifetime_is_cold() {
+    let handle = spawn_trimming(vec![]);
+    push_turns(&handle, 1, 10).await;
+    for _ in 0..2 {
+        handle.record_cache_lifetime(Some(Duration::from_millis(20)));
+    }
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    assert!(handle.history_is_cold().await);
+    assert!(handle.cache_expired_while_idle().await);
+}
+
 #[tokio::test]
 async fn apply_turn_request_pruning_keeps_native_envelope_when_body_trimmed_to_zero() {
     use crate::actor::ChatStateActor;

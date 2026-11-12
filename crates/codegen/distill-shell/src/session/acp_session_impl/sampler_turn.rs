@@ -2805,7 +2805,10 @@ impl SessionActor {
             .sampler_usage_context(&request_id_str, &request, route_config)
             .await;
         // Honoured by the client only where the endpoint takes the one-hour lifetime.
-        request.long_cache_ttl = super::prompt_cache::long_wait_likely(&request.items);
+        request.long_cache_ttl = super::prompt_cache::long_cache_ttl(
+            super::prompt_cache::ExtendedTtl::configured(),
+            &request.items,
+        );
         // The endpoint this request goes to, for the cache lifetime it gets (see below).
         let cache_route = match route_config {
             Some(config) => Some((

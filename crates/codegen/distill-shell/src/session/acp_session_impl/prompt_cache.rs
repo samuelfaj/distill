@@ -3,9 +3,54 @@
 //! cache lifetime, and a light trace that names where a cache read broke.
 
 use std::hash::Hasher;
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use distill_sampling_types::{ConversationItem, SyntheticReason, TokenUsage, ToolCall};
+
+/// `[cache] extended_ttl`: whether a main request may ask for the one-hour lifetime.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ExtendedTtl {
+    /// Every request keeps the five-minute lifetime. Moving a warm five-minute prefix to the hour
+    /// re-writes everything after the last one-hour entry at the 2x rate (a five-minute hit does
+    /// not count when a later one-hour breakpoint misses), which costs more than the long waits
+    /// the hour protects.
+    Off,
+    /// The hour before a likely long wait ([`long_wait_likely`]).
+    Auto,
+}
+
+impl ExtendedTtl {
+    /// Unset or unrecognised is the default, `Off`.
+    pub(crate) fn from_setting(value: Option<&str>) -> Self {
+        match value.map(str::trim) {
+            Some("auto") => Self::Auto,
+            None | Some("off") => Self::Off,
+            Some(other) => {
+                tracing::warn!(value = other, "unknown [cache] extended_ttl; using off");
+                Self::Off
+            }
+        }
+    }
+
+    /// The setting in the effective config, read once per process (config does not change
+    /// mid-run); a config that fails to load is the default.
+    pub(crate) fn configured() -> Self {
+        static SETTING: OnceLock<ExtendedTtl> = OnceLock::new();
+        *SETTING.get_or_init(|| {
+            let root = crate::config::load_effective_config().ok();
+            Self::from_setting(
+                root.as_ref()
+                    .and_then(|root| root.get("cache")?.get("extended_ttl")?.as_str()),
+            )
+        })
+    }
+}
+
+/// Whether this request asks for the one-hour cache lifetime.
+pub(super) fn long_cache_ttl(setting: ExtendedTtl, items: &[ConversationItem]) -> bool {
+    setting == ExtendedTtl::Auto && long_wait_likely(items)
+}
 
 /// Whether a wait longer than the default five-minute cache lifetime likely
 /// follows this request: the round it answers blocked on a task or subagent,
@@ -511,6 +556,40 @@ mod tests {
             )
             .expect("an intact prefix that missed is reported");
         assert!(!cache_break(&report).settings_changed);
+    }
+
+    /// By default no request asks for the hour, even right after a blocking wait: the upgrade
+    /// itself re-writes the warm prefix at 2x. `auto` keeps the per-request choice as it was.
+    #[test]
+    fn the_hour_is_asked_for_only_with_extended_ttl_auto() {
+        let after_wait = turn(vec![
+            vec![read()],
+            vec![call("wait_tasks", serde_json::json!({"task_ids": ["t"]}))],
+        ]);
+        assert_eq!(ExtendedTtl::from_setting(None), ExtendedTtl::Off);
+        assert_eq!(ExtendedTtl::from_setting(Some("off")), ExtendedTtl::Off);
+        assert_eq!(ExtendedTtl::from_setting(Some(" auto ")), ExtendedTtl::Auto);
+        assert_eq!(ExtendedTtl::from_setting(Some("sticky")), ExtendedTtl::Off);
+
+        assert!(!long_cache_ttl(ExtendedTtl::Off, &after_wait));
+        assert!(long_cache_ttl(ExtendedTtl::Auto, &after_wait));
+        assert!(!long_cache_ttl(
+            ExtendedTtl::Auto,
+            &turn(vec![vec![read()], vec![read()]])
+        ));
+        // A request that does not ask gets the five minutes on Anthropic's own endpoint.
+        let lifetime = |asked| {
+            distill_sampler::prompt_cache_lifetime(
+                "https://api.anthropic.com",
+                &distill_sampling_types::ApiBackend::Messages,
+                "claude-model",
+                asked,
+            )
+        };
+        assert_eq!(
+            lifetime(long_cache_ttl(ExtendedTtl::Off, &after_wait)),
+            Some(std::time::Duration::from_secs(300))
+        );
     }
 
     /// The settings hash does not cover the lifetime, so a request that moved a warm five-minute

@@ -206,16 +206,21 @@ an `x-codex-turn-state`, which the turn's later rounds send back.
 With auto effort, a turn keeps the effort its first round picked on backends
 whose cache is keyed by effort (everything except Messages models with the
 per-message effort marker); a new turn, a model switch, a compaction or a
-prompt under 16K tokens frees it. On `api.anthropic.com`, a round that blocked
-on a task or subagent, or started background work, asks for the one-hour cache
-lifetime (a refusal turns it off for the process once the resend without it
-goes through), and the free fourth
+prompt under 16K tokens frees it. On `api.anthropic.com` every request keeps
+the five-minute cache lifetime by default: moving a warm five-minute prefix to
+the hour re-writes everything after the last one-hour entry at twice the input
+price, since a five-minute hit does not count when a later one-hour breakpoint
+misses. `[cache] extended_ttl = "auto"` restores the per-round choice, where a
+round that blocked on a task or subagent, or started background work, asks for
+the one-hour lifetime (a refusal turns it off for the process once the resend
+without it goes through). The free fourth
 breakpoint anchors on a former tip that moves every 10 rounds. Rewrites of old
 history (soft trims, the retained hard clear, old goal directives) wait for a
 cold moment: idle past the last request's cache lifetime (5 minutes on
 Messages, 1 hour when asked, 30 minutes on Codex, 10 on Grok and OpenRouter,
-and never within the hour after a one-hour write, which later requests still
-read through), a compaction, a model switch or a resume. A verbatim fork inherits its parent's
+and with `extended_ttl = "auto"` never within the hour after a one-hour write,
+which later requests still read through), a compaction, a model switch or a
+resume. A verbatim fork inherits its parent's
 soft trims.
 
 When you type into a session of 100K tokens or more that sat idle past that

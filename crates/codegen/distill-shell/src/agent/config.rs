@@ -916,6 +916,15 @@ pub struct CompactionConfig {
     /// (`session::acp_session_impl::cold_return`); declared so `serde_ignored` allows the key.
     pub cold_return: Option<String>,
 }
+/// `[cache]`: prompt-cache settings.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CacheConfig {
+    /// `"off"` (default) or `"auto"`: whether a main request on `api.anthropic.com` may ask for
+    /// the one-hour cache lifetime before a likely long wait. Read once per process
+    /// (`session::acp_session_impl::prompt_cache`); declared so `serde_ignored` allows the key.
+    pub extended_ttl: Option<String>,
+}
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CliConfig {
@@ -1485,6 +1494,8 @@ pub struct Config {
     #[serde(default, skip_serializing)]
     pub compaction: CompactionConfig,
     #[serde(default, skip_serializing)]
+    pub cache: CacheConfig,
+    #[serde(default, skip_serializing)]
     pub managed_mcps: crate::config::ManagedMcpsConfig,
     /// `[auth]` alias: consumed by `expand_auth_alias` before serde.
     /// Typed as `GrokComConfig` (same schema) so sub-field typos are caught.
@@ -1838,6 +1849,7 @@ impl Default for Config {
             memory: crate::config::MemorySettings::default(),
             memory_v2: crate::config::MemoryV2Settings::default(),
             compaction: CompactionConfig::default(),
+            cache: CacheConfig::default(),
             managed_mcps: crate::config::ManagedMcpsConfig::default(),
             auth: None,
             desktop: None,

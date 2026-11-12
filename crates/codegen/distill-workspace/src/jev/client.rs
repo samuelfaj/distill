@@ -9,7 +9,7 @@
 //! non-2xx onto [`JevError`], and validates that every question came back with
 //! an answer of the right type. It never retries and never logs bodies.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -115,8 +115,13 @@ pub struct JevClient {
     config: JevClientConfig,
     key_resolver: ApiKeyResolver,
     observer: Option<AttemptObserver>,
-    memo: Arc<std::sync::Mutex<Option<DecisionMemo>>>,
+    memo: Arc<std::sync::Mutex<VecDeque<DecisionMemo>>>,
 }
+
+/// Successful decisions kept for reuse, most recently used first. Several
+/// slots let decisions that alternate within a round (or run concurrently)
+/// keep their own entry instead of evicting each other.
+const DECISION_MEMO_CAPACITY: usize = 16;
 
 struct DecisionMemo {
     session_id: String,
@@ -174,7 +179,9 @@ impl JevClient {
             config,
             key_resolver,
             observer: None,
-            memo: Arc::new(std::sync::Mutex::new(None)),
+            memo: Arc::new(std::sync::Mutex::new(VecDeque::with_capacity(
+                DECISION_MEMO_CAPACITY,
+            ))),
         })
     }
 
@@ -212,7 +219,7 @@ impl JevClient {
         (self.key_resolver)(&self.config.api_key_env).is_some()
     }
 
-    /// Reuses the last successful decision for the same session and exact
+    /// Reuses a recent successful decision for the same session and exact
     /// descriptor. Only completed, parseable answers are memoized; failed,
     /// rejected, and cancelled attempts always reach [`Self::ask`] and remain
     /// visible to the attempt observer.
@@ -223,43 +230,42 @@ impl JevClient {
         state: &Json,
         questions: &BTreeMap<QuestionId, Question>,
     ) -> Result<JevAnswerSet, JevError> {
-        if let Ok(memo) = self.memo.lock() {
-            if let Some(memo) = memo
-                .as_ref()
-                .filter(|memo| memo.session_id == session_id && memo.key == key)
-            {
-                let mut answers = memo.answers.clone();
-                answers.usage = Usage::default();
-                answers.request_id = None;
-                answers.latency_ms = 0;
-                return Ok(answers);
-            }
+        if let Ok(mut memo) = self.memo.lock()
+            && let Some(index) = memo
+                .iter()
+                .position(|memo| memo.session_id == session_id && memo.key == key)
+            && let Some(hit) = memo.remove(index)
+        {
+            let mut answers = hit.answers.clone();
+            answers.usage = Usage::default();
+            answers.request_id = None;
+            answers.latency_ms = 0;
+            memo.push_front(hit);
+            return Ok(answers);
         }
 
         let answers = self.ask(state, questions).await?;
         if let Ok(mut memo) = self.memo.lock() {
-            *memo = Some(DecisionMemo {
+            // A concurrent ask of the same descriptor may have stored it first.
+            memo.retain(|memo| !(memo.session_id == session_id && memo.key == key));
+            memo.push_front(DecisionMemo {
                 session_id: session_id.to_owned(),
                 key,
                 answers: answers.clone(),
             });
+            memo.truncate(DECISION_MEMO_CAPACITY);
         }
         Ok(answers)
     }
 
-    /// Drops the cached decision only when it belongs to `session_id`.
+    /// Drops the cached decisions that belong to `session_id` only.
     /// A compaction rewrite can remove evidence from one conversation without
-    /// invalidating another session's still-valid decision.
+    /// invalidating another session's still-valid decisions.
     pub fn clear_memo_for_session(&self, session_id: &str) {
         let Ok(mut memo) = self.memo.lock() else {
             return;
         };
-        if memo
-            .as_ref()
-            .is_some_and(|memo| memo.session_id == session_id)
-        {
-            *memo = None;
-        }
+        memo.retain(|memo| memo.session_id != session_id);
     }
 
     /// Sends one speculative battery: all questions travel in a single request
@@ -923,6 +929,65 @@ mod tests {
             .await
             .expect("the rejected result was not memoized");
         assert_eq!(stub.hits(), 2);
+    }
+
+    /// A round asks the effort (whose state changes every round) and then the
+    /// model tier (whose state does not). The tier's repeat must not be
+    /// evicted by the effort ask in between, or every round pays a request.
+    #[tokio::test]
+    async fn alternating_decisions_each_keep_their_memo_entry() {
+        let stub = Stub::new(StubReply::Json(200, ok_body()));
+        let base = spawn_stub(stub.clone()).await;
+        let client = test_client(base, Duration::from_secs(5));
+        let state = serde_json::json!({"a": 1});
+        let questions = sample_questions();
+
+        for round in 0..3u8 {
+            client
+                .ask_memoized("session", [100 + round; 32], &state, &questions)
+                .await
+                .expect("effort decision succeeds");
+            client
+                .ask_memoized("session", [1; 32], &state, &questions)
+                .await
+                .expect("tier decision succeeds");
+        }
+        assert_eq!(stub.hits(), 4, "three effort asks and one tier ask");
+
+        client
+            .ask_memoized("session", [100; 32], &state, &questions)
+            .await
+            .expect("an older entry is still held");
+        assert_eq!(stub.hits(), 4, "both alternating keys hit");
+    }
+
+    /// The memo is bounded: the least recently used entry leaves first, and a
+    /// hit refreshes an entry's place.
+    #[tokio::test]
+    async fn the_memo_evicts_the_least_recently_used_entry_at_capacity() {
+        let stub = Stub::new(StubReply::Json(200, ok_body()));
+        let base = spawn_stub(stub.clone()).await;
+        let client = test_client(base, Duration::from_secs(5));
+        let state = serde_json::json!({"a": 1});
+        let questions = sample_questions();
+        let ask = |key: u8| client.ask_memoized("session", [key; 32], &state, &questions);
+
+        for key in 0..DECISION_MEMO_CAPACITY as u8 {
+            ask(key).await.expect("fill the memo");
+        }
+        assert_eq!(stub.hits(), DECISION_MEMO_CAPACITY);
+        // Refresh key 0, so key 1 is now the least recently used.
+        ask(0).await.expect("hit");
+        assert_eq!(stub.hits(), DECISION_MEMO_CAPACITY);
+
+        ask(DECISION_MEMO_CAPACITY as u8)
+            .await
+            .expect("one past capacity");
+        assert_eq!(stub.hits(), DECISION_MEMO_CAPACITY + 1);
+        ask(0).await.expect("the refreshed entry stayed");
+        assert_eq!(stub.hits(), DECISION_MEMO_CAPACITY + 1);
+        ask(1).await.expect("the least recently used entry left");
+        assert_eq!(stub.hits(), DECISION_MEMO_CAPACITY + 2);
     }
 
     /// The Jev model on OpenRouter is the same contract behind another URL: the

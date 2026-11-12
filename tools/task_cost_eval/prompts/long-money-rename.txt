@@ -1,0 +1,5 @@
+In tools/task_cost_eval/fixtures/long_money_rename, change money.Money so the constructor is
+Money(currency, cents), with the currency first and required, and rename the amount_cents attribute to
+cents. Update every module under billing/ to the new API; what each function returns must not change. The
+dictionaries we export keep the "amount_cents" key because other services read it.
+`python3 check.py billing/NAME.py` exercises one module.

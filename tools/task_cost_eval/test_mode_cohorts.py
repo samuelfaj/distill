@@ -138,5 +138,84 @@ class AutoCohortTests(CohortProofs, unittest.TestCase):
                 self.assertEqual(run_grader(case, overlay).returncode, 1)
 
 
+# Per-file check of each long task: (directory, file glob, command before the file path).
+PER_FILE_CHECKS = {
+    'fixtures/long_handler_migration': ('handlers', '[!_]*.py', [sys.executable, 'check.py']),
+    'fixtures/long_clean_pipeline': ('normalizers', '[!_]*.py', [sys.executable, 'check.py']),
+    'fixtures/long_money_rename': ('billing', '[!_]*.py', [sys.executable, 'check.py']),
+    'fixtures/long_cjs_to_esm': ('lib', '*.js', ['node', 'check.mjs']),
+}
+
+
+def per_file_results(case, *layers, limit=None):
+    """Run the task's own per-file check on every target file of a staged copy; {file: returncode}."""
+    directory, pattern, command = PER_FILE_CHECKS[case['fixture_ref']]
+    with tempfile.TemporaryDirectory(prefix='mode-cohort-check-') as tmp:
+        target = stage(case, tmp, *layers)
+        files = sorted((target / directory).glob(pattern))[:limit]
+        env = {**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'}
+        return {path.name: subprocess.run([*command, f'{directory}/{path.name}'], cwd=target, env=env,
+                                          capture_output=True, text=True, timeout=60).returncode for path in files}
+
+
+class LongCohortTests(CohortProofs, unittest.TestCase):
+    COHORT = 'cohort-long-v1.json'
+    SIZE = (4, 6)
+
+    def test_every_case_shares_one_long_timeout(self):
+        from .compare_parallel import cohort_timeout_error
+        cases = self.cases()
+        self.assertIsNone(cohort_timeout_error(cases))
+        self.assertGreaterEqual(min(case['timeout_s'] for case in cases), 3600)
+        self.assertTrue(all(case['rounds_target'] >= 150 for case in cases))
+
+    def test_reference_visible_tests(self):
+        # The visible check of a long task is per file; every reference file passes it.
+        for case in self.cases():
+            with self.subTest(case=case['id']):
+                results = per_file_results(case, case['reference_ref'])
+                self.assertGreaterEqual(len(results), 40, 'a long task spreads over at least 40 files')
+                self.assertEqual({name for name, code in results.items() if code}, set())
+
+    def test_per_file_check_fails_on_untouched_files(self):
+        # Every target file starts out failing its check, so no file can be skipped.
+        for case in self.cases():
+            with self.subTest(case=case['id']):
+                results = per_file_results(case, limit=6)
+                self.assertEqual({name for name, code in results.items() if code == 0}, set())
+
+    def test_one_file_left_unconverted_fails_the_grader(self):
+        for case in self.cases():
+            directory, pattern, _ = PER_FILE_CHECKS[case['fixture_ref']]
+            last = sorted((ROOT / case['fixture_ref'] / directory).glob(pattern))[-1]
+            with self.subTest(case=case['id']), tempfile.TemporaryDirectory() as overlay:
+                (Path(overlay) / directory).mkdir()
+                shutil.copyfile(last, Path(overlay) / directory / last.name)
+                result = run_grader(case, case['reference_ref'], overlay)
+                self.assertEqual(result.returncode, 1, case['id'])
+                self.assertNotIn('Traceback', result.stderr)
+                # The old handler module cannot even import once register() is gone.
+                self.assertTrue(last.stem in result.stderr or "import name 'register'" in result.stderr, result.stderr)
+
+    def test_generator_reproduces_the_committed_files(self):
+        with tempfile.TemporaryDirectory(prefix='long-fixtures-') as tmp:
+            run = subprocess.run([sys.executable, '-B', '-m', 'tools.task_cost_eval.generate_long_fixtures',
+                                  '--root', tmp], cwd=ROOT.parent.parent, capture_output=True, text=True, timeout=300,
+                                 env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
+            self.assertEqual(run.returncode, 0, run.stderr)
+            generated = {path.relative_to(tmp): path.read_bytes() for path in Path(tmp).rglob('*') if path.is_file()}
+            committed = {}
+            for case in self.cases():
+                name = Path(case['fixture_ref']).name
+                for kind in ('fixtures', 'reference'):
+                    for path in (ROOT / kind / name).rglob('*'):
+                        if path.is_file():
+                            committed[path.relative_to(ROOT)] = path.read_bytes()
+                data = ROOT / 'graders' / f'{name}_expected.json'
+                committed[data.relative_to(ROOT)] = data.read_bytes()
+            self.assertEqual(sorted(generated), sorted(committed))
+            self.assertEqual([path for path in generated if generated[path] != committed[path]], [])
+
+
 if __name__ == '__main__':
     unittest.main()

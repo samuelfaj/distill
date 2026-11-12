@@ -1,0 +1,1897 @@
+{
+ "calls": [
+  {
+   "arguments": [
+    3
+   ],
+   "function": "line_total_alerts",
+   "module": "alerts",
+   "result": {
+    "amount_cents": 2238,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [
+    0
+   ],
+   "function": "line_total_alerts",
+   "module": "alerts",
+   "result": {
+    "amount_cents": 0,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [
+    1999
+   ],
+   "function": "label_alerts",
+   "module": "alerts",
+   "result": "19.99 USD"
+  },
+  {
+   "arguments": [
+    5
+   ],
+   "function": "label_alerts",
+   "module": "alerts",
+   "result": "0.05 USD"
+  },
+  {
+   "arguments": [
+    [
+     1,
+     2,
+     746
+    ]
+   ],
+   "function": "total_alerts",
+   "module": "alerts",
+   "result": 749
+  },
+  {
+   "arguments": [
+    []
+   ],
+   "function": "total_alerts",
+   "module": "alerts",
+   "result": 0
+  },
+  {
+   "arguments": [],
+   "function": "unit_price_answers",
+   "module": "answers",
+   "result": {
+    "amount_cents": 136,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [
+    3
+   ],
+   "function": "line_total_answers",
+   "module": "answers",
+   "result": {
+    "amount_cents": 408,
+    "currency": "JPY"
+   }
+  },
+  {
+   "arguments": [
+    0
+   ],
+   "function": "line_total_answers",
+   "module": "answers",
+   "result": {
+    "amount_cents": 0,
+    "currency": "JPY"
+   }
+  },
+  {
+   "arguments": [
+    [
+     1,
+     2,
+     136
+    ]
+   ],
+   "function": "total_answers",
+   "module": "answers",
+   "result": 139
+  },
+  {
+   "arguments": [
+    []
+   ],
+   "function": "total_answers",
+   "module": "answers",
+   "result": 0
+  },
+  {
+   "arguments": [
+    3
+   ],
+   "function": "line_total_badges",
+   "module": "badges",
+   "result": {
+    "amount_cents": 681,
+    "currency": "EUR"
+   }
+  },
+  {
+   "arguments": [
+    0
+   ],
+   "function": "line_total_badges",
+   "module": "badges",
+   "result": {
+    "amount_cents": 0,
+    "currency": "EUR"
+   }
+  },
+  {
+   "arguments": [
+    227
+   ],
+   "function": "double_badges",
+   "module": "badges",
+   "result": 454
+  },
+  {
+   "arguments": [
+    [
+     1,
+     2,
+     531
+    ]
+   ],
+   "function": "total_batches",
+   "module": "batches",
+   "result": 534
+  },
+  {
+   "arguments": [
+    []
+   ],
+   "function": "total_batches",
+   "module": "batches",
+   "result": 0
+  },
+  {
+   "arguments": [
+    {
+     "amount_cents": 100,
+     "currency": "EUR"
+    }
+   ],
+   "function": "roundtrip_batches",
+   "module": "batches",
+   "result": {
+    "amount_cents": 631,
+    "currency": "EUR"
+   }
+  },
+  {
+   "arguments": [
+    1000,
+    "BRL"
+   ],
+   "function": "convert_batches",
+   "module": "batches",
+   "result": {
+    "amount_cents": 5310,
+    "currency": "BRL"
+   }
+  },
+  {
+   "arguments": [],
+   "function": "unit_price_bookings",
+   "module": "bookings",
+   "result": {
+    "amount_cents": 757,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [
+    [
+     757,
+     7,
+     300
+    ]
+   ],
+   "function": "cheapest_bookings",
+   "module": "bookings",
+   "result": {
+    "amount_cents": 7,
+    "currency": "JPY"
+   }
+  },
+  {
+   "arguments": [
+    757
+   ],
+   "function": "make_bookings",
+   "module": "bookings",
+   "result": {
+    "amount_cents": 757,
+    "currency": "JPY"
+   }
+  },
+  {
+   "arguments": [
+    10
+   ],
+   "function": "field_budgets",
+   "module": "budgets",
+   "result": 696
+  },
+  {
+   "arguments": [
+    1000,
+    "BRL"
+   ],
+   "function": "convert_budgets",
+   "module": "budgets",
+   "result": {
+    "amount_cents": 6860,
+    "currency": "BRL"
+   }
+  },
+  {
+   "arguments": [
+    686,
+    15
+   ],
+   "function": "discount_budgets",
+   "module": "budgets",
+   "result": {
+    "amount_cents": 584,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [
+    [
+     1,
+     2,
+     158
+    ]
+   ],
+   "function": "total_carts",
+   "module": "carts",
+   "result": 161
+  },
+  {
+   "arguments": [
+    []
+   ],
+   "function": "total_carts",
+   "module": "carts",
+   "result": 0
+  },
+  {
+   "arguments": [
+    {
+     "amount_cents": 100,
+     "currency": "EUR"
+    }
+   ],
+   "function": "roundtrip_carts",
+   "module": "carts",
+   "result": {
+    "amount_cents": 258,
+    "currency": "EUR"
+   }
+  },
+  {
+   "arguments": [
+    1000,
+    "BRL"
+   ],
+   "function": "convert_carts",
+   "module": "carts",
+   "result": {
+    "amount_cents": 1580,
+    "currency": "BRL"
+   }
+  },
+  {
+   "arguments": [
+    10
+   ],
+   "function": "field_comments",
+   "module": "comments",
+   "result": 451
+  },
+  {
+   "arguments": [
+    1000,
+    "BRL"
+   ],
+   "function": "convert_comments",
+   "module": "comments",
+   "result": {
+    "amount_cents": 4410,
+    "currency": "BRL"
+   }
+  },
+  {
+   "arguments": [
+    441,
+    15
+   ],
+   "function": "discount_comments",
+   "module": "comments",
+   "result": {
+    "amount_cents": 375,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [
+    [
+     400,
+     7,
+     300
+    ]
+   ],
+   "function": "cheapest_coupons",
+   "module": "coupons",
+   "result": {
+    "amount_cents": 7,
+    "currency": "EUR"
+   }
+  },
+  {
+   "arguments": [
+    10
+   ],
+   "function": "field_coupons",
+   "module": "coupons",
+   "result": 410
+  },
+  {
+   "arguments": [
+    400,
+    15
+   ],
+   "function": "discount_coupons",
+   "module": "coupons",
+   "result": {
+    "amount_cents": 340,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [
+    3
+   ],
+   "function": "line_total_dishes",
+   "module": "dishes",
+   "result": {
+    "amount_cents": 279,
+    "currency": "BRL"
+   }
+  },
+  {
+   "arguments": [
+    0
+   ],
+   "function": "line_total_dishes",
+   "module": "dishes",
+   "result": {
+    "amount_cents": 0,
+    "currency": "BRL"
+   }
+  },
+  {
+   "arguments": [
+    93
+   ],
+   "function": "double_dishes",
+   "module": "dishes",
+   "result": 186
+  },
+  {
+   "arguments": [],
+   "function": "unit_price_drivers",
+   "module": "drivers",
+   "result": {
+    "amount_cents": 424,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [
+    [
+     424,
+     7,
+     300
+    ]
+   ],
+   "function": "cheapest_drivers",
+   "module": "drivers",
+   "result": {
+    "amount_cents": 7,
+    "currency": "JPY"
+   }
+  },
+  {
+   "arguments": [
+    10
+   ],
+   "function": "field_drivers",
+   "module": "drivers",
+   "result": 434
+  },
+  {
+   "arguments": [
+    1999
+   ],
+   "function": "label_events",
+   "module": "events",
+   "result": "19.99 USD"
+  },
+  {
+   "arguments": [
+    5
+   ],
+   "function": "label_events",
+   "module": "events",
+   "result": "0.05 USD"
+  },
+  {
+   "arguments": [
+    42
+   ],
+   "function": "wire_events",
+   "module": "events",
+   "result": {
+    "amount_cents": 42,
+    "currency": "USD",
+    "source": "events"
+   }
+  },
+  {
+   "arguments": [
+    [
+     1,
+     2,
+     865
+    ]
+   ],
+   "function": "total_exports",
+   "module": "exports",
+   "result": 868
+  },
+  {
+   "arguments": [
+    []
+   ],
+   "function": "total_exports",
+   "module": "exports",
+   "result": 0
+  },
+  {
+   "arguments": [
+    {
+     "amount_cents": 100,
+     "currency": "EUR"
+    }
+   ],
+   "function": "roundtrip_exports",
+   "module": "exports",
+   "result": {
+    "amount_cents": 965,
+    "currency": "EUR"
+   }
+  },
+  {
+   "arguments": [
+    1000,
+    "BRL"
+   ],
+   "function": "convert_exports",
+   "module": "exports",
+   "result": {
+    "amount_cents": 8650,
+    "currency": "BRL"
+   }
+  },
+  {
+   "arguments": [],
+   "function": "unit_price_files",
+   "module": "files",
+   "result": {
+    "amount_cents": 371,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [
+    3
+   ],
+   "function": "line_total_files",
+   "module": "files",
+   "result": {
+    "amount_cents": 1113,
+    "currency": "JPY"
+   }
+  },
+  {
+   "arguments": [
+    0
+   ],
+   "function": "line_total_files",
+   "module": "files",
+   "result": {
+    "amount_cents": 0,
+    "currency": "JPY"
+   }
+  },
+  {
+   "arguments": [
+    [
+     1,
+     2,
+     371
+    ]
+   ],
+   "function": "total_files",
+   "module": "files",
+   "result": 374
+  },
+  {
+   "arguments": [
+    []
+   ],
+   "function": "total_files",
+   "module": "files",
+   "result": 0
+  },
+  {
+   "arguments": [
+    3
+   ],
+   "function": "line_total_folders",
+   "module": "folders",
+   "result": {
+    "amount_cents": 2313,
+    "currency": "JPY"
+   }
+  },
+  {
+   "arguments": [
+    0
+   ],
+   "function": "line_total_folders",
+   "module": "folders",
+   "result": {
+    "amount_cents": 0,
+    "currency": "JPY"
+   }
+  },
+  {
+   "arguments": [
+    771
+   ],
+   "function": "double_folders",
+   "module": "folders",
+   "result": 1542
+  },
+  {
+   "arguments": [
+    {
+     "amount_cents": 100,
+     "currency": "EUR"
+    }
+   ],
+   "function": "roundtrip_guests",
+   "module": "guests",
+   "result": {
+    "amount_cents": 424,
+    "currency": "EUR"
+   }
+  },
+  {
+   "arguments": [
+    1000,
+    "BRL"
+   ],
+   "function": "convert_guests",
+   "module": "guests",
+   "result": {
+    "amount_cents": 3240,
+    "currency": "BRL"
+   }
+  },
+  {
+   "arguments": [
+    324,
+    15
+   ],
+   "function": "discount_guests",
+   "module": "guests",
+   "result": {
+    "amount_cents": 276,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [
+    [
+     123,
+     7,
+     300
+    ]
+   ],
+   "function": "cheapest_imports",
+   "module": "imports",
+   "result": {
+    "amount_cents": 7,
+    "currency": "JPY"
+   }
+  },
+  {
+   "arguments": [
+    10
+   ],
+   "function": "field_imports",
+   "module": "imports",
+   "result": 133
+  },
+  {
+   "arguments": [
+    123,
+    15
+   ],
+   "function": "discount_imports",
+   "module": "imports",
+   "result": {
+    "amount_cents": 105,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [
+    3
+   ],
+   "function": "line_total_invoices",
+   "module": "invoices",
+   "result": {
+    "amount_cents": 2151,
+    "currency": "BRL"
+   }
+  },
+  {
+   "arguments": [
+    0
+   ],
+   "function": "line_total_invoices",
+   "module": "invoices",
+   "result": {
+    "amount_cents": 0,
+    "currency": "BRL"
+   }
+  },
+  {
+   "arguments": [
+    717
+   ],
+   "function": "double_invoices",
+   "module": "invoices",
+   "result": 1434
+  },
+  {
+   "arguments": [
+    {
+     "amount_cents": 100,
+     "currency": "EUR"
+    }
+   ],
+   "function": "roundtrip_labels",
+   "module": "labels",
+   "result": {
+    "amount_cents": 793,
+    "currency": "EUR"
+   }
+  },
+  {
+   "arguments": [
+    1000,
+    "BRL"
+   ],
+   "function": "convert_labels",
+   "module": "labels",
+   "result": {
+    "amount_cents": 6930,
+    "currency": "BRL"
+   }
+  },
+  {
+   "arguments": [
+    693,
+    15
+   ],
+   "function": "discount_labels",
+   "module": "labels",
+   "result": {
+    "amount_cents": 590,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [],
+   "function": "unit_price_ledgers",
+   "module": "ledgers",
+   "result": {
+    "amount_cents": 41,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [
+    [
+     41,
+     7,
+     300
+    ]
+   ],
+   "function": "cheapest_ledgers",
+   "module": "ledgers",
+   "result": {
+    "amount_cents": 7,
+    "currency": "BRL"
+   }
+  },
+  {
+   "arguments": [
+    41
+   ],
+   "function": "make_ledgers",
+   "module": "ledgers",
+   "result": {
+    "amount_cents": 41,
+    "currency": "BRL"
+   }
+  },
+  {
+   "arguments": [
+    1999
+   ],
+   "function": "label_members",
+   "module": "members",
+   "result": "19.99 BRL"
+  },
+  {
+   "arguments": [
+    5
+   ],
+   "function": "label_members",
+   "module": "members",
+   "result": "0.05 BRL"
+  },
+  {
+   "arguments": [
+    42
+   ],
+   "function": "wire_members",
+   "module": "members",
+   "result": {
+    "amount_cents": 42,
+    "currency": "BRL",
+    "source": "members"
+   }
+  },
+  {
+   "arguments": [],
+   "function": "unit_price_menus",
+   "module": "menus",
+   "result": {
+    "amount_cents": 619,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [
+    3
+   ],
+   "function": "line_total_menus",
+   "module": "menus",
+   "result": {
+    "amount_cents": 1857,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [
+    0
+   ],
+   "function": "line_total_menus",
+   "module": "menus",
+   "result": {
+    "amount_cents": 0,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [
+    [
+     1,
+     2,
+     619
+    ]
+   ],
+   "function": "total_menus",
+   "module": "menus",
+   "result": 622
+  },
+  {
+   "arguments": [
+    []
+   ],
+   "function": "total_menus",
+   "module": "menus",
+   "result": 0
+  },
+  {
+   "arguments": [
+    10
+   ],
+   "function": "field_metrics",
+   "module": "metrics",
+   "result": 891
+  },
+  {
+   "arguments": [
+    1000,
+    "BRL"
+   ],
+   "function": "convert_metrics",
+   "module": "metrics",
+   "result": {
+    "amount_cents": 8810,
+    "currency": "BRL"
+   }
+  },
+  {
+   "arguments": [
+    881,
+    15
+   ],
+   "function": "discount_metrics",
+   "module": "metrics",
+   "result": {
+    "amount_cents": 749,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [],
+   "function": "unit_price_orders",
+   "module": "orders",
+   "result": {
+    "amount_cents": 774,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [
+    3
+   ],
+   "function": "line_total_orders",
+   "module": "orders",
+   "result": {
+    "amount_cents": 2322,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [
+    0
+   ],
+   "function": "line_total_orders",
+   "module": "orders",
+   "result": {
+    "amount_cents": 0,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [
+    [
+     1,
+     2,
+     774
+    ]
+   ],
+   "function": "total_orders",
+   "module": "orders",
+   "result": 777
+  },
+  {
+   "arguments": [
+    []
+   ],
+   "function": "total_orders",
+   "module": "orders",
+   "result": 0
+  },
+  {
+   "arguments": [
+    42
+   ],
+   "function": "wire_payouts",
+   "module": "payouts",
+   "result": {
+    "amount_cents": 42,
+    "currency": "USD",
+    "source": "payouts"
+   }
+  },
+  {
+   "arguments": [
+    435
+   ],
+   "function": "double_payouts",
+   "module": "payouts",
+   "result": 870
+  },
+  {
+   "arguments": [
+    435
+   ],
+   "function": "make_payouts",
+   "module": "payouts",
+   "result": {
+    "amount_cents": 435,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [
+    42
+   ],
+   "function": "wire_plans",
+   "module": "plans",
+   "result": {
+    "amount_cents": 42,
+    "currency": "EUR",
+    "source": "plans"
+   }
+  },
+  {
+   "arguments": [
+    793
+   ],
+   "function": "double_plans",
+   "module": "plans",
+   "result": 1586
+  },
+  {
+   "arguments": [
+    793
+   ],
+   "function": "make_plans",
+   "module": "plans",
+   "result": {
+    "amount_cents": 793,
+    "currency": "EUR"
+   }
+  },
+  {
+   "arguments": [
+    42
+   ],
+   "function": "wire_projects",
+   "module": "projects",
+   "result": {
+    "amount_cents": 42,
+    "currency": "USD",
+    "source": "projects"
+   }
+  },
+  {
+   "arguments": [
+    369
+   ],
+   "function": "double_projects",
+   "module": "projects",
+   "result": 738
+  },
+  {
+   "arguments": [
+    369
+   ],
+   "function": "make_projects",
+   "module": "projects",
+   "result": {
+    "amount_cents": 369,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [
+    {
+     "amount_cents": 100,
+     "currency": "EUR"
+    }
+   ],
+   "function": "roundtrip_quotes",
+   "module": "quotes",
+   "result": {
+    "amount_cents": 140,
+    "currency": "EUR"
+   }
+  },
+  {
+   "arguments": [
+    1000,
+    "BRL"
+   ],
+   "function": "convert_quotes",
+   "module": "quotes",
+   "result": {
+    "amount_cents": 400,
+    "currency": "BRL"
+   }
+  },
+  {
+   "arguments": [
+    40,
+    15
+   ],
+   "function": "discount_quotes",
+   "module": "quotes",
+   "result": {
+    "amount_cents": 34,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [],
+   "function": "unit_price_receipts",
+   "module": "receipts",
+   "result": {
+    "amount_cents": 237,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [
+    3
+   ],
+   "function": "line_total_receipts",
+   "module": "receipts",
+   "result": {
+    "amount_cents": 711,
+    "currency": "JPY"
+   }
+  },
+  {
+   "arguments": [
+    0
+   ],
+   "function": "line_total_receipts",
+   "module": "receipts",
+   "result": {
+    "amount_cents": 0,
+    "currency": "JPY"
+   }
+  },
+  {
+   "arguments": [
+    [
+     1,
+     2,
+     237
+    ]
+   ],
+   "function": "total_receipts",
+   "module": "receipts",
+   "result": 240
+  },
+  {
+   "arguments": [
+    []
+   ],
+   "function": "total_receipts",
+   "module": "receipts",
+   "result": 0
+  },
+  {
+   "arguments": [
+    3
+   ],
+   "function": "line_total_refunds",
+   "module": "refunds",
+   "result": {
+    "amount_cents": 216,
+    "currency": "JPY"
+   }
+  },
+  {
+   "arguments": [
+    0
+   ],
+   "function": "line_total_refunds",
+   "module": "refunds",
+   "result": {
+    "amount_cents": 0,
+    "currency": "JPY"
+   }
+  },
+  {
+   "arguments": [
+    1999
+   ],
+   "function": "label_refunds",
+   "module": "refunds",
+   "result": "19.99 JPY"
+  },
+  {
+   "arguments": [
+    5
+   ],
+   "function": "label_refunds",
+   "module": "refunds",
+   "result": "0.05 JPY"
+  },
+  {
+   "arguments": [
+    [
+     1,
+     2,
+     72
+    ]
+   ],
+   "function": "total_refunds",
+   "module": "refunds",
+   "result": 75
+  },
+  {
+   "arguments": [
+    []
+   ],
+   "function": "total_refunds",
+   "module": "refunds",
+   "result": 0
+  },
+  {
+   "arguments": [
+    {
+     "amount_cents": 100,
+     "currency": "EUR"
+    }
+   ],
+   "function": "roundtrip_reminders",
+   "module": "reminders",
+   "result": {
+    "amount_cents": 856,
+    "currency": "EUR"
+   }
+  },
+  {
+   "arguments": [
+    42
+   ],
+   "function": "wire_reminders",
+   "module": "reminders",
+   "result": {
+    "amount_cents": 42,
+    "currency": "USD",
+    "source": "reminders"
+   }
+  },
+  {
+   "arguments": [
+    756
+   ],
+   "function": "make_reminders",
+   "module": "reminders",
+   "result": {
+    "amount_cents": 756,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [
+    [
+     1,
+     2,
+     665
+    ]
+   ],
+   "function": "total_reports",
+   "module": "reports",
+   "result": 668
+  },
+  {
+   "arguments": [
+    []
+   ],
+   "function": "total_reports",
+   "module": "reports",
+   "result": 0
+  },
+  {
+   "arguments": [
+    {
+     "amount_cents": 100,
+     "currency": "EUR"
+    }
+   ],
+   "function": "roundtrip_reports",
+   "module": "reports",
+   "result": {
+    "amount_cents": 765,
+    "currency": "EUR"
+   }
+  },
+  {
+   "arguments": [
+    1000,
+    "BRL"
+   ],
+   "function": "convert_reports",
+   "module": "reports",
+   "result": {
+    "amount_cents": 6650,
+    "currency": "BRL"
+   }
+  },
+  {
+   "arguments": [
+    {
+     "amount_cents": 100,
+     "currency": "EUR"
+    }
+   ],
+   "function": "roundtrip_returns",
+   "module": "returns",
+   "result": {
+    "amount_cents": 612,
+    "currency": "EUR"
+   }
+  },
+  {
+   "arguments": [
+    42
+   ],
+   "function": "wire_returns",
+   "module": "returns",
+   "result": {
+    "amount_cents": 42,
+    "currency": "USD",
+    "source": "returns"
+   }
+  },
+  {
+   "arguments": [
+    512
+   ],
+   "function": "make_returns",
+   "module": "returns",
+   "result": {
+    "amount_cents": 512,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [
+    10
+   ],
+   "function": "field_rooms",
+   "module": "rooms",
+   "result": 624
+  },
+  {
+   "arguments": [
+    1000,
+    "BRL"
+   ],
+   "function": "convert_rooms",
+   "module": "rooms",
+   "result": {
+    "amount_cents": 6140,
+    "currency": "BRL"
+   }
+  },
+  {
+   "arguments": [
+    614,
+    15
+   ],
+   "function": "discount_rooms",
+   "module": "rooms",
+   "result": {
+    "amount_cents": 522,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [
+    [
+     69,
+     7,
+     300
+    ]
+   ],
+   "function": "cheapest_routes",
+   "module": "routes",
+   "result": {
+    "amount_cents": 7,
+    "currency": "EUR"
+   }
+  },
+  {
+   "arguments": [
+    10
+   ],
+   "function": "field_routes",
+   "module": "routes",
+   "result": 79
+  },
+  {
+   "arguments": [
+    69,
+    15
+   ],
+   "function": "discount_routes",
+   "module": "routes",
+   "result": {
+    "amount_cents": 59,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [],
+   "function": "unit_price_schedules",
+   "module": "schedules",
+   "result": {
+    "amount_cents": 150,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [
+    [
+     150,
+     7,
+     300
+    ]
+   ],
+   "function": "cheapest_schedules",
+   "module": "schedules",
+   "result": {
+    "amount_cents": 7,
+    "currency": "EUR"
+   }
+  },
+  {
+   "arguments": [
+    10
+   ],
+   "function": "field_schedules",
+   "module": "schedules",
+   "result": 160
+  },
+  {
+   "arguments": [
+    [
+     270,
+     7,
+     300
+    ]
+   ],
+   "function": "cheapest_sessions",
+   "module": "sessions",
+   "result": {
+    "amount_cents": 7,
+    "currency": "EUR"
+   }
+  },
+  {
+   "arguments": [
+    10
+   ],
+   "function": "field_sessions",
+   "module": "sessions",
+   "result": 280
+  },
+  {
+   "arguments": [
+    270,
+    15
+   ],
+   "function": "discount_sessions",
+   "module": "sessions",
+   "result": {
+    "amount_cents": 230,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [],
+   "function": "unit_price_shipments",
+   "module": "shipments",
+   "result": {
+    "amount_cents": 787,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [
+    [
+     787,
+     7,
+     300
+    ]
+   ],
+   "function": "cheapest_shipments",
+   "module": "shipments",
+   "result": {
+    "amount_cents": 7,
+    "currency": "EUR"
+   }
+  },
+  {
+   "arguments": [
+    10
+   ],
+   "function": "field_shipments",
+   "module": "shipments",
+   "result": 797
+  },
+  {
+   "arguments": [
+    3
+   ],
+   "function": "line_total_stocks",
+   "module": "stocks",
+   "result": {
+    "amount_cents": 2151,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [
+    0
+   ],
+   "function": "line_total_stocks",
+   "module": "stocks",
+   "result": {
+    "amount_cents": 0,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [
+    1999
+   ],
+   "function": "label_stocks",
+   "module": "stocks",
+   "result": "19.99 USD"
+  },
+  {
+   "arguments": [
+    5
+   ],
+   "function": "label_stocks",
+   "module": "stocks",
+   "result": "0.05 USD"
+  },
+  {
+   "arguments": [
+    [
+     1,
+     2,
+     717
+    ]
+   ],
+   "function": "total_stocks",
+   "module": "stocks",
+   "result": 720
+  },
+  {
+   "arguments": [
+    []
+   ],
+   "function": "total_stocks",
+   "module": "stocks",
+   "result": 0
+  },
+  {
+   "arguments": [
+    {
+     "amount_cents": 100,
+     "currency": "EUR"
+    }
+   ],
+   "function": "roundtrip_surveys",
+   "module": "surveys",
+   "result": {
+    "amount_cents": 686,
+    "currency": "EUR"
+   }
+  },
+  {
+   "arguments": [
+    1000,
+    "BRL"
+   ],
+   "function": "convert_surveys",
+   "module": "surveys",
+   "result": {
+    "amount_cents": 5860,
+    "currency": "BRL"
+   }
+  },
+  {
+   "arguments": [
+    586,
+    15
+   ],
+   "function": "discount_surveys",
+   "module": "surveys",
+   "result": {
+    "amount_cents": 499,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [],
+   "function": "unit_price_tasks",
+   "module": "tasks",
+   "result": {
+    "amount_cents": 755,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [
+    [
+     755,
+     7,
+     300
+    ]
+   ],
+   "function": "cheapest_tasks",
+   "module": "tasks",
+   "result": {
+    "amount_cents": 7,
+    "currency": "EUR"
+   }
+  },
+  {
+   "arguments": [
+    755
+   ],
+   "function": "make_tasks",
+   "module": "tasks",
+   "result": {
+    "amount_cents": 755,
+    "currency": "EUR"
+   }
+  },
+  {
+   "arguments": [
+    {
+     "amount_cents": 100,
+     "currency": "EUR"
+    }
+   ],
+   "function": "roundtrip_teams",
+   "module": "teams",
+   "result": {
+    "amount_cents": 473,
+    "currency": "EUR"
+   }
+  },
+  {
+   "arguments": [
+    42
+   ],
+   "function": "wire_teams",
+   "module": "teams",
+   "result": {
+    "amount_cents": 42,
+    "currency": "BRL",
+    "source": "teams"
+   }
+  },
+  {
+   "arguments": [
+    373
+   ],
+   "function": "make_teams",
+   "module": "teams",
+   "result": {
+    "amount_cents": 373,
+    "currency": "BRL"
+   }
+  },
+  {
+   "arguments": [
+    3
+   ],
+   "function": "line_total_tickets",
+   "module": "tickets",
+   "result": {
+    "amount_cents": 2355,
+    "currency": "BRL"
+   }
+  },
+  {
+   "arguments": [
+    0
+   ],
+   "function": "line_total_tickets",
+   "module": "tickets",
+   "result": {
+    "amount_cents": 0,
+    "currency": "BRL"
+   }
+  },
+  {
+   "arguments": [
+    785
+   ],
+   "function": "double_tickets",
+   "module": "tickets",
+   "result": 1570
+  },
+  {
+   "arguments": [],
+   "function": "unit_price_tokens",
+   "module": "tokens",
+   "result": {
+    "amount_cents": 36,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [
+    [
+     36,
+     7,
+     300
+    ]
+   ],
+   "function": "cheapest_tokens",
+   "module": "tokens",
+   "result": {
+    "amount_cents": 7,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [
+    10
+   ],
+   "function": "field_tokens",
+   "module": "tokens",
+   "result": 46
+  },
+  {
+   "arguments": [],
+   "function": "unit_price_trials",
+   "module": "trials",
+   "result": {
+    "amount_cents": 830,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [
+    [
+     830,
+     7,
+     300
+    ]
+   ],
+   "function": "cheapest_trials",
+   "module": "trials",
+   "result": {
+    "amount_cents": 7,
+    "currency": "EUR"
+   }
+  },
+  {
+   "arguments": [
+    830
+   ],
+   "function": "make_trials",
+   "module": "trials",
+   "result": {
+    "amount_cents": 830,
+    "currency": "EUR"
+   }
+  },
+  {
+   "arguments": [
+    3
+   ],
+   "function": "line_total_uploads",
+   "module": "uploads",
+   "result": {
+    "amount_cents": 2163,
+    "currency": "EUR"
+   }
+  },
+  {
+   "arguments": [
+    0
+   ],
+   "function": "line_total_uploads",
+   "module": "uploads",
+   "result": {
+    "amount_cents": 0,
+    "currency": "EUR"
+   }
+  },
+  {
+   "arguments": [
+    1999
+   ],
+   "function": "label_uploads",
+   "module": "uploads",
+   "result": "19.99 EUR"
+  },
+  {
+   "arguments": [
+    5
+   ],
+   "function": "label_uploads",
+   "module": "uploads",
+   "result": "0.05 EUR"
+  },
+  {
+   "arguments": [
+    [
+     1,
+     2,
+     721
+    ]
+   ],
+   "function": "total_uploads",
+   "module": "uploads",
+   "result": 724
+  },
+  {
+   "arguments": [
+    []
+   ],
+   "function": "total_uploads",
+   "module": "uploads",
+   "result": 0
+  },
+  {
+   "arguments": [
+    {
+     "amount_cents": 100,
+     "currency": "EUR"
+    }
+   ],
+   "function": "roundtrip_vehicles",
+   "module": "vehicles",
+   "result": {
+    "amount_cents": 168,
+    "currency": "EUR"
+   }
+  },
+  {
+   "arguments": [
+    42
+   ],
+   "function": "wire_vehicles",
+   "module": "vehicles",
+   "result": {
+    "amount_cents": 42,
+    "currency": "JPY",
+    "source": "vehicles"
+   }
+  },
+  {
+   "arguments": [
+    68
+   ],
+   "function": "make_vehicles",
+   "module": "vehicles",
+   "result": {
+    "amount_cents": 68,
+    "currency": "JPY"
+   }
+  },
+  {
+   "arguments": [
+    1999
+   ],
+   "function": "label_vendors",
+   "module": "vendors",
+   "result": "19.99 EUR"
+  },
+  {
+   "arguments": [
+    5
+   ],
+   "function": "label_vendors",
+   "module": "vendors",
+   "result": "0.05 EUR"
+  },
+  {
+   "arguments": [
+    42
+   ],
+   "function": "wire_vendors",
+   "module": "vendors",
+   "result": {
+    "amount_cents": 42,
+    "currency": "EUR",
+    "source": "vendors"
+   }
+  },
+  {
+   "arguments": [
+    42
+   ],
+   "function": "wire_venues",
+   "module": "venues",
+   "result": {
+    "amount_cents": 42,
+    "currency": "USD",
+    "source": "venues"
+   }
+  },
+  {
+   "arguments": [
+    673
+   ],
+   "function": "double_venues",
+   "module": "venues",
+   "result": 1346
+  },
+  {
+   "arguments": [
+    673
+   ],
+   "function": "make_venues",
+   "module": "venues",
+   "result": {
+    "amount_cents": 673,
+    "currency": "USD"
+   }
+  },
+  {
+   "arguments": [
+    1999
+   ],
+   "function": "label_zones",
+   "module": "zones",
+   "result": "19.99 BRL"
+  },
+  {
+   "arguments": [
+    5
+   ],
+   "function": "label_zones",
+   "module": "zones",
+   "result": "0.05 BRL"
+  },
+  {
+   "arguments": [
+    42
+   ],
+   "function": "wire_zones",
+   "module": "zones",
+   "result": {
+    "amount_cents": 42,
+    "currency": "BRL",
+    "source": "zones"
+   }
+  }
+ ]
+}

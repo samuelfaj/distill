@@ -1,0 +1,5 @@
+The cleaning pipeline in tools/task_cost_eval/fixtures/long_clean_pipeline gives wrong results. Each column
+has a normalizer under normalizers/ and its rules in SPEC.md, and a good number of them don't follow their
+rules. Go through all the columns and fix them so `python3 pipeline.py data/raw.csv out/` writes a correct
+clean.csv and rejects.csv. `python3 check.py normalizers/NAME.py` runs the tests for one column, but those
+tests don't cover every rule.

@@ -1,0 +1,9 @@
+"""Normalizer for the uploads_postcode column (rules in SPEC.md)."""
+import re
+
+PATTERN = re.compile(r'\d{4}[A-Z]{2}')
+
+
+def normalize(value):
+    code = re.sub(r'\s+', '', value).upper()
+    return code if PATTERN.fullmatch(code) else None

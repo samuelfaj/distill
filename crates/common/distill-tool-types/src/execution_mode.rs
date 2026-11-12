@@ -260,6 +260,10 @@ pub struct EffortPolicy {
     pub lowering_pass: bool,
     pub when_silent: SilentEffort,
     pub lean: EffortLean,
+    /// Whether a round whose only tool calls wait on background work, and the
+    /// round that answers the final-check reminder, keep the last level
+    /// instead of asking the effort question.
+    pub idle_rounds_keep_level: bool,
 }
 
 /// Which of the user's three models (main, worker, utility) a main round may
@@ -406,6 +410,7 @@ impl ModePolicy {
                         Ultrafast => EffortLean::Time,
                         Ultracode => EffortLean::Correctness,
                     },
+                    idle_rounds_keep_level: false,
                 },
                 tier_routing: match mode {
                     Ultrasave => TierRouting::Cheapest,
@@ -446,6 +451,7 @@ impl ModePolicy {
     pub const fn v2(mode: ExecutionMode) -> Self {
         let mut row = Self::today(mode);
         let runtime = &mut row.runtime;
+        runtime.effort.idle_rounds_keep_level = !matches!(mode, ExecutionMode::Normal);
         match mode {
             ExecutionMode::Normal => {}
             ExecutionMode::Ultrafast => {

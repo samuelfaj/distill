@@ -154,6 +154,15 @@ pub(crate) struct JevTurnLedger {
     /// Turn and round in which `read_not_narrowed` was last recorded, so it
     /// is recorded at most once per round.
     pub(crate) read_not_narrowed_round: Option<(String, u64)>,
+    /// The turn's one effort decision under a once-per-turn cadence.
+    pub(crate) turn_effort: super::mode_effort::TurnEffort,
+    /// The level the turn's last answered effort question picked.
+    pub(crate) last_answered_effort: Option<(String, distill_sampling_types::ReasoningEffort)>,
+    /// Whether the round being prepared kept the turn's route.
+    pub(crate) round_route_kept: bool,
+    /// Failed tools and failed check runs when the last main response
+    /// arrived; more now means this round follows a failure.
+    failures_at_last_response: u64,
 }
 
 /// What a request did after its final-check reminder.
@@ -243,6 +252,25 @@ impl JevTurnLedger {
             row.output_tokens = row.output_tokens.saturating_add(output_tokens);
         }
         self.last_main_prompt_tokens = Some(input_tokens);
+        self.failures_at_last_response = self.failure_count();
+    }
+
+    /// Failed tool calls plus failed runs of recorded checks so far.
+    fn failure_count(&self) -> u64 {
+        let failed_checks: u64 = self
+            .facts
+            .recorded_checks()
+            .iter()
+            .filter(|check| check.outcome == super::turn_facts::CheckOutcome::Failed)
+            .map(|check| u64::from(check.failures))
+            .sum();
+        self.facts.failed_tool_count().saturating_add(failed_checks)
+    }
+
+    /// Whether a tool failed, or a recorded check failed, since the last main
+    /// response: the round being prepared follows a failure.
+    pub(crate) fn follows_failure(&self) -> bool {
+        self.failure_count() > self.failures_at_last_response
     }
 
     /// Prompt tokens of the last main response whose prefix may be reused.
@@ -304,6 +332,34 @@ impl JevTurnLedger {
             mode,
             failed_tool_count: self.facts.failed_tool_count(),
         });
+    }
+
+    /// The route a once-per-turn cadence keeps: the one this turn's round
+    /// chose, at any prompt size and after a failed tool too. `None` for a
+    /// new turn, another session model or mode, or no route chosen yet.
+    pub(crate) fn per_turn_route(
+        &self,
+        turn: u64,
+        session_model: &str,
+        mode: distill_tool_types::ExecutionMode,
+    ) -> Option<TurnRoute> {
+        let anchor = self.turn_route.as_ref()?;
+        (anchor.turn == turn && anchor.session_model == session_model && anchor.mode == mode)
+            .then(|| anchor.route.clone())
+    }
+
+    /// Replaces the route later rounds keep, leaving what it is anchored to.
+    pub(crate) fn replace_turn_route(&mut self, route: TurnRoute) {
+        if let Some(anchor) = self.turn_route.as_mut() {
+            anchor.route = route;
+        }
+    }
+
+    /// The effort later rounds of the turn keep, when a route is anchored.
+    pub(crate) fn turn_route_effort(
+        &self,
+    ) -> Option<Option<distill_sampling_types::ReasoningEffort>> {
+        self.turn_route.as_ref().map(|anchor| anchor.route.effort)
     }
 
     /// A compaction rewrote the prompt, so the cache the turn route protects is
@@ -482,6 +538,10 @@ impl JevTurnLedger {
         self.auto_mode = Default::default();
         self.escalation = Default::default();
         self.narrowed_reads.clear();
+        std::mem::take(&mut self.turn_effort).abort();
+        self.last_answered_effort = None;
+        self.round_route_kept = false;
+        self.failures_at_last_response = 0;
         rows.sort_by(|a, b| {
             b.tokens()
                 .cmp(&a.tokens())

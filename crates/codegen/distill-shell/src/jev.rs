@@ -932,6 +932,13 @@ async fn ask_once(
                 let body = serde_json::json!({"state": &state, "questions": &questions});
                 asked.borrow_mut().push(body.to_string());
             });
+            TEST_ASK_LOG.with(|log| {
+                log.borrow_mut().push(TestAsk {
+                    lever: lever.as_str(),
+                    detached: DETACHED_DECISION.try_with(|_| ()).is_ok(),
+                    dispatched_before: TEST_DISPATCHES.with(std::cell::Cell::get),
+                });
+            });
             answers.pop_front().unwrap_or(None)
         })
     }) {
@@ -1047,6 +1054,61 @@ pub(crate) fn test_decision_answers_remaining() -> usize {
             .as_ref()
             .map_or(0, std::collections::VecDeque::len)
     })
+}
+
+tokio::task_local! {
+    /// Set on a decision started by [`in_current_turn`]: nothing awaits it.
+    static DETACHED_DECISION: ();
+}
+
+/// `future` scoped to the current session, turn, round and usage recorder,
+/// for a decision a detached task runs while the turn goes on: its records
+/// land in the same turn as an awaited decision's would.
+pub(crate) fn in_current_turn<F: Future>(future: F) -> impl Future<Output = F::Output> {
+    let session = active_session_id();
+    let turn = ACTIVE_TURN_ID.try_with(Clone::clone).unwrap_or_default();
+    let round = ACTIVE_ROUND_ID
+        .try_with(std::cell::Cell::get)
+        .unwrap_or_default();
+    ACTIVE_SESSION_ID.scope(
+        session,
+        ACTIVE_TURN_ID.scope(
+            turn,
+            ACTIVE_USAGE_RECORDER.scope(
+                std::cell::RefCell::new(active_usage_recorder()),
+                ACTIVE_ROUND_ID.scope(
+                    std::cell::Cell::new(round),
+                    DETACHED_DECISION.scope((), future),
+                ),
+            ),
+        ),
+    )
+}
+
+/// One request answered from the test queue: its lever, whether a detached
+/// task asked it, and how many main requests had been dispatched before it.
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TestAsk {
+    pub(crate) lever: &'static str,
+    pub(crate) detached: bool,
+    pub(crate) dispatched_before: u64,
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_ASK_LOG: std::cell::RefCell<Vec<TestAsk>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// Main requests dispatched on this thread (see [`note_route`]).
+    static TEST_DISPATCHES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Drains the asks answered from the test queue since the last call and
+/// restarts the dispatch count.
+#[cfg(test)]
+pub(crate) fn take_test_ask_log() -> Vec<TestAsk> {
+    TEST_DISPATCHES.with(|count| count.set(0));
+    TEST_ASK_LOG.with(|log| std::mem::take(&mut *log.borrow_mut()))
 }
 
 /// Records one catalogue decision so it lands in `~/.grok/logs/jev.jsonl`
@@ -2533,6 +2595,8 @@ pub(crate) fn unanswered_reason(lever: distill_workspace::jev::flags::JevLever) 
 /// which model is about to run and not only that something changed; `None` means
 /// the session's own model, and then only the level shows (`high`).
 pub fn note_route(engine: Option<&str>, level: Option<&str>) {
+    #[cfg(test)]
+    TEST_DISPATCHES.with(|count| count.set(count.get() + 1));
     let Ok(mut state) = activity_state().lock() else {
         return;
     };

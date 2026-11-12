@@ -1142,6 +1142,17 @@ pub(crate) fn modes_v2(root: Option<&toml::Value>) -> distill_tool_types::V2Mode
         }
     })
 }
+/// `[modes.ultrafast] effort_per_round` in the effective config `root`: the benchmark control arm
+/// in which UltraFast's v2 row decides effort per round instead of once per turn. Default false.
+pub(crate) fn ultrafast_effort_per_round(root: Option<&toml::Value>) -> bool {
+    root.and_then(|root| {
+        root.get("modes")?
+            .get("ultrafast")?
+            .get("effort_per_round")?
+            .as_bool()
+    })
+    .unwrap_or(false)
+}
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HarnessConfig {

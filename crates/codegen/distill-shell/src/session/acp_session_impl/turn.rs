@@ -10,7 +10,7 @@ use distill_tools::types::tool::ToolKind;
 use tracing::Instrument;
 static TURNS_ACTIVE: distill_telemetry::activity::ActivityGauge =
     distill_telemetry::activity::ActivityGauge::work(distill_telemetry::activity::TURNS_ACTIVE_KEY);
-const JEV_FINAL_CHECK_REMINDER: &str = "Review the user request and current evidence. Complete any clearly outstanding requested work or proof, or explain the blocker. This reminder is advisory; do not claim work that was not done. If nothing is outstanding, reply with exactly NOTHING_OUTSTANDING and nothing else: your previous message then stays the final answer.";
+pub(super) const JEV_FINAL_CHECK_REMINDER: &str = "Review the user request and current evidence. Complete any clearly outstanding requested work or proof, or explain the blocker. This reminder is advisory; do not claim work that was not done. If nothing is outstanding, reply with exactly NOTHING_OUTSTANDING and nothing else: your previous message then stays the final answer.";
 /// The whole reply that confirms the final check found nothing outstanding;
 /// [`JEV_FINAL_CHECK_REMINDER`] offers it.
 const FINAL_CHECK_NOTHING_OUTSTANDING: &str = "NOTHING_OUTSTANDING";

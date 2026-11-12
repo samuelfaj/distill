@@ -1370,7 +1370,9 @@ impl SessionActor {
             // Where the effort is part of the cached prefix, a later round of the
             // turn keeps the turn's model and effort: a switch re-reads the whole
             // prompt uncached. Otherwise this round chooses below.
-            if self.jev_keep_turn_effort(&mut sampler_config).await {
+            let kept = self.jev_keep_turn_effort(&mut sampler_config).await;
+            self.jev_ledger.borrow_mut().round_route_kept = kept;
+            if kept {
                 // Effort outside the cached prefix is free to change: re-decide on the kept model.
                 if !effort_keys_cached_prefix(&sampler_config.api_backend, &sampler_config.model) {
                     self.jev_choose_effort(&mut sampler_config).await;
@@ -1391,6 +1393,9 @@ impl SessionActor {
             // A redo the change review asked for runs at the setting it asked for:
             // the floor wins over anything cheaper chosen above.
             self.jev_apply_effort_floor(&mut sampler_config).await;
+            // The mode's ceiling and failure floor, before the ratchet's floor
+            // so a climb is never capped.
+            self.apply_mode_effort_bounds(&mut sampler_config, kept);
             // A live escalation keeps its effort level for the rest of the turn.
             self.escalation_apply_effort_floor(&mut sampler_config);
         }

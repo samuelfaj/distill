@@ -389,18 +389,25 @@ pub const UTILITY_EFFORT_QUESTION: &str = "utility_effort";
 
 /// B2: the effort to use for this call, or `None` to keep the session's.
 pub fn compose_micro_effort(answers: &JevAnswerSet, offered: &[EffortChoice]) -> Option<String> {
-    compose_micro_effort_for(answers, offered, MICRO_EFFORT_QUESTION)
+    compose_micro_effort_for(
+        answers,
+        offered,
+        MICRO_EFFORT_QUESTION,
+        distill_tool_types::JEV_CHOICE_QUANTILE,
+    )
 }
 
 /// `offered` is cheapest first. The pick is the cheapest offered level holding
-/// at least half of the answer's probability mass (labels outside the menu are
-/// ignored), so a split answer lands in the middle instead of on the session's
-/// effort. Without a usable distribution the answer's own `choice` applies if
-/// offered. No confidence floor.
+/// at least `quantile` of the answer's probability mass (labels outside the
+/// menu are ignored; the mode's policy row names the quantile), so a split
+/// answer lands in the middle instead of on the session's effort. Without a
+/// usable distribution the answer's own `choice` applies if offered. No
+/// confidence floor.
 pub fn compose_micro_effort_for(
     answers: &JevAnswerSet,
     offered: &[EffortChoice],
     question_id: &str,
+    quantile: f64,
 ) -> Option<String> {
     let Some(Answer::Choice {
         choice,
@@ -416,7 +423,7 @@ pub fn compose_micro_effort_for(
         let mut cumulative = 0.0;
         for candidate in offered {
             cumulative += mass(&candidate.id);
-            if cumulative / total >= distill_tool_types::JEV_CHOICE_QUANTILE {
+            if cumulative / total >= quantile {
                 return Some(candidate.id.clone());
             }
         }
@@ -1137,11 +1144,14 @@ mod tests {
             compose_micro_effort(&answers, &main).as_deref(),
             Some("low")
         );
+        let quantile = distill_tool_types::JEV_CHOICE_QUANTILE;
         assert_eq!(
-            compose_micro_effort_for(&answers, &other, OTHER_EFFORT_QUESTION).as_deref(),
+            compose_micro_effort_for(&answers, &other, OTHER_EFFORT_QUESTION, quantile).as_deref(),
             Some("max")
         );
-        assert!(compose_micro_effort_for(&answers, &other, MICRO_EFFORT_QUESTION).is_none());
+        assert!(
+            compose_micro_effort_for(&answers, &other, MICRO_EFFORT_QUESTION, quantile).is_none()
+        );
     }
 
     /// The menu handed to the battery is the model's own, cheapest first.

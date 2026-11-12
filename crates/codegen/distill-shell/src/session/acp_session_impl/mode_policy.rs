@@ -315,7 +315,7 @@ pub(crate) fn take_policy_rows(session_id: &str) -> BTreeMap<String, u64> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     /// One rule enforcement is one counter in usage.json, one `mode_policy`
@@ -680,7 +680,7 @@ mod tests {
 
     /// A root actor whose model is `server`, with the turn outcomes it sent to
     /// persistence.
-    async fn root_actor_for(
+    pub(in crate::session::acp_session) async fn root_actor_for(
         server: &distill_test_support::MockInferenceServer,
     ) -> (std::sync::Arc<SessionActor>, StoredOutcomes) {
         use super::super::support::*;

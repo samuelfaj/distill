@@ -70,7 +70,12 @@ pub(super) fn compose_tier(
             description: String::new(),
         })
         .collect();
-    let picked = routing::compose_micro_effort_for(answers, &offered, TIER_QUESTION)?;
+    let picked = routing::compose_micro_effort_for(
+        answers,
+        &offered,
+        TIER_QUESTION,
+        distill_tool_types::JEV_CHOICE_QUANTILE,
+    )?;
     entries
         .iter()
         .find(|entry| entry.tier.id() == picked)

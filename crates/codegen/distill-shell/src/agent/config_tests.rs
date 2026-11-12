@@ -5728,6 +5728,18 @@ fn modes_v2_defaults_to_every_mode_and_a_list_overrides_it() {
     );
     assert!(!listed.contains(ExecutionMode::Ultrafast));
 }
+/// The per-round control arm is opt-in: only a literal `true` under
+/// `[modes.ultrafast]` turns it on, so a benchmark arm cannot leak into a
+/// session by a typo.
+#[test]
+fn ultrafast_effort_per_round_is_off_unless_set_to_true() {
+    let parse = |text: &str| ultrafast_effort_per_round(Some(&toml::from_str(text).unwrap()));
+    assert!(!ultrafast_effort_per_round(None));
+    assert!(!parse("[modes]\nv2 = []\n"));
+    assert!(!parse("[modes.ultrafast]\neffort_per_round = \"yes\"\n"));
+    assert!(!parse("[modes.ultrasave]\neffort_per_round = true\n"));
+    assert!(parse("[modes.ultrafast]\neffort_per_round = true\n"));
+}
 #[test]
 fn known_non_serde_config_paths_are_not_reported_unused() {
     let unused = unused_keys_from_toml(

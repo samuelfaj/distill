@@ -53,7 +53,7 @@ max_retries = 2
     if main == DEEPSEEK:
         text += '''
 [model."deepseek-v4.1-flash"]
-model = "~deepseek/deepseek-flash-latest"
+model = "deepseek/deepseek-v4.1-flash"
 base_url = "https://openrouter.ai/api/v1"
 api_backend = "chat_completions"
 env_key = "OPENROUTER_API_KEY"

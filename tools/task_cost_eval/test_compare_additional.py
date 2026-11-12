@@ -20,7 +20,9 @@ class AdditionalBenchmarkTests(unittest.TestCase):
         self.assertFalse(parsed['jev']['enabled'])
         self.assertFalse(parsed['jev']['effort_auto'])
         self.assertEqual(parsed['models']['worker_effort'], 'low')
-        self.assertEqual(parsed['model']['deepseek-v4.1-flash']['model'], '~deepseek/deepseek-flash-latest')
+        # The exact id the native arm and the pricing record use: a `latest` alias moves to a
+        # newer snapshot with another price, and the two arms stop being a matched pair.
+        self.assertEqual(parsed['model']['deepseek-v4.1-flash']['model'], 'deepseek/deepseek-v4.1-flash')
 
     def test_normal_config_enables_jev_and_auto_effort(self):
         import tomllib

@@ -453,6 +453,8 @@ pub enum ModeSwitchTrigger {
     Review,
     /// The user fixed a mode.
     User,
+    /// The escalation ratchet moved Auto one step up after a harness signal.
+    Ratchet,
 }
 
 /// One Jev answer as the model returned it, without any text: the picked

@@ -461,13 +461,22 @@ impl SessionActor {
         if !self.auto_mode_active() {
             return None;
         }
-        let next = match self.execution_mode.load() {
+        let current = self.execution_mode.load();
+        let next = match current {
             ExecutionMode::Ultrasave | ExecutionMode::Ultrafast => ExecutionMode::Normal,
             ExecutionMode::Normal => ExecutionMode::Ultracode,
             ExecutionMode::Ultracode => return None,
         };
-        self.publish_auto_mode(next, "escalated after a harness signal")
-            .then_some(next)
+        if !self.publish_auto_mode(next, "escalated after a harness signal") {
+            return None;
+        }
+        crate::jev::emit_mode_switched(
+            None,
+            current,
+            next,
+            distill_session_events::ModeSwitchTrigger::Ratchet,
+        );
+        Some(next)
     }
 }
 

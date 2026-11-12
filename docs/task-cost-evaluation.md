@@ -415,6 +415,58 @@ single.json tiered.json` prints both profiles):
   the extra passes refuted before the fix (`refutation_before_fix`). A
   missing optional field gives `INCONCLUSIVE`.
 
+### Decision quality
+
+After each run the runner reads the root session's `events.jsonl` in the run's
+isolated home and adds to the run row, for passing and failing runs alike:
+`turn_outcomes` (the `turn_outcome` records), `policy_counts` (summed from
+those records, or counted from `mode_policy` events when there are none),
+`decision_events` (per lever: asked, answered, no-answers by kind, applied by
+label when the events carry `applied`, labels), `decision_labels` (the outcome
+label counts of the `decisions` report below), `first_mode_pick` and
+`decision_events_found`. `escalations` and `failed_check_facts` are filled
+from the turn outcomes (or, for failed checks, from `check_recorded` events)
+and left absent when the run has neither, so the silent-failure count stays
+unknown rather than zero. `review_overhead_s` and `refutation_before_fix`
+cannot be derived from these events and stay absent.
+
+- Every aggregate group carries a `decision_quality` block: per lever asked,
+  answered, applied and label counts; the outcome labels, their rates and
+  coverage; and `label_agreement`, the agreement with the hidden grader of
+  each label that claims a good or bad end state (`mode.lean_ended_failing`
+  claims a failing run, `mode.lean_ended_clean` and
+  `final_check.false_alarm` a passing one). A label under 0.8 agreement is
+  marked `discarded`; it is reported and used by no gate.
+- Auto's first pick of a run is the target of the first request-start
+  `mode_switched`, else the first `b8_execution_mode` decision of that turn.
+  The per-case oracle of `matrix_verdict` treats arms within the A/A
+  deviation of the chosen arm as tied, and reports per metric the confusion
+  matrix of Auto's first pick against the oracle (a pick of any tied mode
+  agrees), `regret` as before and `regret_delta` in credits or seconds. With a
+  cohort that declares `expected_mode` (the result records `expected_modes`),
+  `first_pick_vs_expected` gives the same matrix against the expected mode.
+  Unknown picks are counted but not scored.
+- `--jev-off [MODE:]LEVER` (repeatable, `--arms` only) adds an arm
+  `<mode>-no-<lever>` (MODE defaults to `normal` and must be one of the arms)
+  whose run config sets `[jev.ladder] <lever> = false`; `final_check` turns
+  off `c1_premature_stop` and `c3_completion_check` together. Lever names are
+  checked against the `[jev.ladder]` keys, and a test keeps that list equal to
+  `JevLadderOverlay` in `jev/flags.rs`. Lever-off arms are compared with Normal
+  and reported, never used as pinned oracle arms. Planned order, one per
+  campaign already scheduled: `final_check`, `c4_diff_risk`,
+  `p6_skill_suggestion`, `b2_model_tier`.
+- Decision gate line: the candidate's decision rates within the A/A arm's
+  deviation from the control, reported as `PASS`, `FAIL` or `NO DATA`.
+  `modes_verdict` reports it for every arm (`decision_gate`); no mode claim
+  depends on it, so it never blocks one. `auto_verdict` requires it only when
+  Auto is compared with a previous Auto (`--compare-versions` with the A/A
+  arm): there `FAIL` or `NO DATA` fails the verdict.
+
+All of this is covered by tests on synthetic event streams and synthetic run
+rows only. The event types other than `jev_decision` and `jev_no_answer` are
+read against the shapes the harness is meant to emit; no real session or
+campaign has been read with it yet.
+
 ## Mode cohorts
 
 The 20-case cohort is small single-prompt work: Auto never picks Normal or
@@ -463,6 +515,8 @@ model.
 python3 -B -m tools.task_cost_eval.session_usage --days 14 --check-totals
 python3 -B -m tools.task_cost_eval.session_usage --report totals --report cache-breaks \
   --exclude-days 2026-01-05:2026-01-10
+python3 -B -m tools.task_cost_eval.session_usage --days 7 --report decisions \
+  --expect final_check.catch_rate=0.10,mode.flip_flop_per_switch=20%
 ```
 
 - `--sessions-root` defaults to `~/.distill/sessions` and expects
@@ -490,6 +544,35 @@ python3 -B -m tools.task_cost_eval.session_usage --report totals --report cache-
   (compaction-role calls, cached share, and pass-1 against applied when the
   rows label it). `resume` and `mode-switch` cannot be derived from these files
   and are not offered.
+- `decisions` joins the Jev decision events of each session's
+  `events.jsonl` with what followed. Sessions without a `jev_decision` or
+  `jev_no_answer` event are counted as `no_decision_events` and excluded, not
+  counted as zeros. Per lever it prints asked (decisions plus no-answers),
+  answered, no-answers by kind, memo share, the 12 most common labels and the
+  median and p90 latency, next to the `jev:<lever>` and `policy:<mode>`
+  counters of `usage.json`. Only short identifiers and 12-hex hashes are
+  printed; any other label prints as `other`. Every event and field name it
+  reads is in the `NAMES` table at the top of `decision_quality.py`, and the
+  label rules are documented in that module's docstring:
+  - mode pick: `abandoned` (a switch away within 3 rounds), `held`,
+    `flip_flop` (the switch after the pick returns to a mode left earlier in
+    the turn), `lean_ended_failing` or `lean_ended_clean` (the turn ended in
+    the picked UltraSave or UltraFast with or without a failed check or an
+    escalation); flip-flops are also given per mid-turn switch;
+  - final check, per reminder: `catch` (the follow-up edited, changed the
+    worktree, delivered, or ran tools followed by a recorded check),
+    `false_alarm` (fixed token or zero tool rounds), else `unclear`;
+  - skill hint `followed` (the same skill read later in the turn) beside the
+    base rate of turns that read a skill nobody suggested;
+  - C4 review: an edit tool in the next 2 rounds after a note, and after an
+    `ok` review as the base rate (shell edits are not visible);
+  - D4 and P2 `acted` counts (0 for a dormant lever); effort only
+    `escalated_after_low`.
+  Coverage prints the labelled share of mode picks, reminders and C4 reviews
+  against the 80% target without enforcing it. `--expect KEY=VALUE,...`
+  (fractions or `N%`) prints reference rates beside the measured `rates` and
+  flags differences over 3 points. The report is tested on synthetic session
+  folders only.
 - `--check-totals` compares each file's deduped prompt tokens on its primary
   model with that file's `session.modelUsage`, and exits 1 when any session
   is more than 10% off.

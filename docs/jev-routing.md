@@ -394,6 +394,66 @@ These levers are on by default:
 | `b2_model_tier` | Whether a call can run on a cheaper tier | Downgrades only, and only in automatic effort mode |
 | `c1_premature_stop` / `c3_completion_check` | Whether the main turn is ending with requested work or proof missing | One advisory reminder per user turn, then the turn ends normally |
 
+## Escalation ratchet
+
+UltraSave and UltraFast give up capacity on purpose (a cheaper tier, a lower
+effort), so they need a way back up that does not depend on one Jev answer. A
+trigger is a harness signal that a turn may need more capacity:
+
+| Trigger | Fires when |
+|---|---|
+| `routed_error` | A request on a tier-routed round fails |
+| `c4_break` | C4 answers breaks, mismatch or incomplete (above its own floor) on an edit that is not prose (`.md`, `.mdx`, `.txt`, `.rst`, or under `docs/`) |
+| `check_failed_twice` | The same recorded check fails, the working tree changes, and it fails again |
+| `identical_calls` | The harness nudges the model out of a run of identical tool calls |
+| `stalled_rounds` | 8 tool rounds in a row bring no new working-tree change and no passing check |
+
+An incomplete final check, two failed commands or a spent budget are not
+triggers: they fire on many runs that pass, and a mode that saves money must
+not buy the expensive model because a turn spent money.
+
+Every trigger is always recorded in shadow, once per turn and only in root
+sessions, as a content-free `escalation` decision row labelled
+`shadow:<trigger>`; nothing else changes. No trigger acts by default, because
+none has been fitted yet: a trigger is switched on only after its shadow rows
+show it fires rarely on runs that pass. To make triggers live:
+
+```toml
+[modes]
+escalation = ["check_failed_twice", "c4_break"]
+```
+
+Unknown names are ignored with one warning. A live trigger climbs a turn-scoped
+ratchet, at most twice per turn and only upward, with or without Jev, and the
+ratchet is cleared when the turn ends:
+
+- UltraSave: first the executor's effort goes up one level for the rest of the
+  turn; then one harness-started, read-only review on the session's model reads
+  the turn's patch, the request and the recorded checks, and its gaps are
+  appended once as a reminder. The main model takes over the rest of the turn
+  only while the last main prompt is under 16,384 tokens; there is no cheap
+  signal for a cold prefix, so the prompt size alone decides.
+- UltraFast: first the effort floor goes up one level; then the rest of the
+  turn follows Normal's effort policy.
+- Auto: each climb moves the effective mode one step up (UltraSave or
+  UltraFast to Normal, Normal to UltraCode) without asking Jev, and the mode
+  does not come back down before the next request.
+
+The tier floor keeps tier routing above a level for the rest of the turn: the
+tiers below it are not offered, and when only the main model is left nothing is
+asked (`tier:floor_main`). A live `c4_break` on an edit made by a routed tier,
+or a live `check_failed_twice`, raises it to the tier above the one that ran
+the round. A turn changes tier at most once, recorded as `tier:escalated`. With
+any trigger live, tier routing also refuses to move a round to a lower tier in
+the middle of a turn once the last main prompt has 16,384 tokens or more, since
+the switch would re-read it uncached; the round keeps its model and the refusal
+is recorded as `tier:refused_midturn`.
+
+The other rows are `climb:effort`, `climb:review`, `climb:normal_effort`,
+`climb:mode:normal` and `climb:mode:ultracode`, and the review's outcome:
+`review:refuted`, `review:not_refuted`, `review:unavailable` or
+`review:skip-prose`.
+
 ## The `jev_decide` tool
 
 The main model and its `general-purpose`, `explore`, `plan` and

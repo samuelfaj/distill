@@ -325,10 +325,11 @@ mod pinned_mode_model {
             .join("pinned_mode.json")
     }
 
-    /// The saving is a cheaper model doing the work, so UltraSave leads on an explicit
-    /// model, else the worker; the utility model is a decision helper, never the lead.
+    /// The saving is a cheaper model doing the work, so UltraSave leads on the model its own
+    /// key names. A configured worker alone must not move a pinned session (the key is the
+    /// opt-in), and the utility model is a decision helper, never the lead.
     #[test]
-    fn ultrasave_leads_on_its_model_else_the_worker_never_the_utility_model() {
+    fn ultrasave_leads_only_on_the_model_its_key_names_never_the_utility_model() {
         let settings =
             |config: &str, mode| pinned_mode_settings(Some(&toml::from_str(config).unwrap()), mode);
         let no_cheaper = |config: &str| {
@@ -343,11 +344,20 @@ mod pinned_mode_model {
             Some("save-model")
         );
         let worker = "[models]\nworker = \"worker-model\"\n";
+        assert_eq!(settings(worker, ExecutionMode::Ultrasave).model, None);
+        assert!(no_cheaper(worker));
+        let named_worker =
+            "[models]\nworker = \"worker-model\"\n[modes.ultrasave]\nmodel = \"worker\"\n";
         assert_eq!(
-            settings(worker, ExecutionMode::Ultrasave).model.as_deref(),
+            settings(named_worker, ExecutionMode::Ultrasave)
+                .model
+                .as_deref(),
             Some("worker-model")
         );
-        assert!(!no_cheaper(worker));
+        assert!(!no_cheaper(named_worker));
+        let worker_missing = "[modes.ultrasave]\nmodel = \"worker\"\n";
+        assert_eq!(settings(worker_missing, ExecutionMode::Ultrasave).model, None);
+        assert!(no_cheaper(worker_missing));
         let utility_only = "[jev.local]\nmodel = \"utility-model\"\n[models]\nworker = \" \"\n";
         assert_eq!(settings(utility_only, ExecutionMode::Ultrasave).model, None);
         assert!(no_cheaper(utility_only));
@@ -489,7 +499,7 @@ mod pinned_mode_model {
     }
 
     /// Leaving the mode gives back the model it replaced, but a model the user picked while
-    /// pinned is their choice and stays. With no mode key, the worker leads UltraSave.
+    /// pinned is their choice and stays. `model = "worker"` leads on the configured worker.
     #[test]
     #[serial_test::serial]
     fn leaving_the_mode_restores_the_model_unless_the_user_picked_another() {
@@ -526,12 +536,13 @@ mod pinned_mode_model {
                         "the user's pick stays"
                     );
 
-                    let worker = "[models]\nworker = \"gpt-6-luna\"\n";
+                    let worker =
+                        "[models]\nworker = \"gpt-6-luna\"\n[modes.ultrasave]\nmodel = \"worker\"\n";
                     set_mode(&agent, &sid, "ultrasave", worker).await;
                     assert_eq!(
                         session_model(&agent, &sid).await,
                         "gpt-6-luna",
-                        "worker fallback"
+                        "the named worker"
                     );
                     // Switching to another pinned mode leaves this one first.
                     set_mode(&agent, &sid, "ultrafast", worker).await;

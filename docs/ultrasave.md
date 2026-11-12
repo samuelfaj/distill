@@ -34,19 +34,21 @@ Auto picks.
 
 ```toml
 [modes.ultrasave]
-model = "<model id>"        # optional; unset falls back to [models] worker
+model = "<model id>"        # optional; "worker" means the [models] worker model
 provider_tier = "economy"   # optional; unset sends no serving-path field
 ```
 
 - `model`: when the session is pinned, this model becomes the session's model
   as a session-only explicit pick (the account Auto routing setting on disk is
-  not changed). With no `model`, a configured `[models] worker` is used; the
-  utility model is never used, and models are not ranked automatically.
+  not changed). `model = "worker"` uses the configured `[models] worker`. A
+  worker model alone, without this key, changes nothing; the utility model is
+  never used, and models are not ranked automatically.
   Leaving UltraSave restores the previous model, unless you picked another
   model with `/model` in the meantime. Compaction and other auxiliary requests
   run on the session's model, as before.
-- With neither `model` nor `[models] worker` set, UltraSave has no cheaper model
-  and keeps the session's model; the session log records this once.
+- With `model` unset (or `"worker"` with no worker configured), UltraSave has
+  no cheaper model and keeps the session's model; the session log records this
+  once.
 - `provider_tier = "economy"`: decided once when the session is pinned and kept
   until the session leaves the mode, because changing it mid-session
   invalidates the provider's prompt cache. It applies to the session's model

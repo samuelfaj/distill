@@ -363,6 +363,7 @@ impl SessionActor {
                 {
                     let mut ledger = self.jev_ledger.borrow_mut();
                     ledger.escalation.climbs += 1;
+                    ledger.turn_escalations += 1;
                     ledger.escalation.auto_floor = Some(mode);
                 }
                 record(&format!("climb:mode:{}", mode_id(mode)), trigger.id());
@@ -379,6 +380,7 @@ impl SessionActor {
                 {
                     let mut ledger = self.jev_ledger.borrow_mut();
                     ledger.escalation.climbs = 1;
+                    ledger.turn_escalations += 1;
                     if level.is_some() {
                         ledger.escalation.effort_level = level;
                     }
@@ -389,6 +391,7 @@ impl SessionActor {
                 let small_prompt = {
                     let mut ledger = self.jev_ledger.borrow_mut();
                     ledger.escalation.climbs = MAX_CLIMBS;
+                    ledger.turn_escalations += 1;
                     ledger.escalation.review = ReviewStep::Requested;
                     // No cheap signal tells a cold prefix apart; the prompt
                     // size alone decides, and an unknown size (after a
@@ -406,6 +409,7 @@ impl SessionActor {
                 {
                     let mut ledger = self.jev_ledger.borrow_mut();
                     ledger.escalation.climbs = MAX_CLIMBS;
+                    ledger.turn_escalations += 1;
                     ledger.escalation.normal_effort_policy = true;
                 }
                 record("climb:normal_effort", trigger.id());
@@ -425,6 +429,7 @@ impl SessionActor {
             }
             state.tier_escalated = true;
             state.tier_floor = Some(state.tier_floor.map_or(floor, |current| current.max(floor)));
+            ledger.turn_escalations += 1;
         }
         record(
             "tier:escalated",

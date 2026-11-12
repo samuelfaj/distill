@@ -489,6 +489,8 @@ fn a_live_ratchet_climbs_twice_and_steps_tier_once_without_jev() {
                 "the small-prompt takeover would be a second tier step"
             );
             assert_eq!(state.escalations(), 3);
+            // The turn outcome record reports the same count.
+            assert_eq!(ledger.turn_escalations, 3);
         })
         .await;
         assert_eq!(

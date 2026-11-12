@@ -2603,6 +2603,11 @@ pub fn turn_activity_for_session(
         {
             continue;
         }
+        // The escalation ratchet's rows are harness facts with no Jev call
+        // behind them; they stay in the ring but are not Jev activity.
+        if entry.lever == distill_workspace::jev::flags::JevLever::Escalation.as_str() {
+            continue;
+        }
         activity.decisions = activity.decisions.saturating_add(1);
         if REFUSALS.contains(&entry.decision.as_str()) {
             activity.refused = true;

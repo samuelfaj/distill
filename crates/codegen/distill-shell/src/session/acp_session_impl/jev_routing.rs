@@ -641,6 +641,10 @@ impl SessionActor {
         let Ok(questions) = routing::model_tier_questions() else {
             return;
         };
+        // Its own request after the effort: `current` is the effort just
+        // picked, and a shared request would show this question the effort's
+        // state. No per-round field here, so a later round with the same
+        // request and effort is served from the decision memo.
         let state = serde_json::json!({
             "request": request,
             "current_effort": current,
@@ -1849,6 +1853,82 @@ mod tests {
                     crate::jev::test_decision_answers_remaining(),
                     0,
                     "one decision request for the round"
+                );
+                crate::jev::clear_test_decision_answers();
+            })
+            .await;
+    }
+
+    /// The tier question judges the effort the effort question just picked, so
+    /// it cannot ride in the effort's request: it keeps its own request, state
+    /// and ledger row.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn the_tier_stays_its_own_decision_on_the_effort_it_judges() {
+        use distill_test_support::{MockInferenceServer, MockModelEntry};
+
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let (_home, _guard) = main_home();
+                let server = MockInferenceServer::start_with_models(vec![
+                    MockModelEntry::new("main").with_api_backend("responses"),
+                ])
+                .await
+                .expect("start inference stub");
+                let (actor, mut main) = main_actor(&server).await;
+                replace_model(
+                    &actor,
+                    &server,
+                    "main",
+                    distill_sampling_types::ApiBackend::Responses,
+                    64_000,
+                    &["low", "high"],
+                );
+                actor
+                    .execution_mode
+                    .store(distill_tool_types::ExecutionMode::Normal);
+                actor
+                    .jev_effort_auto
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                actor
+                    .chat_state_handle
+                    .push_user_message_and_ack(ConversationItem::user("Rename one variable"))
+                    .await
+                    .expect("record the request");
+                crate::jev::take_test_asked_questions();
+                crate::jev::set_test_decision_answers([
+                    Some(one_answer(routing::MICRO_EFFORT_QUESTION, "high", 0.9)),
+                    Some(one_answer("model_tier", "cheap", 0.95)),
+                ]);
+                let session = "effort-tier-test";
+                crate::jev::with_session_scope_and_recorder(
+                    session,
+                    Some(actor.chat_state_handle.clone()),
+                    async {
+                        actor.jev_choose_effort(&mut main).await;
+                        actor.jev_apply_model_tier(&mut main).await;
+                    },
+                )
+                .await;
+                assert_eq!(
+                    main.reasoning_effort,
+                    Some(ReasoningEffort::Low),
+                    "the tier lowered the effort the effort question picked"
+                );
+                assert_eq!(
+                    crate::jev::take_test_asked_questions(),
+                    vec![
+                        vec![routing::MICRO_EFFORT_QUESTION.to_owned()],
+                        vec!["model_tier".to_owned()],
+                    ],
+                    "two requests, each with only its own question"
+                );
+                assert_eq!(
+                    crate::jev::recorded_decisions_for_test(session),
+                    vec![
+                        ("b2_micro_effort".to_owned(), "effort:high".to_owned()),
+                        ("b2_model_tier".to_owned(), "downgrade".to_owned()),
+                    ],
                 );
                 crate::jev::clear_test_decision_answers();
             })

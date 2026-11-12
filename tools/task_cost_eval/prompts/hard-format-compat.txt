@@ -1,0 +1,4 @@
+Add currency support to format_amount in tools/task_cost_eval/fixtures/hard_format_compat: an optional
+currency code that puts the symbol in front of the number ('USD' gives '$', 'EUR' gives '€', 'GBP' gives '£',
+any other code is written with a space, like 'CHF 12.00'). Negative amounts look like '-$1.50'. Other teams
+call this function too, so their existing calls have to keep working.

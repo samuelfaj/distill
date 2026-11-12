@@ -42,13 +42,21 @@ def run_grader(case, *layers):
                               cwd=tmp, env=env, capture_output=True, text=True, timeout=60)
 
 
-def run_visible_tests(directory):
-    """The test command a user of the fixture would run: unittest for Python, node --test for JavaScript."""
+def has_visible_tests(case):
+    directory = ROOT / case['fixture_ref']
+    return any(directory.glob('*.test.js')) or any(directory.glob('test_*.py'))
+
+
+def run_visible_tests(case, *layers):
+    """The fixture's own test command on a staged copy: unittest for Python, node --test for JavaScript."""
     env = {**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'}
-    if any(Path(directory).glob('*.test.js')):
-        return subprocess.run(['node', '--test'], cwd=directory, env=env, capture_output=True, text=True, timeout=60)
-    return subprocess.run([sys.executable, '-m', 'unittest', 'discover'], cwd=directory, env=env,
-                          capture_output=True, text=True, timeout=60)
+    with tempfile.TemporaryDirectory(prefix='mode-cohort-visible-') as tmp:
+        directory = stage(case, tmp, *layers)
+        if any(directory.glob('*.test.js')):
+            command = ['node', '--test']
+        else:
+            command = [sys.executable, '-m', 'unittest', 'discover']
+        return subprocess.run(command, cwd=directory, env=env, capture_output=True, text=True, timeout=60)
 
 
 def uses_node(case):
@@ -63,10 +71,6 @@ class CohortProofs:
     @classmethod
     def cases(cls):
         return load(cls.COHORT)['cases']
-
-    def own_cases(self):
-        # Cases reused from older cohorts are proven by those cohorts' own tests.
-        return [case for case in self.cases() if not case.get('reused')]
 
     def test_shape(self):
         seen = set()
@@ -86,11 +90,11 @@ class CohortProofs:
         self.assertIn('pilot', load(self.COHORT)['description'], 'unconfirmed design targets must say so')
 
     def test_node_is_available_for_javascript_cases(self):
-        if any(uses_node(case) for case in self.own_cases()):
+        if any(uses_node(case) for case in self.cases()):
             self.assertIsNotNone(shutil.which('node'), 'JavaScript cases need Node.js on PATH')
 
     def test_seeded_fails_and_reference_passes(self):
-        for case in self.own_cases():
+        for case in self.cases():
             with self.subTest(case=case['id']):
                 seeded = run_grader(case)
                 self.assertEqual(seeded.returncode, 1, case['id'] + ': seeded grader did not fail\n' + seeded.stderr)
@@ -101,10 +105,78 @@ class CohortProofs:
                 self.assertEqual(reference.stderr, '', case['id'] + ': reference emitted diagnostics')
 
     def test_reference_visible_tests(self):
-        for case in self.own_cases():
+        for case in self.cases():
+            if not has_visible_tests(case):
+                continue  # Older reused controls ship without a local test command.
             with self.subTest(case=case['id']):
-                result = run_visible_tests(ROOT / case['reference_ref'])
+                result = run_visible_tests(case, case['reference_ref'])
                 self.assertEqual(result.returncode, 0, case['id'] + ': visible tests failed\n' + result.stderr[-2000:])
+
+
+class HardCohortProofs(CohortProofs):
+    """The difficulty claim made testable: the obvious change passes the visible tests and fails the grader."""
+    SIZE = (5, 7)
+
+    def hard_cases(self):
+        return [case for case in self.cases() if case['difficulty'] == 'hard']
+
+    def test_difficulty_classes(self):
+        cases = self.cases()
+        classes = [case['difficulty'] for case in cases]
+        self.assertGreaterEqual(classes.count('hard'), 4)
+        self.assertEqual(classes.count('control-sequential'), 1)
+        self.assertEqual(classes.count('control-small'), 1)
+        for case in cases:
+            self.assertEqual(case['size'], 'substantial' if case['difficulty'] == 'hard' else 'control', case['id'])
+            self.assertEqual('obvious_ref' in case, case['difficulty'] == 'hard', case['id'])
+        for case in self.hard_cases():
+            self.assertTrue((ROOT / case['obvious_ref']).is_dir(), case['id'])
+
+    def test_obvious_change_passes_visible_tests_but_fails_the_grader(self):
+        for case in self.hard_cases():
+            with self.subTest(case=case['id']):
+                visible = run_visible_tests(case, case['reference_ref'], case['obvious_ref'])
+                self.assertEqual(visible.returncode, 0, case['id'] + ': obvious change fails the visible tests, '
+                                 'so it is not the trap the case claims\n' + visible.stderr[-2000:])
+                graded = run_grader(case, case['reference_ref'], case['obvious_ref'])
+                self.assertEqual(graded.returncode, 1, case['id'] + ': grader accepted the obvious change')
+                self.assertNotIn('Traceback', graded.stderr)
+                self.assertNotIn('import:', graded.stderr)
+
+    def test_obvious_change_differs_from_the_reference(self):
+        for case in self.hard_cases():
+            with self.subTest(case=case['id']):
+                for path in (ROOT / case['obvious_ref']).rglob('*'):
+                    if path.is_file():
+                        original = ROOT / case['reference_ref'] / path.relative_to(ROOT / case['obvious_ref'])
+                        if not original.exists():
+                            original = ROOT / case['fixture_ref'] / path.relative_to(ROOT / case['obvious_ref'])
+                        self.assertTrue(original.exists(), path)
+
+
+class UltraCodeHardTests(HardCohortProofs, unittest.TestCase):
+    COHORT = 'cohort-ultracode-hard-v1.json'
+
+    def test_ingestion_case_reuses_the_existing_fixture(self):
+        ingestion = [case for case in self.cases() if case['fixture_ref'] == 'fixtures/ultra_dev_ingestion']
+        self.assertEqual(len(ingestion), 1)
+        existing = next(case for case in load('cohort-ultracode-dev-v1.json')['cases'] if case['id'] == 'ultra-dev-d2')
+        for key in ('prompt_ref', 'fixture_ref', 'grader', 'reference_ref'):
+            self.assertEqual(ingestion[0][key], existing[key])
+
+
+class UltraCodeHardHeldoutTests(HardCohortProofs, unittest.TestCase):
+    COHORT = 'cohort-ultracode-hard-heldout-v1.json'
+
+    def test_halves_are_disjoint_and_together_hold_ten_to_twelve_cases(self):
+        development = load(UltraCodeHardTests.COHORT)['cases']
+        heldout = self.cases()
+        self.assertTrue(10 <= len(development) + len(heldout) <= 12)
+        self.assertEqual({c['id'] for c in development} & {c['id'] for c in heldout}, set())
+        self.assertEqual({c['fixture_ref'] for c in development} & {c['fixture_ref'] for c in heldout}, set())
+        count = lambda cases, kind: sum(case['difficulty'] == kind for case in cases)
+        for kind in ('hard', 'control-sequential', 'control-small'):
+            self.assertEqual(count(development, kind), count(heldout, kind), kind)
 
 
 class AutoCohortTests(CohortProofs, unittest.TestCase):

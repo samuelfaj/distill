@@ -1,0 +1,1 @@
+clamp() in tools/task_cost_eval/fixtures/ctrl_clamp returns values above the upper bound unchanged. Please fix it.

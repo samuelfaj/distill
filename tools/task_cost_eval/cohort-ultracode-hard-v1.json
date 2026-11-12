@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "cohort_id": "ultracode-hard-v1",
+  "description": "UltraCode hard cohort, development half. Hard cases are built so that the obvious change passes the fixture's visible tests but breaks a requirement stated once in the prompt or an invariant the hidden grader checks; each carries obvious_ref, an overlay on the reference holding that obvious-but-wrong change, which the fixture tests prove the grader rejects. A strong model in Normal mode passing 30% to 70% of hard runs is a design target that only a paid pilot can confirm. difficulty marks hard cases, sequential controls (no parallel structure) and small controls (any mode should pass); size maps them to --substantial and --control. ultra-dev-d2 and seq-rename-en reuse existing fixtures, graders and references (reused_from). JavaScript cases need Node.js 18 or newer.",
+  "repetitions": 3,
+  "cases": [
+    {"id": "ultra-dev-d2", "kind": "divisible", "size": "substantial", "difficulty": "hard", "prompt_ref": "prompts/ultra-dev-ingestion.txt", "fixture_ref": "fixtures/ultra_dev_ingestion", "grader": {"script_ref": "graders/grade_ultra_dev_ingestion.py"}, "reference_ref": "reference/ultra_dev_ingestion", "obvious_ref": "obvious/ultra_dev_ingestion", "reused_from": "cohort-ultracode-dev-v1.json"},
+    {"id": "hard-account-merge", "kind": "divisible", "size": "substantial", "difficulty": "hard", "prompt_ref": "prompts/hard-account-merge.txt", "fixture_ref": "fixtures/hard_account_merge", "grader": {"script_ref": "graders/grade_hard_account_merge.py"}, "reference_ref": "reference/hard_account_merge", "obvious_ref": "obvious/hard_account_merge"},
+    {"id": "hard-format-compat", "kind": "sequential", "size": "substantial", "difficulty": "hard", "prompt_ref": "prompts/hard-format-compat.txt", "fixture_ref": "fixtures/hard_format_compat", "grader": {"script_ref": "graders/grade_hard_format_compat.py"}, "reference_ref": "reference/hard_format_compat", "obvious_ref": "obvious/hard_format_compat"},
+    {"id": "hard-js-map-limit", "kind": "sequential", "size": "substantial", "difficulty": "hard", "prompt_ref": "prompts/hard-js-map-limit.txt", "fixture_ref": "fixtures/hard_js_map_limit", "grader": {"script_ref": "graders/grade_hard_js_map_limit.py"}, "reference_ref": "reference/hard_js_map_limit", "obvious_ref": "obvious/hard_js_map_limit"},
+    {"id": "seq-rename-en", "kind": "sequential", "size": "control", "difficulty": "control-sequential", "prompt_ref": "prompts/seq-rename-en.txt", "fixture_ref": "fixtures/seq_rename", "grader": {"script_ref": "graders/grade_seq_rename.py"}, "reference_ref": "reference/seq_rename", "reused_from": "cohort-parallel-v1.json"},
+    {"id": "ctrl-clamp", "kind": "sequential", "size": "control", "difficulty": "control-small", "prompt_ref": "prompts/ctrl-clamp.txt", "fixture_ref": "fixtures/ctrl_clamp", "grader": {"script_ref": "graders/grade_ctrl_clamp.py"}, "reference_ref": "reference/ctrl_clamp"}
+  ]
+}

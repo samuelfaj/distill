@@ -1,0 +1,4 @@
+mapLimit in tools/task_cost_eval/fixtures/hard_js_map_limit ignores its limit and fires every call at once,
+which overloads the service it is used with. Make it keep at most `limit` calls running, starting the next item
+as soon as any running call finishes. It resolves with the results in input order, and on the first failure it
+rejects with that error and starts no further items.

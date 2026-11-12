@@ -46,13 +46,26 @@ What each arm did, read from the per-call evidence in the family files:
 
 - **Normal** hands the edit to a subagent on the worker model in the GPT families, which is most of its wall time there; in the Opus family it works without one.
 - **UltraSave** leads on the worker model (GPT-6 Luna or Haiku 5.5) for the whole session. That is where its cost goes down. In the Opus family it is slower than Normal, because Haiku 5.5 took longer per call than Opus 5.5 on these tasks.
-- **UltraFast** keeps the session's model, runs no subagent, waits for no side decision and caps effort at medium. It is the fastest arm in the Astra and Opus families; in the Sol family UltraSave is 7% faster.
+- **UltraFast** keeps the session's model, runs no subagent, waits for no side decision and caps effort at medium. It takes 41% to 81% of Normal's time at 76% to 103% of its cost. In the GPT families its time and UltraSave's are within the run-to-run variation below; in the Opus family it is the fastest arm.
 - **UltraCode** adds an independent review after a turn that changed code. Every arm passes these tasks, so the table shows what that review costs and cannot show what it catches. No quality claim is made for it.
 - **Auto** carries the cost of its mode decisions on short tasks: it is cheaper than Normal in all three families and slower than Normal in the Opus family.
 
 The DeepSeek family is not in these tables. Its cells ran, but the account's daily quota for OpenRouter's free models, which that family uses for its worker and auxiliary calls, was exhausted during the day: every free-model call failed, the UltraSave arm, which leads on the free router, failed all nine runs, and no Distill arm has complete cost accounting. The result is retained as [the excluded DeepSeek record](tools/task_cost_eval/results/requested-20261112-deepseek-quota-exhausted.json) and is not summarized. The last complete DeepSeek cohort is the 2026-10-16 one ([result](tools/task_cost_eval/results/requested-20261016-deepseek.json), Distill 2.0.46, one Distill arm).
 
 The Distill Normal arm is slower in the GPT families than the Distill arm of the 2026-10-16 campaign on Distill 2.0.46 ([summary](tools/task_cost_eval/results/requested-20261016-summary.json)). A separate diagnostic run of the released 2.0.68 binary in Normal mode on the Sol family, two repetitions, took 281.28 s for six runs against 304.96 s for native ([diagnostic record](tools/task_cost_eval/results/requested-20261112-sol-2.0.68-normal.json)), about the same time per run as the Normal arm above (46.9 s against 46.0 s). It is not part of the tables and was not paired with this campaign's cells.
+
+## Run-to-run variation
+
+This format has no repeated identical arm, so the table alone does not say how much two runs of the same arm differ. The first run of this campaign (see below) gives an estimate: the native, Normal, UltraSave and UltraCode arms ran the same code path in both runs ([first-run summary](tools/task_cost_eval/results/requested-20261112-first-run-summary.json)). Between the two runs those arms changed by:
+
+| Arm | Time | Estimated cost |
+|---|---|---|
+| Native | −3.5% to −2.6% | −6.0% to −3.6% |
+| Normal | −0.8% to +3.0% | −27.9% to +0.8% |
+| UltraSave | −9.6% to +39.1% | −11.5% to +12.7% |
+| UltraCode | −7.0% to +5.9% | −17.8% to +1.9% |
+
+Read the tables with that in mind. A cost difference under about 30% or a time difference under about 10% between two Distill arms of the GPT families may be variation (and one UltraSave time moved 39%). UltraSave's cost against Normal, UltraFast's time against Normal in the GPT families and UltraCode's cost and time against Normal are well outside it. Auto's time against Normal, and the order of UltraFast and UltraSave on time in the GPT families, are not.
 
 ## How this campaign came about
 

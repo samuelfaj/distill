@@ -579,7 +579,9 @@ anyway: a model switch, a compaction, or no model output for an hour. A
 compaction that kept a cached prefix with tool rounds in it (a fork re-pins
 its parent's) is not cold. Warm batches wait for `d6_warm_batches` (off): at
 most once per 25 tool rounds, and only when the bytes removed, replayed for
-25 rounds, are at least ten times the suffix re-billed; those thresholds are
+25 rounds, are at least the suffix re-billed times the inverse of the model's
+cache-read price (ten at 0.1x of input, twenty on Opus and Sonnet at 0.05x,
+forty on Fable and Mythos at 0.025x); those thresholds are
 estimates until `history_batch` and `history_reread` show they pay. Inherited
 history (a fork, a resume) counts as already batched. A resumed session gets
 no idle check, and there is no observed-hit-rate trigger: on a provider whose

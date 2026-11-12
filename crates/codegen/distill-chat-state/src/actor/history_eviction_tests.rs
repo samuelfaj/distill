@@ -50,7 +50,7 @@ fn stored(_: &str, _: &str, _: &str) -> Option<String> {
 
 fn evict(conversation: &mut Vec<ConversationItem>, cold: Option<ColdReason>) -> usize {
     let plan = plan(conversation);
-    if batch_label(&plan, cold, 0, false).is_none() {
+    if batch_label(&plan, cold, 0, false, "").is_none() {
         return 0;
     }
     let (replacements, _) = render(plan, true, stored);
@@ -94,7 +94,7 @@ fn a_store_refusal_keeps_todays_bytes() {
     let before = conversation.clone();
 
     let plan = plan(&conversation);
-    assert!(batch_label(&plan, Some(ColdReason::Compaction), 0, false).is_some());
+    assert!(batch_label(&plan, Some(ColdReason::Compaction), 0, false, "").is_some());
     let (replacements, refused) = render(plan, true, |_, _, _| None);
     assert_eq!((replacements.len(), refused), (0, 1));
     assert_eq!(apply(&mut conversation, &replacements), 0);
@@ -116,8 +116,8 @@ fn a_warm_batch_waits_for_the_interval_and_for_payback() {
 
     let small = plan(&conversation);
     assert_eq!(small.candidates.len(), 1);
-    assert_eq!(batch_label(&small, None, 0, true), None, "5 KB saved cannot pay for a 400 KB re-bill");
-    assert_eq!(batch_label(&small, Some(ColdReason::Idle), 0, false), Some("batch:cold-idle"));
+    assert_eq!(batch_label(&small, None, 0, true, ""), None, "5 KB saved cannot pay for a 400 KB re-bill");
+    assert_eq!(batch_label(&small, Some(ColdReason::Idle), 0, false, ""), Some("batch:cold-idle"));
 
     let mut conversation = vec![ConversationItem::system("sys")];
     for i in 0..6 {
@@ -127,16 +127,47 @@ fn a_warm_batch_waits_for_the_interval_and_for_payback() {
     }
     filler(&mut conversation, 0, 25);
     let large = plan(&conversation);
-    assert_eq!(batch_label(&large, None, 0, true), Some("batch:warm"));
+    assert_eq!(batch_label(&large, None, 0, true, ""), Some("batch:warm"));
     assert_eq!(
-        batch_label(&large, None, large.rounds - 10, true),
+        batch_label(&large, None, large.rounds - 10, true, ""),
         None,
         "a warm batch is at least the interval after the last one"
     );
     assert_eq!(
-        batch_label(&large, None, 0, false),
+        batch_label(&large, None, 0, false, ""),
         None,
         "without d6_warm_batches sent history is never rewritten on a warm cache"
+    );
+}
+
+/// The warm payback gate prices the replay saved at the model's real cache-read
+/// rate: where reads cost 0.05x or 0.025x of input, a break re-bills 20x or 40x
+/// what replaying the suffix cached costs, so a batch that pays at the common
+/// 0.1x rate loses money there. Cold batches never depend on the model.
+#[test]
+fn the_warm_payback_gate_follows_the_models_cache_read_price() {
+    assert_eq!(cache_read_ratio("claude-opus-5-5"), 0.05);
+    assert_eq!(cache_read_ratio("anthropic/claude-sonnet-5.5"), 0.05);
+    assert_eq!(cache_read_ratio("claude-fable-5-2"), 0.025);
+    assert_eq!(cache_read_ratio("Claude-Mythos-5"), 0.025);
+    assert_eq!(cache_read_ratio("gpt-6.1-sol"), 0.1);
+    assert_eq!(cache_read_ratio(""), 0.1);
+
+    let mut conversation = vec![ConversationItem::system("sys")];
+    conversation.push(call("old", "run_terminal_command", serde_json::json!({"command": "cargo build"})));
+    conversation.push(ConversationItem::tool_result("old", output("cargo", 6_000)));
+    filler(&mut conversation, 0, 25);
+    let mut plan = plan(&conversation);
+    // 30 KB saved, replayed over 25 rounds (750 KB), against a 50 KB suffix:
+    // more than 10x the suffix (500 KB), less than 20x (1 MB).
+    plan.saving = 30_000;
+    plan.suffix_bytes = 50_000;
+    assert_eq!(batch_label(&plan, None, 0, true, "gpt-6.1-sol"), Some("batch:warm"));
+    assert_eq!(batch_label(&plan, None, 0, true, "claude-opus-5-5"), None);
+    assert_eq!(batch_label(&plan, None, 0, true, "claude-fable-5-2"), None);
+    assert_eq!(
+        batch_label(&plan, Some(ColdReason::Idle), 0, false, "claude-fable-5-2"),
+        Some("batch:cold-idle")
     );
 }
 

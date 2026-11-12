@@ -42,9 +42,27 @@ pub const SUPERSEDED_AGE_ROUNDS: usize = 10;
 /// Warm batches are at least this many tool rounds apart; it is also the
 /// replay horizon the payback gate assumes for the bytes a batch removes.
 pub const BATCH_INTERVAL_ROUNDS: usize = 25;
-/// A cache break re-bills the suffix at full price instead of ~0.1x cached
-/// (0.9x extra, plus a cache-write premium on some providers): 10x covers both.
-const BUST_COST_FACTOR: usize = 10;
+/// The price of a cache read as a fraction of the input price, by model family:
+/// 0.05 on the Opus and Sonnet class, 0.025 on the Fable and Mythos class, and the
+/// common 0.1 elsewhere (an unknown model included).
+pub(crate) fn cache_read_ratio(model_id: &str) -> f64 {
+    let id = model_id.to_ascii_lowercase();
+    let has = |needles: &[&str]| needles.iter().any(|needle| id.contains(needle));
+    if has(&["fable", "mythos"]) {
+        0.025
+    } else if has(&["opus", "sonnet"]) {
+        0.05
+    } else {
+        0.1
+    }
+}
+
+/// A cache break re-bills the suffix at full price instead of the cached read
+/// price: `1 / ratio` times what replaying it cached costs (10x at 0.1, 20x at
+/// 0.05, 40x at 0.025), which also stands in for a cache-write premium.
+fn bust_cost_factor(model_id: &str) -> usize {
+    (1.0 / cache_read_ratio(model_id)).round() as usize
+}
 /// No model output for this long means the provider cache has expired: every
 /// provider's default prompt-cache lifetime is shorter. The idle limit until a
 /// request reports its own lifetime, and for an endpoint whose lifetime is unknown.
@@ -645,13 +663,14 @@ pub(crate) fn plan(conversation: &[ConversationItem]) -> Plan {
 ///
 /// Cold, any saving is free. Warm, only with `warm_batches`: the batch must be
 /// due and must pay for the cache break: the bytes it removes, replayed for
-/// [`BATCH_INTERVAL_ROUNDS`] at the cached rate, must outweigh re-billing the
-/// suffix at full price.
+/// [`BATCH_INTERVAL_ROUNDS`] at `model_id`'s cached rate, must outweigh
+/// re-billing the suffix at full price.
 pub(crate) fn batch_label(
     plan: &Plan,
     cold: Option<ColdReason>,
     last_batch_rounds: usize,
     warm_batches: bool,
+    model_id: &str,
 ) -> Option<&'static str> {
     if plan.candidates.is_empty() {
         return None;
@@ -664,7 +683,7 @@ pub(crate) fn batch_label(
     }
     let due = plan.rounds.saturating_sub(last_batch_rounds) >= BATCH_INTERVAL_ROUNDS;
     let pays = plan.saving.saturating_mul(BATCH_INTERVAL_ROUNDS)
-        >= plan.suffix_bytes.saturating_mul(BUST_COST_FACTOR);
+        >= plan.suffix_bytes.saturating_mul(bust_cost_factor(model_id));
     (due && pays).then_some("batch:warm")
 }
 
@@ -913,8 +932,13 @@ impl ChatStateActor {
             return;
         }
         let plan = plan(&self.state.conversation);
-        let Some(label) = batch_label(&plan, cold, self.eviction.last_batch_rounds, warm_batches)
-        else {
+        let Some(label) = batch_label(
+            &plan,
+            cold,
+            self.eviction.last_batch_rounds,
+            warm_batches,
+            &self.state.sampling_config.model,
+        ) else {
             return;
         };
         let (suffix_bytes, planned) = (plan.suffix_bytes, plan.candidates.len());

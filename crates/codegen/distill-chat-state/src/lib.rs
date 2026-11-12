@@ -41,6 +41,7 @@ pub mod usage;
 // Re-export main types for convenience
 pub use actor::ChatStateActor;
 pub use actor::history_eviction::READ_REUSE_NOTE_PREFIX;
+pub use actor::history_eviction::cache_read_ratio;
 pub use actor::history_eviction::{CacheResumeState, PersistedTrim, RequestTrims};
 pub use actor::history_eviction::{
     COMPACTION_DIGEST_MARKER, ColdCompactionCandidate, EVICTED_MARKER, SUPERSEDED_MARKER,

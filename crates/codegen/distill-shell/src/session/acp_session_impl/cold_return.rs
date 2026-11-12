@@ -11,10 +11,15 @@
 //! `cache_state.json`, a client that cannot ask) keeps the full history, as before.
 //!
 //! The same boundary applies `[compaction] max_prompt_tokens`, an absolute cap beside the percent
-//! threshold: a history above it compacts before the turn's first request, never mid-turn. While
-//! the session's effective mode is UltraSave, `[modes.ultrasave] cold_return` and
-//! `max_prompt_tokens` replace the `[compaction]` values when set. Every key is off or keeps
-//! today's decision by default: no pass-rate evidence yet supports compacting more often.
+//! threshold: a history above it compacts before the turn's first request, never mid-turn.
+//!
+//! Both follow the effective mode's policy row ([`BoundarySettings::for_mode`]): an explicit
+//! `[modes.<mode>]` key wins, then the row's value, then the `[compaction]` key. On the v2 rows
+//! UltraSave compacts at a cold moment without asking (from [`auto_cold_return_floor`]) and caps
+//! the prompt at 250,000 tokens, UltraFast neither asks nor compacts for cost, UltraCode asks and
+//! has no cap, and Normal keeps the `[compaction]` values. The today rows keep the `[compaction]`
+//! values (with `[modes.ultrasave]` replacing them in UltraSave). No pass-rate evidence yet backs
+//! the UltraSave values; `[modes] v2 = []` turns them off.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -37,6 +42,29 @@ use crate::session::acp_session::SessionActor;
 /// cache read; at the 0.05x or 0.025x of the larger Claude models the same payback needs about
 /// twice or four times the history, which `[compaction] cold_return_min_tokens` can ask for.
 pub(crate) const COLD_RETURN_MIN_TOKENS: u64 = 100_000;
+
+/// Summary size the automatic floor assumes, in tokens.
+const SUMMARY_TOKENS: f64 = 10_000.0;
+/// What the summary costs once, per summary token at the input price: its output at about five
+/// times the input price plus its cold write at 1.25 times.
+const SUMMARY_COST_FACTOR: f64 = 6.25;
+/// Later requests within which an automatic compaction must pay for itself: about one returning
+/// turn of tool rounds, the payback [`COLD_RETURN_MIN_TOKENS`] gives at a 0.1x cache read.
+const PAYBACK_REQUESTS: f64 = 7.0;
+
+/// The smallest history an automatic cold-return compaction pays for, at a cache read of
+/// `cache_read_ratio` times the input price, never below `configured_min`. Keeping the history
+/// costs `ratio × N` on each later request; compacting costs `6.25 × S` once and `ratio × S` per
+/// request after it, so it pays back after `6.25 × S / (ratio × (N − S))` requests. Asking for
+/// that within 7 requests gives `N = S + 6.25 × S / (7 × ratio)`: about 99k at 0.1, 189k at 0.05
+/// and 367k at 0.025. It assumes a 10k-token summary, output at five times the input price, and,
+/// as at any cold moment, the uncached write of `N` paid on both paths; it ignores what the
+/// summary loses, which is one reason the floor never drops below the configured one.
+pub(crate) fn auto_cold_return_floor(cache_read_ratio: f64, configured_min: u64) -> u64 {
+    let floor = SUMMARY_TOKENS
+        + SUMMARY_COST_FACTOR * SUMMARY_TOKENS / (PAYBACK_REQUESTS * cache_read_ratio);
+    (floor.ceil() as u64).max(configured_min)
+}
 
 /// Decision labels counted under `compaction_timing` in usage.json, one per compaction a
 /// non-default key decided.
@@ -166,6 +194,54 @@ impl BoundarySettings {
                 .unwrap_or(COLD_RETURN_MIN_TOKENS),
             max_prompt_tokens: max_prompt_tokens.filter(|cap| *cap > 0),
         }
+    }
+}
+
+impl BoundarySettings {
+    /// The settings while the effective mode is `mode` with the row's `context`: each of
+    /// `cold_return` and `max_prompt_tokens` is the `[modes.<mode>]` key when the row reads mode
+    /// keys and it is set, else the row's value, else the `[compaction]` value as
+    /// [`Self::from_config`] resolves it. A cap of `0` is off at either level. When the row
+    /// compacts on its own at a cold moment, the floor is [`auto_cold_return_floor`] at
+    /// `cache_read_ratio`.
+    fn for_mode(
+        root: &toml::Value,
+        mode: distill_tool_types::ExecutionMode,
+        context: distill_tool_types::ContextPolicy,
+        cache_read_ratio: f64,
+    ) -> Self {
+        use distill_tool_types::ColdReturn;
+        let mut settings = Self::from_config(root, false);
+        let mode_key = |key: &str| {
+            context
+                .mode_keys
+                .then(|| root.get("modes")?.get(mode.id())?.get(key))
+                .flatten()
+        };
+        let row_cold_return = context.cold_return.map(|value| match value {
+            ColdReturn::Offer => ColdReturnMode::Offer,
+            ColdReturn::Auto => ColdReturnMode::Auto,
+            ColdReturn::Off => ColdReturnMode::Off,
+        });
+        if let Some(cold_return) =
+            ColdReturnMode::parse(mode_key("cold_return").and_then(toml::Value::as_str))
+                .or(row_cold_return)
+        {
+            settings.cold_return = Some(cold_return);
+        }
+        if let Some(cap) = mode_key("max_prompt_tokens")
+            .and_then(toml::Value::as_integer)
+            .and_then(|tokens| u64::try_from(tokens).ok())
+            .or(context.max_prompt_tokens)
+        {
+            settings.max_prompt_tokens = (cap > 0).then_some(cap);
+        }
+        if row_cold_return == Some(ColdReturnMode::Auto)
+            && settings.cold_return == Some(ColdReturnMode::Auto)
+        {
+            settings.min_tokens = auto_cold_return_floor(cache_read_ratio, settings.min_tokens);
+        }
+        settings
     }
 }
 
@@ -314,11 +390,14 @@ impl SessionActor {
         let threshold_due = self
             .should_auto_compact(tokens, config.context_window)
             .is_some();
+        let mode = self.execution_mode.load();
         let (settings, compaction_settings) = match crate::config::load_effective_config() {
             Ok(root) => (
-                BoundarySettings::from_config(
+                BoundarySettings::for_mode(
                     &root,
-                    self.execution_mode.load() == distill_tool_types::ExecutionMode::Ultrasave,
+                    mode,
+                    self.mode_policy().runtime.context,
+                    distill_chat_state::cache_read_ratio(&config.model),
                 ),
                 BoundarySettings::from_config(&root, false),
             ),
@@ -327,8 +406,10 @@ impl SessionActor {
                 return;
             }
         };
-        // Reading the history is only worth it when the cap would fire.
-        let turn_start = settings.max_prompt_tokens.is_some_and(|cap| tokens > cap)
+        // Reading the history is only worth it when a cap would fire.
+        let over_cap =
+            |settings: BoundarySettings| settings.max_prompt_tokens.is_some_and(|cap| tokens > cap);
+        let turn_start = (over_cap(settings) || over_cap(compaction_settings))
             && awaits_first_request(&self.chat_state_handle.get_conversation().await);
         let boundary = Boundary {
             tokens,
@@ -338,8 +419,8 @@ impl SessionActor {
             turn_start,
         };
         let action = decide(settings, boundary);
-        // The `[modes.ultrasave]` keys decided this boundary when `[compaction]` alone would not.
-        let by_mode_keys = decide(compaction_settings, boundary) != action;
+        // The mode's row or keys decided this boundary when `[compaction]` alone would not.
+        let by_mode = decide(compaction_settings, boundary) != action;
         let (compact, label) = match action {
             BoundaryAction::Keep => (false, None),
             BoundaryAction::Compact(label) => (true, label),
@@ -360,17 +441,18 @@ impl SessionActor {
             tracing::info!(tokens, ?cold, ?action, compact, "cold return");
         }
         if !compact {
+            if by_mode && action == BoundaryAction::Keep {
+                crate::jev::record_policy(mode, "cold_return_skipped");
+            }
             return;
         }
-        if by_mode_keys {
-            crate::jev::record_policy(
-                distill_tool_types::ExecutionMode::Ultrasave,
-                if label == Some(MAX_PROMPT_LABEL) {
-                    "compaction:max_prompt"
-                } else {
-                    "compaction:cold_return"
-                },
-            );
+        let rule = if label == Some(MAX_PROMPT_LABEL) {
+            "compaction:max_prompt"
+        } else {
+            "compaction:cold_return"
+        };
+        if by_mode {
+            crate::jev::record_policy(mode, rule);
         }
         if let Some(label) = label {
             self.chat_state_handle
@@ -387,6 +469,17 @@ impl SessionActor {
         };
         if let Err(error) = self.run_compact_only(trigger_info, false).await {
             tracing::error!(%error, "Cold-return compaction failed; sending the full history");
+        }
+        if by_mode {
+            // Tokens before and after, in the counter's byte fields.
+            let after = self.chat_state_handle.get_estimated_total_tokens().await;
+            self.chat_state_handle.record_utility_outcome(
+                "mode_compaction",
+                &format!("{}:{rule}", mode.id()),
+                0,
+                tokens,
+                after,
+            );
         }
     }
 
@@ -430,6 +523,7 @@ impl SessionActor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use distill_tool_types::{ExecutionMode, ModePolicy};
     use indexmap::IndexMap;
 
     fn accepted(labels: &[&str]) -> UserQuestionResponse {
@@ -734,6 +828,255 @@ mod tests {
             ultrasave.max_prompt_tokens, None,
             "0 turns the cap off in UltraSave"
         );
+    }
+
+    /// Settings of `mode` on its v2 (or today) row under the config `text`, at a 0.1x cache read.
+    fn for_row(text: &str, mode: ExecutionMode, v2: bool) -> BoundarySettings {
+        BoundarySettings::for_mode(
+            &root(text),
+            mode,
+            ModePolicy::resolve(mode, v2).runtime.context,
+            0.1,
+        )
+    }
+
+    /// Every combination of size, cache state, interactivity, threshold and turn position.
+    fn every_boundary() -> Vec<Boundary> {
+        let mut all = Vec::new();
+        for tokens in [0, 99_999, 100_000, 240_000, 250_001, 450_000, 900_000] {
+            for cold in [ColdMoment::Warm, ColdMoment::Idle, ColdMoment::Resumed] {
+                for interactive in [true, false] {
+                    for threshold_due in [true, false] {
+                        for turn_start in [true, false] {
+                            all.push(Boundary {
+                                tokens,
+                                threshold_due,
+                                cold,
+                                interactive,
+                                turn_start,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        all
+    }
+
+    /// The label a cold-moment compaction carries.
+    fn cold_label(b: Boundary) -> Option<&'static str> {
+        match b.cold {
+            ColdMoment::Idle if b.interactive => None,
+            ColdMoment::Resumed => Some(COLD_RESUME_LABEL),
+            _ => Some(COLD_HEADLESS_LABEL),
+        }
+    }
+
+    /// A summary must pay for itself within the same number of later requests whatever the cache
+    /// read costs: the floor grows as the read gets cheaper (about 2x at 0.05 and 4x at 0.025 of
+    /// the 0.1 floor), keeps the configured floor at 0.1, and never goes under a configured one.
+    #[test]
+    fn the_automatic_floor_pays_back_at_each_cache_read_price() {
+        let payback = |ratio: f64, n: u64| {
+            SUMMARY_COST_FACTOR * SUMMARY_TOKENS / (ratio * (n as f64 - SUMMARY_TOKENS))
+        };
+        for (ratio, expected) in [(0.1, 99_286), (0.05, 188_572), (0.025, 367_143)] {
+            let floor = auto_cold_return_floor(ratio, 0);
+            assert_eq!(floor, expected, "{ratio}");
+            assert!(payback(ratio, floor) <= PAYBACK_REQUESTS, "{ratio}");
+            assert!(payback(ratio, floor - 1_000) > PAYBACK_REQUESTS, "{ratio}");
+        }
+        assert_eq!(
+            auto_cold_return_floor(0.1, COLD_RETURN_MIN_TOKENS),
+            COLD_RETURN_MIN_TOKENS,
+            "at 0.1 the price floor is the configured one"
+        );
+        assert_eq!(auto_cold_return_floor(0.05, 400_000), 400_000);
+        assert_eq!(
+            for_row("", ExecutionMode::Ultrasave, true).min_tokens,
+            COLD_RETURN_MIN_TOKENS
+        );
+        let opus = BoundarySettings::for_mode(
+            &root(""),
+            ExecutionMode::Ultrasave,
+            ModePolicy::v2(ExecutionMode::Ultrasave).runtime.context,
+            0.025,
+        );
+        assert_eq!(opus.min_tokens, 367_143);
+        assert_eq!(
+            for_row(
+                "[compaction]\ncold_return = \"auto\"\n",
+                ExecutionMode::Normal,
+                true
+            )
+            .min_tokens,
+            COLD_RETURN_MIN_TOKENS,
+            "only a row that compacts on its own uses the price floor"
+        );
+    }
+
+    /// With nothing configured, each mode's v2 row decides every boundary its own way: UltraSave
+    /// compacts without asking at a cold moment and above its cap at a turn start, UltraFast never
+    /// asks or compacts, UltraCode asks an interactive session and has no cap, and Normal decides
+    /// what `[compaction]` decides. A due threshold compaction runs instead in every mode, and no
+    /// cap ever fires once the turn has started.
+    #[test]
+    fn each_v2_row_decides_the_boundary_its_own_way() {
+        let compaction = BoundarySettings::from_config(&root(""), false);
+        for b in every_boundary() {
+            let cold_and_large =
+                !b.threshold_due && b.cold != ColdMoment::Warm && b.tokens >= 100_000;
+            let expected = |mode| match mode {
+                ExecutionMode::Normal => decide(compaction, b),
+                ExecutionMode::Ultrafast => BoundaryAction::Keep,
+                ExecutionMode::Ultrasave
+                    if !b.threshold_due && b.turn_start && b.tokens > 250_000 =>
+                {
+                    BoundaryAction::Compact(Some(MAX_PROMPT_LABEL))
+                }
+                ExecutionMode::Ultrasave if cold_and_large => {
+                    BoundaryAction::Compact(cold_label(b))
+                }
+                ExecutionMode::Ultracode if cold_and_large && b.interactive => {
+                    BoundaryAction::Ask(cold_label(b))
+                }
+                _ => BoundaryAction::Keep,
+            };
+            for mode in ExecutionMode::ALL {
+                assert_eq!(
+                    decide(for_row("", mode, true), b),
+                    expected(mode),
+                    "{mode:?} {b:?}"
+                );
+            }
+        }
+        let capped = "[compaction]\nmax_prompt_tokens = 300000\n";
+        for b in every_boundary().into_iter().filter(|b| !b.turn_start) {
+            for mode in ExecutionMode::ALL {
+                for v2 in [true, false] {
+                    assert_ne!(
+                        decide(for_row(capped, mode, v2), b),
+                        BoundaryAction::Compact(Some(MAX_PROMPT_LABEL)),
+                        "{mode:?} v2={v2} {b:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// On its today row every mode resolves exactly what the boundary resolved before the rows
+    /// existed: the `[compaction]` keys, with `[modes.ultrasave]` replacing them in UltraSave.
+    #[test]
+    fn the_today_rows_resolve_what_the_config_did() {
+        for text in [
+            "",
+            "[compaction]\ncold_return = \"auto\"\nmax_prompt_tokens = 400000\n",
+            "[compaction]\ncold_return = \"off\"\ncold_return_min_tokens = 150000\n\n\
+             [modes.ultrasave]\ncold_return = \"auto\"\nmax_prompt_tokens = 300000\n\n\
+             [modes.ultrafast]\ncold_return = \"offer\"\n\n\
+             [modes.ultracode]\nmax_prompt_tokens = 200000\n",
+        ] {
+            for mode in ExecutionMode::ALL {
+                assert_eq!(
+                    for_row(text, mode, false),
+                    BoundarySettings::from_config(&root(text), mode == ExecutionMode::Ultrasave),
+                    "{mode:?} {text}"
+                );
+            }
+        }
+    }
+
+    /// An explicit `[modes.<mode>]` key beats the row, and the row beats `[compaction]`; a key the
+    /// row does not set keeps `[compaction]`, and `0` turns a cap off at either level.
+    #[test]
+    fn mode_keys_beat_the_row_and_the_row_beats_compaction() {
+        use ColdReturnMode::{Auto, Off, Offer};
+        let compaction = "[compaction]\ncold_return = \"auto\"\nmax_prompt_tokens = 400000\n\
+                          cold_return_min_tokens = 120000\n";
+        let resolved = |text: &str, mode, v2| {
+            let settings = for_row(text, mode, v2);
+            (
+                settings.cold_return,
+                settings.max_prompt_tokens,
+                settings.min_tokens,
+            )
+        };
+        use ExecutionMode::{Normal, Ultracode, Ultrafast, Ultrasave};
+        assert_eq!(
+            resolved(compaction, Normal, true),
+            (Some(Auto), Some(400_000), 120_000)
+        );
+        assert_eq!(
+            resolved(compaction, Ultrafast, true),
+            (Some(Off), None, 120_000)
+        );
+        assert_eq!(
+            resolved(compaction, Ultracode, true),
+            (Some(Offer), None, 120_000)
+        );
+        assert_eq!(
+            resolved(compaction, Ultrasave, true),
+            (Some(Auto), Some(250_000), 120_000)
+        );
+        assert_eq!(resolved("", Normal, true), resolved("", Normal, false));
+
+        let keyed = format!(
+            "{compaction}\n[modes.ultrafast]\ncold_return = \"offer\"\nmax_prompt_tokens = 500000\n\n\
+             [modes.ultracode]\ncold_return = \"off\"\n\n\
+             [modes.ultrasave]\ncold_return = \"offer\"\nmax_prompt_tokens = 0\n\n\
+             [modes.normal]\ncold_return = \"off\"\n"
+        );
+        assert_eq!(
+            resolved(&keyed, Ultrafast, true),
+            (Some(Offer), Some(500_000), 120_000)
+        );
+        assert_eq!(
+            resolved(&keyed, Ultracode, true),
+            (Some(Off), None, 120_000)
+        );
+        assert_eq!(
+            resolved(&keyed, Ultrasave, true),
+            (Some(Offer), None, 120_000)
+        );
+        assert_eq!(
+            resolved(&keyed, Normal, true),
+            (Some(Auto), Some(400_000), 120_000),
+            "Normal reads no mode keys"
+        );
+        assert_eq!(
+            resolved(&keyed, Ultrafast, false),
+            (Some(Auto), Some(400_000), 120_000),
+            "the today row reads no [modes.ultrafast] keys"
+        );
+        let typo = "[modes.ultrafast]\ncold_return = \"of\"\n";
+        assert_eq!(
+            resolved(typo, Ultrafast, true).0,
+            Some(Off),
+            "a typo falls back to the row"
+        );
+    }
+
+    /// UltraFast never stops a turn to ask, nor compacts to save money, whatever `[compaction]`
+    /// says; only the percent threshold, which is about fitting the window, still compacts it.
+    #[test]
+    fn ultrafast_v2_never_asks_nor_compacts_for_cost() {
+        for text in [
+            "",
+            "[compaction]\ncold_return = \"offer\"\n",
+            "[compaction]\ncold_return = \"auto\"\nmax_prompt_tokens = 200000\n",
+        ] {
+            let ultrafast = for_row(text, ExecutionMode::Ultrafast, true);
+            let compaction = BoundarySettings::from_config(&root(text), false);
+            let mut suppressed = 0;
+            for b in every_boundary() {
+                assert_eq!(decide(ultrafast, b), BoundaryAction::Keep, "{text} {b:?}");
+                suppressed += usize::from(decide(compaction, b) != BoundaryAction::Keep);
+            }
+            assert!(
+                suppressed > 0,
+                "the config alone would have asked or compacted: {text}"
+            );
+        }
     }
 
     /// A reload is a cold moment only when `cache_state.json` records a known lifetime that ran

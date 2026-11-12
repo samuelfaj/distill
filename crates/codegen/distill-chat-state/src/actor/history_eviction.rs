@@ -45,7 +45,7 @@ pub const BATCH_INTERVAL_ROUNDS: usize = 25;
 /// The price of a cache read as a fraction of the input price, by model family:
 /// 0.05 on the Opus and Sonnet class, 0.025 on the Fable and Mythos class, and the
 /// common 0.1 elsewhere (an unknown model included).
-pub(crate) fn cache_read_ratio(model_id: &str) -> f64 {
+pub fn cache_read_ratio(model_id: &str) -> f64 {
     let id = model_id.to_ascii_lowercase();
     let has = |needles: &[&str]| needles.iter().any(|needle| id.contains(needle));
     if has(&["fable", "mythos"]) {

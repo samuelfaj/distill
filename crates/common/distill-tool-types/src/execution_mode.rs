@@ -293,13 +293,13 @@ pub enum ColdReturn {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContextPolicy {
     /// Whether `[modes.<mode>] cold_return` and `max_prompt_tokens` replace
-    /// the `[compaction]` keys (`BoundarySettings::from_config`, UltraSave
-    /// only today).
+    /// this row's values and the `[compaction]` keys
+    /// (`BoundarySettings::for_mode`; UltraSave only on the today rows).
     pub mode_keys: bool,
     /// `None` keeps the configured cold-return behaviour.
     pub cold_return: Option<ColdReturn>,
     /// Absolute prompt cap applied at a turn boundary; `None` keeps the
-    /// configured `max_prompt_tokens`.
+    /// configured `max_prompt_tokens`, `Some(0)` turns a configured cap off.
     pub max_prompt_tokens: Option<u64>,
     /// Whether file reads may be narrowed before they reach the model.
     pub narrow_reads: bool,
@@ -455,6 +455,8 @@ impl ModePolicy {
                 runtime.jev.diff_risk_deadline_ms = 800;
                 runtime.utility_selection = false;
                 runtime.context.cold_return = Some(ColdReturn::Off);
+                runtime.context.max_prompt_tokens = Some(0);
+                runtime.context.mode_keys = true;
                 runtime.escalation = EscalationLadder::Fast;
             }
             ExecutionMode::Ultracode => {
@@ -463,6 +465,8 @@ impl ModePolicy {
                 runtime.effort.lowering_pass = false;
                 runtime.effort.when_silent = SilentEffort::LastAnsweredElse(EffortLevel::Medium);
                 runtime.context.cold_return = Some(ColdReturn::Offer);
+                runtime.context.max_prompt_tokens = Some(0);
+                runtime.context.mode_keys = true;
                 runtime.context.narrow_reads = false;
                 runtime.turn_end = TurnEndVerification::IndependentReview;
             }

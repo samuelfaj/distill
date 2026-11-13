@@ -48,6 +48,63 @@ OpenGateway's billed prices ($0.09/M input, $0.36/M output, $0.0018/M cached),
 without the Jev routing calls, which have no published price. Thumbnails are
 frames captured in headless Chrome at 1280×720.
 
+### Paris, 1888
+
+A harder prompt, with Claude Opus 5.5 as the main model and Claude Sonnet 5.5
+as the worker: a 14-second deterministic voxel animation. Each scene plays on
+its own when you open it.
+
+<details>
+<summary>Prompt</summary>
+
+```text
+Build a single self-contained three.js HTML page that renders a 14-second animation (1280x720, 30fps, deterministic: expose window.renderAt(t) so every frame can be captured).
+
+Scene: a floating voxel diorama island - Paris, 1888, the Eiffel Tower under construction. Everything is already moving on frame 1.
+
+Island:
+- floating chunk with layered rock underside, the Seine curving across the front with stone quays and an arched bridge
+- Champ de Mars: dirt work yard, stacks of iron girders, wooden sheds, a steam engine with a smoking chimney
+- around it: rows of Haussmann buildings with cream walls, grey zinc roofs, chimneys, tiny trees along the boulevards
+
+The tower (the hero):
+- dark reddish-brown wrought iron lattice made of thin voxel beams with real X-bracing, not solid blocks
+- four curved legs and the first platform finished, the second level half built, the top section only a skeleton
+- wooden scaffolding towers under the legs, small creeper cranes on the structure lifting girders on chains
+- glowing orange rivet sparks where workers hammer, small puffs of steam
+
+Life (hundreds of tiny voxel people, ~3 voxels tall):
+- riveting teams on every level with hammers swinging, workers walking along beams
+- girders hoisted by cranes swinging slowly into place
+- horse-drawn carts carrying iron across the yard, crowds of onlookers in 1880s clothes with top hats and parasols
+- a riverboat with a smoking funnel moving along the Seine, carriages crossing the bridge, pigeons circling the tower
+
+Camera and look:
+- wide view of the whole island, slow orbit (~25 degrees) with a gentle push-in toward the tower
+- warm late-afternoon sun, soft shadows, ambient occlusion, light haze, rounded voxels, ACES tone mapping, soft bloom on sparks
+```
+
+</details>
+
+| Mode | Result | Cost | Time | Tokens | Model calls |
+| --- | --- | ---: | ---: | ---: | --- |
+| [**UltraSave**](https://www.samuelfaj.com/files/distill/eiffel/ultrasave/) | <a href="https://www.samuelfaj.com/files/distill/eiffel/ultrasave/"><img src="docs/images/eiffel/ultrasave.webp" width="320" alt="UltraSave: floating voxel island with a tall brick-red tower, crowds and parasols"></a> | **$3.66** (0.69x) | 45 min 15 s (0.75x) | 2.5M | 35 Sonnet |
+| [**UltraFast**](https://www.samuelfaj.com/files/distill/eiffel/ultrafast/) | <a href="https://www.samuelfaj.com/files/distill/eiffel/ultrafast/"><img src="docs/images/eiffel/ultrafast.webp" width="320" alt="UltraFast: voxel Paris island with Haussmann blocks, the Seine and the iron tower"></a> | **$1.29** (0.24x) | **10 min 0 s** (0.17x) | 0.5M | 11 Opus |
+| [**UltraCode**](https://www.samuelfaj.com/files/distill/eiffel/ultracode/) | <a href="https://www.samuelfaj.com/files/distill/eiffel/ultracode/"><img src="docs/images/eiffel/ultracode.webp" width="320" alt="UltraCode: voxel island with sparks around the tower base, crowds and a riverboat"></a> | $10.94 (2.07x) | 2 h 23 min 59 s (2.38x) | 4.0M | 32 Opus, 43 Sonnet |
+| [**Auto**](https://www.samuelfaj.com/files/distill/eiffel/auto/) | <a href="https://www.samuelfaj.com/files/distill/eiffel/auto/"><img src="docs/images/eiffel/auto.webp" width="320" alt="Auto: floating island with the half-built tower, the Seine, a bridge and boats"></a> | $9.13 (1.73x) | 1 h 32 min 37 s (1.53x) | 7.5M | 23 Opus, 74 Sonnet |
+| [**Normal**](https://www.samuelfaj.com/files/distill/eiffel/normal/) | <a href="https://www.samuelfaj.com/files/distill/eiffel/normal/"><img src="docs/images/eiffel/normal.webp" width="320" alt="Normal: hazy voxel island with the tower lit by rivet sparks and circling pigeons"></a> | $5.29 (1.00x) | 1 h 0 min 26 s (1.00x) | 2.8M | 9 Opus, 31 Sonnet |
+
+Ratios are against Normal. One run per mode, all five started at the same time
+on 2026-11-13 with distill 2.0.9 (9bbf0aafec73), the commit of v2.0.72; each
+finished with exit code 0, and UltraCode ended with `Verification: REVIEWED`.
+Here the worker cost more than the main model working alone: Sonnet wrote
+290,000 to 830,000 output tokens per run, most of it reasoning before each
+command, and rounds of up to 16 minutes, while Opus alone in UltraFast wrote
+44,000 and finished first. Cost is an estimate at Anthropic's list API prices
+(Opus $4/M input, $0.20/M cached, $5/M cache write, $20/M output; Sonnet $2,
+$0.10, $2.50 and $10; the runs used a Claude subscription), without the Jev
+routing calls. Thumbnails are the frame at 7 s, from `window.renderAt(7)`.
+
 ## Benchmarks
 
 [![Distill benchmarks of 2026-10-16 (Distill 2.0.46): same quality at up to 87% lower cost and up to 76% less time versus native GPT-6 Astra, GPT-6.1 Sol, Claude Opus 5.5 and DeepSeek V4.1 max baselines](docs/images/benchmarks.webp)](BENCHMARKS.md)

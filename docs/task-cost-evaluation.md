@@ -608,7 +608,8 @@ session <id>`); native variants reject `--mode`.
    `<!-- benchmarks:end -->` in `BENCHMARKS.md` (the native table, and for a
    per-mode summary the Normal note and a "By execution mode" table) and between
    `<!-- benchmarks:MODE:begin -->` and `<!-- benchmarks:MODE:end -->` in each
-   `README.md` mode cell (a headline and one sentence). Every number comes from
+   `README.md` mode cell (a headline and one sentence), when the README carries
+   them; the current README does not, so it is left as it is. Every number comes from
    the summary; each claim names the family and models, whether the mode was
    pinned or measured under Auto, the result file and the recorded binary
    version. A mode without a result, or failing the gate, reads `no claim yet`

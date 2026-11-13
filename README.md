@@ -18,99 +18,23 @@ OpenAI-compatible protocol.
 
 ----
 
-## Modes
-
-Each session runs in one execution mode. Auto is the default. Switch with a
-slash command in the TUI, or pass a flag to headless prompts.
-
-<table>
-<tr>
-<td width="25%" valign="top">
-
-### UltraSave
-
-<!-- benchmarks:ultrasave:begin -->
-# 94–99% cheaper
-
-UltraSave cost **0.0105x–0.0571x the estimated cost of Normal** with the mode pinned on the requested cohort: Astra (GPT-6 Astra + GPT-6 Luna), Sol (GPT-6.1 Sol + GPT-6 Luna), Opus (Opus 5.5 + Haiku 5.5); 27/27 runs passed against Normal's 27/27. Source: [summary](tools/task_cost_eval/results/requested-20261112-summary.json), 2026-11-12; distill 2.0.9 (39f1c6fe0bf8).
-<!-- benchmarks:ultrasave:end -->
-
-It leads on your cheaper worker model when you have one, keeps effort at high
-or lower, and compacts a long session early. Required checks still run before
-a task counts as done.
-
-`/ultrasave on` or `--ultrasave`
-
-</td>
-<td width="25%" valign="top">
-
-### UltraFast
-
-<!-- benchmarks:ultrafast:begin -->
-# 19–59% less time
-
-UltraFast took **0.411x–0.814x the wall time of Normal** with the mode pinned on the requested cohort: Astra (GPT-6 Astra + GPT-6 Luna), Sol (GPT-6.1 Sol + GPT-6 Luna), Opus (Opus 5.5 + Haiku 5.5); 27/27 runs passed against Normal's 27/27. Source: [summary](tools/task_cost_eval/results/requested-20261112-summary.json), 2026-11-12; distill 2.0.9 (39f1c6fe0bf8).
-<!-- benchmarks:ultrafast:end -->
-
-It goes straight to the work on your own model: no subagent, no waiting on
-side decisions, effort set once per turn at medium or lower. Verification
-steps stay.
-
-`/ultrafast on` or `--ultrafast`
-
-</td>
-<td width="25%" valign="top">
-
-### UltraCode
-
-<!-- benchmarks:ultracode:begin -->
-# No quality gain measured
-
-UltraCode passed **27/27 runs against Normal's 27/27** at **2.19x–3.17x the estimated cost** and **1.5x–2.02x the wall time of Normal** with the mode pinned on the requested cohort: Astra (GPT-6 Astra + GPT-6 Luna), Sol (GPT-6.1 Sol + GPT-6 Luna), Opus (Opus 5.5 + Haiku 5.5). Source: [summary](tools/task_cost_eval/results/requested-20261112-summary.json), 2026-11-12; distill 2.0.9 (39f1c6fe0bf8).
-<!-- benchmarks:ultracode:end -->
-
-It puts correctness first: effort is never lowered for a routine round, file
-reads stay whole, and after a turn that changed code an independent reviewer
-checks the patch. The final message ends with `Verification: REVIEWED` or
-`UNVERIFIED`. The cohort above is made of tasks every mode already passes, so
-it shows what the review costs, not what it catches.
-
-`/ultracode on` or `--ultracode`
-
-</td>
-<td width="25%" valign="top">
-
-### Auto
-
-<!-- benchmarks:auto:begin -->
-# 51–59% cheaper, 0.833x–1.18x Normal's time
-
-Distill took **0.414x–0.491x the estimated cost** and **0.833x–1.18x the wall time of Normal** under Auto on the requested cohort: Astra (GPT-6 Astra + GPT-6 Luna), Sol (GPT-6.1 Sol + GPT-6 Luna), Opus (Opus 5.5 + Haiku 5.5); 27/27 runs passed against Normal's 27/27. Source: [summary](tools/task_cost_eval/results/requested-20261112-summary.json), 2026-11-12; distill 2.0.9 (39f1c6fe0bf8).
-<!-- benchmarks:auto:end -->
-
-It picks a mode for each request and only moves up inside it, when the work
-turns out harder. Subagents inherit Auto and adapt independently.
-
-`/mode auto` or `--mode auto`
-
-</td>
-</tr>
-</table>
-
-### One prompt, five modes
+## One prompt, five modes
 
 The same prompt in each mode, with Claude Opus 5.5 as the main model and
 DeepSeek V4.1 Flash Ultrafast as the worker:
 
 > Create a view of moon surface and the sky, photorealistic. in three.js
 
+Open any scene from the table to run it in your browser, or find all five on
+the [Distill page](https://www.samuelfaj.com/en/distill/#benchmarks).
+
 | Mode | Result | Cost | Time | Tokens | Model calls |
 | --- | --- | ---: | ---: | ---: | --- |
-| **UltraSave** | <img src="docs/images/moon/ultrasave.webp" width="320" alt="UltraSave: cratered plain with boulders, the Sun and a crescent Earth"> | **$0.058** (0.40x) | 16 min 18 s (3.57x) | 6.2M | 86 DeepSeek |
-| **UltraFast** | <img src="docs/images/moon/ultrafast.webp" width="320" alt="UltraFast: large boulders casting shadows under a starfield with Earth"> | $0.577 (4.00x) | 8 min 7 s (1.77x) | 0.5M | 18 Opus |
-| **UltraCode** | <img src="docs/images/moon/ultracode.webp" width="320" alt="UltraCode: rugged craters in low sunlight with the Sun and a crescent Earth"> | $1.011 (7.00x) | 15 min 29 s (3.39x) | 7.8M | 19 Opus, 73 DeepSeek |
-| **Auto** | <img src="docs/images/moon/auto.webp" width="320" alt="Auto: bright regolith plain with distant craters and Earth"> | $0.508 (3.52x) | 15 min 29 s (3.39x) | 6.0M | 8 Opus, 77 DeepSeek |
-| **Normal** | <img src="docs/images/moon/normal.webp" width="320" alt="Normal: rolling terrain with rocks and Earth above the horizon"> | $0.145 (1.00x) | **4 min 34 s** (1.00x) | 1.9M | 5 Opus, 32 DeepSeek |
+| [**UltraSave**](https://www.samuelfaj.com/files/distill/moon/ultrasave/) | <a href="https://www.samuelfaj.com/files/distill/moon/ultrasave/"><img src="docs/images/moon/ultrasave.webp" width="320" alt="UltraSave: cratered plain with boulders, the Sun and a crescent Earth"></a> | **$0.058** (0.40x) | 16 min 18 s (3.57x) | 6.2M | 86 DeepSeek |
+| [**UltraFast**](https://www.samuelfaj.com/files/distill/moon/ultrafast/) | <a href="https://www.samuelfaj.com/files/distill/moon/ultrafast/"><img src="docs/images/moon/ultrafast.webp" width="320" alt="UltraFast: large boulders casting shadows under a starfield with Earth"></a> | $0.577 (4.00x) | 8 min 7 s (1.77x) | 0.5M | 18 Opus |
+| [**UltraCode**](https://www.samuelfaj.com/files/distill/moon/ultracode/) | <a href="https://www.samuelfaj.com/files/distill/moon/ultracode/"><img src="docs/images/moon/ultracode.webp" width="320" alt="UltraCode: rugged craters in low sunlight with the Sun and a crescent Earth"></a> | $1.011 (7.00x) | 15 min 29 s (3.39x) | 7.8M | 19 Opus, 73 DeepSeek |
+| [**Auto**](https://www.samuelfaj.com/files/distill/moon/auto/) | <a href="https://www.samuelfaj.com/files/distill/moon/auto/"><img src="docs/images/moon/auto.webp" width="320" alt="Auto: bright regolith plain with distant craters and Earth"></a> | $0.508 (3.52x) | 15 min 29 s (3.39x) | 6.0M | 8 Opus, 77 DeepSeek |
+| [**Normal**](https://www.samuelfaj.com/files/distill/moon/normal/) | <a href="https://www.samuelfaj.com/files/distill/moon/normal/"><img src="docs/images/moon/normal.webp" width="320" alt="Normal: rolling terrain with rocks and Earth above the horizon"></a> | $0.145 (1.00x) | **4 min 34 s** (1.00x) | 1.9M | 5 Opus, 32 DeepSeek |
 
 Ratios are against Normal. One run per mode, all five started at the same time
 on 2026-11-12 with distill 2.0.9 (9bbf0aafec73), the commit of v2.0.72; each
@@ -123,10 +47,6 @@ write, $20/M output; the runs used a Claude subscription) and DeepSeek at
 OpenGateway's billed prices ($0.09/M input, $0.36/M output, $0.0018/M cached),
 without the Jev routing calls, which have no published price. Thumbnails are
 frames captured in headless Chrome at 1280×720.
-
-Details:
-[UltraSave](docs/ultrasave.md), [UltraFast](docs/ultrafast.md) and
-[UltraCode](docs/ultracode.md).
 
 ## Benchmarks
 

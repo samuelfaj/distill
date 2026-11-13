@@ -232,14 +232,19 @@ def replace(text, begin, end, body, name):
 
 def render(summary, summary_path, benchmarks, readme):
     """Return (BENCHMARKS.md, README.md) texts. README cells hold per-mode claims, so a
-    summary without per-mode arms leaves them empty."""
+    summary without per-mode arms leaves them empty. A README with no cell for a mode
+    (it no longer carries the per-mode claims) is left as it is; one marker without its
+    partner is still an error."""
     benchmarks = replace(benchmarks, BEGIN, END, render_benchmarks_region(summary, summary_path), 'BENCHMARKS.md')
     per_mode = 'arms' in next(iter(summary['pairs'].values()))
     for mode in README_MODES:
+        begin, end = readme_markers(mode)
+        if begin not in readme and end not in readme:
+            continue
         body = readme_claim(summary, summary_path, mode) if per_mode and mode in summary.get('modes', []) else (
             f'# No claim yet\n\n{MODE_LABELS[mode]}: {NO_CLAIM}. No {MODE_LABELS[mode]} arm in the summary. '
             f'Source: [summary]({summary_path}), {summary.get("date")}.\n' if per_mode else '')
-        readme = replace(readme, *readme_markers(mode), body, 'README.md')
+        readme = replace(readme, begin, end, body, 'README.md')
     return benchmarks, readme
 
 

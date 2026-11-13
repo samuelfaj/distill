@@ -19,6 +19,10 @@ SUMMARY = REPO / 'tools/task_cost_eval/results/requested-20261112-summary.json'
 SUMMARY_LINK = 'tools/task_cost_eval/results/requested-20261112-summary.json'
 
 
+# A README that carries the four per-mode cells, as it did before it moved to the moon-scene table.
+CELLS = ''.join(f'{begin}\n{end}\n' for begin, end in map(readme_markers, README_MODES))
+
+
 def region(text, begin, end):
     return text[text.index(begin) + len(begin) + 1:text.index(end)]
 
@@ -42,18 +46,22 @@ class RoundTripTest(unittest.TestCase):
         self.assertEqual(main(['--summary', str(SUMMARY), '--benchmarks', str(REPO / 'BENCHMARKS.md'),
                                '--readme', str(REPO / 'README.md'), '--check']), 0)
 
-    def test_every_readme_mode_cell_has_one_marker_pair(self):
-        readme = (REPO / 'README.md').read_text()
+    def test_a_readme_without_mode_cells_is_left_as_it_is(self):
+        # The README shows one measured run per mode now; the renderer must not demand cells it dropped.
+        summary = json.loads(SUMMARY.read_text())
+        benchmarks, readme = (REPO / 'BENCHMARKS.md').read_text(), (REPO / 'README.md').read_text()
         for mode in README_MODES:
-            begin, end = readme_markers(mode)
-            self.assertEqual((readme.count(begin), readme.count(end)), (1, 1), mode)
+            self.assertNotIn(readme_markers(mode)[0], readme, mode)
+        self.assertEqual(render(summary, SUMMARY_LINK, benchmarks, readme)[1], readme)
+        self.assertEqual(render(summary, SUMMARY_LINK, benchmarks, readme + '\nplain text\n')[1],
+                         readme + '\nplain text\n')
 
     def test_check_fails_on_drift_and_a_render_restores_only_the_regions(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             benchmarks, readme = root / 'BENCHMARKS.md', root / 'README.md'
             shutil.copyfile(REPO / 'BENCHMARKS.md', benchmarks)
-            shutil.copyfile(REPO / 'README.md', readme)
+            readme.write_text(CELLS)
             original = benchmarks.read_text()
             # Any rendered cost will do: the test must not depend on one campaign's numbers.
             cell = re.search(r'\$\d+\.\d{5}', region(original, BEGIN, END)).group(0)
@@ -75,8 +83,7 @@ class PerModeTest(unittest.TestCase):
     def rendered(self):
         with tempfile.TemporaryDirectory() as directory:
             summary = per_mode_summary(directory)
-        benchmarks, readme = render(summary, 'results/s.json', (REPO / 'BENCHMARKS.md').read_text(),
-                                    (REPO / 'README.md').read_text())
+        benchmarks, readme = render(summary, 'results/s.json', (REPO / 'BENCHMARKS.md').read_text(), CELLS)
         return summary, region(benchmarks, BEGIN, END), {m: region(readme, *readme_markers(m)) for m in README_MODES}
 
     def mode_rows(self, text):
@@ -131,8 +138,7 @@ class PerModeTest(unittest.TestCase):
             self.assertNotRegex(text, r'(?i)\ball\b[^.|]*\b(tasks?|runs?)\b[^.|]*\bpassed')
         save = summary['pairs']['astra']['arms']['ultrasave']
         save['reference_cost_usd'] = .375  # the README ratio follows the summary, not the documents
-        _, readme_text = render(summary, 'results/s.json', (REPO / 'BENCHMARKS.md').read_text(),
-                                (REPO / 'README.md').read_text())
+        _, readme_text = render(summary, 'results/s.json', (REPO / 'BENCHMARKS.md').read_text(), CELLS)
         self.assertIn('**0.25x–0.5x the estimated cost of Normal**', region(readme_text, *readme_markers('ultrasave')))
         self.assertIn('# 50–75% cheaper', region(readme_text, *readme_markers('ultrasave')))
 

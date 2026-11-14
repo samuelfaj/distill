@@ -140,6 +140,10 @@ pub(crate) struct JevTurnLedger {
     /// The pending reminder and what followed it, emitted once when its
     /// request ends.
     pub(crate) final_check_followup: Option<FinalCheckFollowup>,
+    /// Streamed text of the reply to the final-check reminder, held back while
+    /// it can still turn out to be the bare confirmation token. `Some` while
+    /// that reply is open.
+    final_check_hold: Option<String>,
     /// When the last request ended, for F1's follow-up window. Session-scoped.
     pub(crate) last_request_end: Option<Instant>,
     /// Main-loop rounds of the current prompt turn by effective mode id; the
@@ -211,6 +215,42 @@ struct TurnRouteAnchor {
 }
 
 impl JevTurnLedger {
+    /// Opens the reply to the final-check reminder: its text is held back.
+    pub(crate) fn begin_final_check_hold(&mut self) {
+        self.final_check_hold = Some(String::new());
+    }
+
+    /// Drops text held from an abandoned attempt; a retry streams from scratch.
+    pub(crate) fn restart_final_check_hold(&mut self) {
+        if let Some(held) = self.final_check_hold.as_mut() {
+            held.clear();
+        }
+    }
+
+    /// The text of a streamed chunk that may go to the client. While the reply
+    /// is open and still a prefix of `token`, nothing may; once it cannot be
+    /// the token the held text and this chunk are released together.
+    pub(crate) fn filter_final_check_chunk(
+        &mut self,
+        chunk: String,
+        token: &str,
+    ) -> Option<String> {
+        let Some(held) = self.final_check_hold.as_mut() else {
+            return Some(chunk);
+        };
+        held.push_str(&chunk);
+        if token.starts_with(held.trim()) {
+            None
+        } else {
+            self.final_check_hold.take()
+        }
+    }
+
+    /// Closes the reply and returns the text still held, if any.
+    pub(crate) fn take_final_check_hold(&mut self) -> Option<String> {
+        self.final_check_hold.take().filter(|held| !held.is_empty())
+    }
+
     pub(crate) fn set_turn_intent(&mut self, intent: impl Into<String>) {
         self.turn_intent = Some(intent.into());
     }
@@ -563,6 +603,86 @@ impl JevTurnLedger {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const TOKEN: &str = "NOTHING_OUTSTANDING";
+
+    /// The bare confirmation token must never reach a client, whatever the
+    /// chunking, or the user's last message becomes the token itself.
+    #[test]
+    fn the_final_check_token_is_held_back_across_any_chunking() {
+        for chunks in [
+            vec!["NOTHING_OUTSTANDING"],
+            vec!["NOTHING", "_OUT", "STANDING", "\n"],
+            vec!["\n", "NOTHING_OUTSTANDING"],
+        ] {
+            let mut ledger = JevTurnLedger::default();
+            ledger.begin_final_check_hold();
+            for chunk in chunks {
+                assert_eq!(
+                    ledger.filter_final_check_chunk(chunk.to_owned(), TOKEN),
+                    None
+                );
+            }
+            assert!(
+                ledger.take_final_check_hold().is_some(),
+                "the held text is handed back so the caller can drop it as the token"
+            );
+        }
+    }
+
+    /// A real reply that merely starts like the token streams in full, in
+    /// order, from the first chunk that rules the token out.
+    #[test]
+    fn a_reply_that_is_not_the_token_is_released_whole() {
+        let mut ledger = JevTurnLedger::default();
+        ledger.begin_final_check_hold();
+        assert_eq!(
+            ledger.filter_final_check_chunk("NOTHING".into(), TOKEN),
+            None
+        );
+        assert_eq!(
+            ledger.filter_final_check_chunk(" else changed".into(), TOKEN),
+            Some("NOTHING else changed".to_owned())
+        );
+        assert_eq!(
+            ledger.filter_final_check_chunk(" more".into(), TOKEN),
+            Some(" more".to_owned()),
+            "once released the rest streams straight through"
+        );
+        assert_eq!(ledger.take_final_check_hold(), None);
+    }
+
+    /// Without a final-check reminder nothing is ever held.
+    #[test]
+    fn text_streams_untouched_when_no_final_check_is_open() {
+        let mut ledger = JevTurnLedger::default();
+        assert_eq!(
+            ledger.filter_final_check_chunk(TOKEN.into(), TOKEN),
+            Some(TOKEN.to_owned())
+        );
+    }
+
+    /// A retried stream starts over, so text of the dropped attempt cannot
+    /// leak into the next one.
+    #[test]
+    fn a_restarted_stream_forgets_the_dropped_attempt() {
+        let mut ledger = JevTurnLedger::default();
+        ledger.begin_final_check_hold();
+        assert_eq!(
+            ledger.filter_final_check_chunk("NOTHING_".into(), TOKEN),
+            None
+        );
+        ledger.restart_final_check_hold();
+        assert_eq!(
+            ledger.filter_final_check_chunk("NOTHING_OUTSTANDING".into(), TOKEN),
+            None,
+            "the stale 'NOTHING_' would otherwise make this 'NOTHING_NOTHING_OUTSTANDING' and leak"
+        );
+        assert_eq!(
+            ledger.take_final_check_hold().as_deref(),
+            Some("NOTHING_OUTSTANDING")
+        );
+    }
 
     /// Compaction usually fires at the start of a turn, after the previous
     /// turn's rows were drained; it must still replay that turn's effort.

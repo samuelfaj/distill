@@ -212,6 +212,7 @@ impl SessionActor {
                     }
                     cap.start_request_stream(request_id.as_str(), timestamp_ms);
                 }
+                self.jev_ledger.borrow_mut().restart_final_check_hold();
                 self.chat_state_handle.record_stream_start(timestamp_ms);
                 self.open_stream_apply_span(&request_id);
             }
@@ -253,13 +254,20 @@ impl SessionActor {
                     self.emit_event(crate::session::events::Event::PhaseChanged {
                         phase: crate::session::events::Phase::StreamingText,
                     });
-                    self.send_update(
-                        acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(
-                            acp::ContentBlock::Text(acp::TextContent::new(text)),
-                        )),
-                        Some(chunk_index),
-                    )
-                    .await;
+                    // The reply to the final-check reminder may be the bare confirmation token, which no client may see
+                    let text = self.jev_ledger.borrow_mut().filter_final_check_chunk(
+                        text,
+                        super::turn::FINAL_CHECK_NOTHING_OUTSTANDING,
+                    );
+                    if let Some(text) = text {
+                        self.send_update(
+                            acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(
+                                acp::ContentBlock::Text(acp::TextContent::new(text)),
+                            )),
+                            Some(chunk_index),
+                        )
+                        .await;
+                    }
                 }
                 SamplingChannel::Reasoning => {
                     self.bump_stream_apply_span(&request_id, text.len());

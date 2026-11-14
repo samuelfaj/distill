@@ -5011,12 +5011,14 @@ mod final_check_confirmation_turn_tests {
     /// [`FIRST_FINAL`], then answers the reminder with `after_reminder`.
     /// Returns the turn's last word and the conversation.
     fn run_turn(after_reminder: Vec<ScriptedResponse>) -> (Option<String>, Vec<ConversationItem>) {
-        let (report, conversation, _) = run_turn_streamed(after_reminder);
+        let (report, conversation, _) =
+            run_turn_streamed(distill_tool_types::ExecutionMode::Normal, after_reminder);
         (report, conversation)
     }
 
     /// [`run_turn`] that also returns the assistant text sent to the client.
     fn run_turn_streamed(
+        mode: distill_tool_types::ExecutionMode,
         after_reminder: Vec<ScriptedResponse>,
     ) -> (Option<String>, Vec<ConversationItem>, String) {
         let (sender, receiver) = std::sync::mpsc::channel();
@@ -5036,6 +5038,7 @@ mod final_check_confirmation_turn_tests {
                         server.enqueue_response("/v1/responses", response);
                     }
                     let actor = actor_for(&server).await;
+                    actor.execution_mode.store(mode);
                     final_check_finds_work_missing();
                     let prompt = vec![acp::ContentBlock::Text(acp::TextContent::new(
                         "mark the todo done".to_string(),
@@ -5099,15 +5102,41 @@ mod final_check_confirmation_turn_tests {
     /// last message even though the history drops it.
     #[test]
     fn a_bare_token_is_never_sent_to_the_client() {
-        let (_, _, streamed) = run_turn_streamed(vec![text(FINAL_CHECK_NOTHING_OUTSTANDING)]);
+        let (_, _, streamed) = run_turn_streamed(
+            distill_tool_types::ExecutionMode::Normal,
+            vec![text(FINAL_CHECK_NOTHING_OUTSTANDING)],
+        );
         assert_eq!(streamed, FIRST_FINAL);
+    }
+
+    /// The final check is not mode-gated, so the token must stay hidden in
+    /// every execution mode.
+    #[test]
+    fn a_bare_token_is_never_sent_to_the_client_in_any_mode() {
+        for mode in distill_tool_types::ExecutionMode::ALL {
+            let (report, _, streamed) =
+                run_turn_streamed(mode, vec![text(FINAL_CHECK_NOTHING_OUTSTANDING)]);
+            // UltraCode appends its review status line to the final message.
+            assert!(
+                streamed.starts_with(FIRST_FINAL)
+                    && !streamed.contains(FINAL_CHECK_NOTHING_OUTSTANDING),
+                "{mode:?} streamed: {streamed:?}"
+            );
+            assert!(
+                report.as_deref().is_some_and(|r| r.starts_with(FIRST_FINAL)),
+                "{mode:?} lost the answer: {report:?}"
+            );
+        }
     }
 
     /// A token with more text is an answer, kept as the new last word.
     #[test]
     fn a_token_with_text_is_kept_as_a_new_message() {
         let reply = "NOTHING_OUTSTANDING. The lint warning is gone too.";
-        let (report, conversation, streamed) = run_turn_streamed(vec![text(reply)]);
+        let (report, conversation, streamed) = run_turn_streamed(
+            distill_tool_types::ExecutionMode::Normal,
+            vec![text(reply)],
+        );
         assert!(reminder_sent(&conversation));
         assert_eq!(report.as_deref(), Some(reply));
         assert_eq!(

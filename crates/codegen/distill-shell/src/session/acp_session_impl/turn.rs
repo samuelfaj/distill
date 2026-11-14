@@ -13,7 +13,7 @@ static TURNS_ACTIVE: distill_telemetry::activity::ActivityGauge =
 pub(super) const JEV_FINAL_CHECK_REMINDER: &str = "Review the user request and current evidence. Complete any clearly outstanding requested work or proof, or explain the blocker. This reminder is advisory; do not claim work that was not done. If nothing is outstanding, reply with exactly NOTHING_OUTSTANDING and nothing else: your previous message then stays the final answer.";
 /// The whole reply that confirms the final check found nothing outstanding;
 /// [`JEV_FINAL_CHECK_REMINDER`] offers it.
-const FINAL_CHECK_NOTHING_OUTSTANDING: &str = "NOTHING_OUTSTANDING";
+pub(super) const FINAL_CHECK_NOTHING_OUTSTANDING: &str = "NOTHING_OUTSTANDING";
 
 fn bounded_utf8(text: &str, max_bytes: usize, tail: bool) -> String {
     if text.len() <= max_bytes {
@@ -916,6 +916,7 @@ impl SessionActor {
         *self.doom_loop_turn_tally.lock() = Default::default();
         self.retain_timed_out_image_strips_for_new_turn();
         self.turn_stream_drained.lock().clear();
+        self.jev_ledger.borrow_mut().take_final_check_hold();
         self.events.begin_turn();
         let model_id = self.current_model_id().await;
         let turn_number = self.chat_state_handle.get_prompt_index().await as u64;
@@ -3736,6 +3737,7 @@ impl SessionActor {
             {
                 followup.fixed_token = true;
             }
+            let held_final_check_text = self.jev_ledger.borrow_mut().take_final_check_hold();
             if final_check_confirmed {
                 tracing::info!(
                     prompt_id = %req_id,
@@ -3746,7 +3748,16 @@ impl SessionActor {
                     .await;
             }
             record_response_span.close();
-            if let Some(text) = fallback_text {
+            if !final_check_confirmed && let Some(text) = held_final_check_text {
+                self.send_update(
+                    acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(
+                        acp::ContentBlock::Text(acp::TextContent::new(text)),
+                    )),
+                    None,
+                )
+                .await;
+            }
+            if !final_check_confirmed && let Some(text) = fallback_text {
                 tracing::warn!(
                     text_len = text.len(),
                     "emitting fallback AgentMessageChunk — no text chunks were streamed"
@@ -3925,6 +3936,7 @@ impl SessionActor {
                     *self.jev_final_check_prompt.borrow_mut() = Some(prompt_id.clone());
                     self.push_system_reminder(JEV_FINAL_CHECK_REMINDER);
                     final_check_reply_pending = true;
+                    self.jev_ledger.borrow_mut().begin_final_check_hold();
                     salvage.step_boundary();
                     continue;
                 }
@@ -4876,6 +4888,24 @@ mod final_check_confirmation_turn_tests {
     use distill_test_support::{MockInferenceServer, ScriptedResponse};
     use std::sync::Arc;
 
+    thread_local! {
+        /// Text of every assistant message chunk the client was sent.
+        static STREAMED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    fn capture_streamed_text(mut rx: tokio::sync::mpsc::UnboundedReceiver<SessionEvent>) {
+        tokio::task::spawn_local(async move {
+            while let Some(event) = rx.recv().await {
+                if let SessionEvent::Notification(SessionNotification::Acp(notification)) = event
+                    && let acp::SessionUpdate::AgentMessageChunk(chunk) = &notification.update
+                    && let acp::ContentBlock::Text(text) = &chunk.content
+                {
+                    STREAMED.with(|streamed| streamed.borrow_mut().push(text.text.clone()));
+                }
+            }
+        });
+    }
+
     const FIRST_FINAL: &str = "Updated the todo list.";
     const TODO_ARGS: &str = r#"{"todos":[{"id":"t1","content":"poll","status":"completed"}]}"#;
 
@@ -4940,7 +4970,9 @@ mod final_check_confirmation_turn_tests {
         let (persistence_tx, persistence_rx) =
             tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
         drain_persistence(persistence_rx);
-        let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+        let (mut actor, event_rx) =
+            create_test_actor_ex(0, 256_000, 85, gateway_tx, persistence_tx).await;
+        capture_streamed_text(event_rx);
         actor.sampler_handle = sampler_handle;
         *actor.agent.borrow_mut() = test_distill_agent_with_todo().await;
         let mut cfg = actor
@@ -4979,6 +5011,16 @@ mod final_check_confirmation_turn_tests {
     /// [`FIRST_FINAL`], then answers the reminder with `after_reminder`.
     /// Returns the turn's last word and the conversation.
     fn run_turn(after_reminder: Vec<ScriptedResponse>) -> (Option<String>, Vec<ConversationItem>) {
+        let (report, conversation, _) =
+            run_turn_streamed(distill_tool_types::ExecutionMode::Normal, after_reminder);
+        (report, conversation)
+    }
+
+    /// [`run_turn`] that also returns the assistant text sent to the client.
+    fn run_turn_streamed(
+        mode: distill_tool_types::ExecutionMode,
+        after_reminder: Vec<ScriptedResponse>,
+    ) -> (Option<String>, Vec<ConversationItem>, String) {
         let (sender, receiver) = std::sync::mpsc::channel();
         std::thread::Builder::new()
             // A debug-build turn future outgrows the usual 16 MiB test stack.
@@ -4996,6 +5038,7 @@ mod final_check_confirmation_turn_tests {
                         server.enqueue_response("/v1/responses", response);
                     }
                     let actor = actor_for(&server).await;
+                    actor.execution_mode.store(mode);
                     final_check_finds_work_missing();
                     let prompt = vec![acp::ContentBlock::Text(acp::TextContent::new(
                         "mark the todo done".to_string(),
@@ -5023,7 +5066,10 @@ mod final_check_confirmation_turn_tests {
                     assert!(outcome.is_ok(), "turn must not error: {outcome:?}");
                     let report = actor.chat_state_handle.get_trailing_assistant_report().await;
                     let conversation = actor.chat_state_handle.get_conversation().await;
-                    sender.send((report, conversation)).expect("send result");
+                    let streamed = STREAMED.with(|streamed| streamed.borrow().concat());
+                    sender
+                        .send((report, conversation, streamed))
+                        .expect("send result");
                 });
             })
             .expect("spawn test thread")
@@ -5052,13 +5098,52 @@ mod final_check_confirmation_turn_tests {
         }));
     }
 
+    /// The client must never be sent the token: it renders it as the turn's
+    /// last message even though the history drops it.
+    #[test]
+    fn a_bare_token_is_never_sent_to_the_client() {
+        let (_, _, streamed) = run_turn_streamed(
+            distill_tool_types::ExecutionMode::Normal,
+            vec![text(FINAL_CHECK_NOTHING_OUTSTANDING)],
+        );
+        assert_eq!(streamed, FIRST_FINAL);
+    }
+
+    /// The final check is not mode-gated, so the token must stay hidden in
+    /// every execution mode.
+    #[test]
+    fn a_bare_token_is_never_sent_to_the_client_in_any_mode() {
+        for mode in distill_tool_types::ExecutionMode::ALL {
+            let (report, _, streamed) =
+                run_turn_streamed(mode, vec![text(FINAL_CHECK_NOTHING_OUTSTANDING)]);
+            // UltraCode appends its review status line to the final message.
+            assert!(
+                streamed.starts_with(FIRST_FINAL)
+                    && !streamed.contains(FINAL_CHECK_NOTHING_OUTSTANDING),
+                "{mode:?} streamed: {streamed:?}"
+            );
+            assert!(
+                report.as_deref().is_some_and(|r| r.starts_with(FIRST_FINAL)),
+                "{mode:?} lost the answer: {report:?}"
+            );
+        }
+    }
+
     /// A token with more text is an answer, kept as the new last word.
     #[test]
     fn a_token_with_text_is_kept_as_a_new_message() {
         let reply = "NOTHING_OUTSTANDING. The lint warning is gone too.";
-        let (report, conversation) = run_turn(vec![text(reply)]);
+        let (report, conversation, streamed) = run_turn_streamed(
+            distill_tool_types::ExecutionMode::Normal,
+            vec![text(reply)],
+        );
         assert!(reminder_sent(&conversation));
         assert_eq!(report.as_deref(), Some(reply));
+        assert_eq!(
+            streamed,
+            format!("{FIRST_FINAL}{reply}"),
+            "nothing is lost or reordered"
+        );
     }
 
     /// A reply with tool calls continues the turn as before the token existed.

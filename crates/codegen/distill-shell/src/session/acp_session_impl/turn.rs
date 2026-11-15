@@ -3737,7 +3737,7 @@ impl SessionActor {
             {
                 followup.fixed_token = true;
             }
-            let held_final_check_text = self.jev_ledger.borrow_mut().take_final_check_hold();
+            let held_final_check = self.jev_ledger.borrow_mut().take_final_check_hold();
             if final_check_confirmed {
                 tracing::info!(
                     prompt_id = %req_id,
@@ -3748,14 +3748,20 @@ impl SessionActor {
                     .await;
             }
             record_response_span.close();
-            if !final_check_confirmed && let Some(text) = held_final_check_text {
-                self.send_update(
-                    acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(
-                        acp::ContentBlock::Text(acp::TextContent::new(text)),
-                    )),
-                    None,
-                )
-                .await;
+            // A real reply gets back what was held, reasoning first; a bare
+            // confirmation leaves nothing between the earlier final message
+            // and what the harness appends to it.
+            if !final_check_confirmed && let Some(held) = held_final_check {
+                Box::pin(self.send_held_reasoning(held.reasoning)).await;
+                if !held.text.is_empty() {
+                    self.send_update(
+                        acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(
+                            acp::ContentBlock::Text(acp::TextContent::new(held.text)),
+                        )),
+                        None,
+                    )
+                    .await;
+                }
             }
             if !final_check_confirmed && let Some(text) = fallback_text {
                 tracing::warn!(
@@ -4883,27 +4889,59 @@ mod final_check_confirmation_turn_tests {
     use super::super::support::*;
     use super::*;
     use distill_test_support::sse::{
-        responses_api_reasoning_then_tool_call_events, responses_api_script_exact,
+        responses_api_reasoning_and_text_events, responses_api_reasoning_then_tool_call_events,
+        responses_api_script_exact,
     };
     use distill_test_support::{MockInferenceServer, ScriptedResponse};
     use std::sync::Arc;
 
+    /// One assistant chunk the client was sent.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum Sent {
+        Thought(String),
+        Message(String),
+    }
+
     thread_local! {
-        /// Text of every assistant message chunk the client was sent.
-        static STREAMED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+        /// Every assistant thought and message chunk the client was sent, in order.
+        static STREAMED: std::cell::RefCell<Vec<Sent>> = const { std::cell::RefCell::new(Vec::new()) };
     }
 
     fn capture_streamed_text(mut rx: tokio::sync::mpsc::UnboundedReceiver<SessionEvent>) {
         tokio::task::spawn_local(async move {
             while let Some(event) = rx.recv().await {
-                if let SessionEvent::Notification(SessionNotification::Acp(notification)) = event
-                    && let acp::SessionUpdate::AgentMessageChunk(chunk) = &notification.update
-                    && let acp::ContentBlock::Text(text) = &chunk.content
-                {
-                    STREAMED.with(|streamed| streamed.borrow_mut().push(text.text.clone()));
-                }
+                let SessionEvent::Notification(SessionNotification::Acp(notification)) = event
+                else {
+                    continue;
+                };
+                let sent = match &notification.update {
+                    acp::SessionUpdate::AgentMessageChunk(chunk) => match &chunk.content {
+                        acp::ContentBlock::Text(text) => Sent::Message(text.text.clone()),
+                        _ => continue,
+                    },
+                    acp::SessionUpdate::AgentThoughtChunk(chunk) => match &chunk.content {
+                        acp::ContentBlock::Text(text) => Sent::Thought(text.text.clone()),
+                        _ => continue,
+                    },
+                    _ => continue,
+                };
+                STREAMED.with(|streamed| streamed.borrow_mut().push(sent));
             }
         });
+    }
+
+    /// `sent` with neighbouring chunks of one kind joined, which is how a
+    /// client groups them into thoughts and messages.
+    fn grouped(sent: Vec<Sent>) -> Vec<Sent> {
+        let mut groups: Vec<Sent> = Vec::new();
+        for chunk in sent {
+            match (groups.last_mut(), chunk) {
+                (Some(Sent::Thought(group)), Sent::Thought(text))
+                | (Some(Sent::Message(group)), Sent::Message(text)) => group.push_str(&text),
+                (_, chunk) => groups.push(chunk),
+            }
+        }
+        groups
     }
 
     const FIRST_FINAL: &str = "Updated the todo list.";
@@ -4917,6 +4955,12 @@ mod final_check_confirmation_turn_tests {
 
     fn text(text: &str) -> ScriptedResponse {
         ScriptedResponse::sse(responses_api_script_exact(text, "test"))
+    }
+
+    fn reasoning_then_text(reasoning: &str, text: &str) -> ScriptedResponse {
+        ScriptedResponse::sse(responses_api_reasoning_and_text_events(
+            reasoning, text, "test",
+        ))
     }
 
     /// Jev answers that make both C1 and C3 report the request unfinished.
@@ -5021,6 +5065,23 @@ mod final_check_confirmation_turn_tests {
         mode: distill_tool_types::ExecutionMode,
         after_reminder: Vec<ScriptedResponse>,
     ) -> (Option<String>, Vec<ConversationItem>, String) {
+        let (report, conversation, sent) = run_turn_sent(mode, after_reminder);
+        let streamed = sent
+            .into_iter()
+            .filter_map(|chunk| match chunk {
+                Sent::Message(text) => Some(text),
+                Sent::Thought(_) => None,
+            })
+            .collect();
+        (report, conversation, streamed)
+    }
+
+    /// [`run_turn`] that also returns every thought and message chunk sent to
+    /// the client, in order.
+    fn run_turn_sent(
+        mode: distill_tool_types::ExecutionMode,
+        after_reminder: Vec<ScriptedResponse>,
+    ) -> (Option<String>, Vec<ConversationItem>, Vec<Sent>) {
         let (sender, receiver) = std::sync::mpsc::channel();
         std::thread::Builder::new()
             // A debug-build turn future outgrows the usual 16 MiB test stack.
@@ -5039,6 +5100,11 @@ mod final_check_confirmation_turn_tests {
                     }
                     let actor = actor_for(&server).await;
                     actor.execution_mode.store(mode);
+                    // Whatever the developer's config says, an UltraCode turn
+                    // here ends with its status line (the thread is this run's own).
+                    crate::session::goal_classifier::turn_review::set_contract_v2_for_tests(Some(
+                        true,
+                    ));
                     final_check_finds_work_missing();
                     let prompt = vec![acp::ContentBlock::Text(acp::TextContent::new(
                         "mark the todo done".to_string(),
@@ -5066,9 +5132,9 @@ mod final_check_confirmation_turn_tests {
                     assert!(outcome.is_ok(), "turn must not error: {outcome:?}");
                     let report = actor.chat_state_handle.get_trailing_assistant_report().await;
                     let conversation = actor.chat_state_handle.get_conversation().await;
-                    let streamed = STREAMED.with(|streamed| streamed.borrow().concat());
+                    let sent = STREAMED.with(|streamed| streamed.borrow().clone());
                     sender
-                        .send((report, conversation, streamed))
+                        .send((report, conversation, sent))
                         .expect("send result");
                 });
             })
@@ -5127,6 +5193,82 @@ mod final_check_confirmation_turn_tests {
                 "{mode:?} lost the answer: {report:?}"
             );
         }
+    }
+
+    const CHECK_REASONING: &str = "Nothing else is left to do.";
+
+    /// A model that reasons before it confirms must still leave the answer as
+    /// the last thing the client was sent. A thought after the answer closes
+    /// it in the client, so the status line UltraCode appends next becomes a
+    /// message of its own and replaces the answer as the turn's last message.
+    #[test]
+    fn a_confirmed_replys_reasoning_is_never_sent_to_the_client() {
+        let (report, _, sent) = run_turn_sent(
+            distill_tool_types::ExecutionMode::Ultracode,
+            vec![reasoning_then_text(
+                CHECK_REASONING,
+                FINAL_CHECK_NOTHING_OUTSTANDING,
+            )],
+        );
+        let groups = grouped(sent);
+        let Some(Sent::Message(last)) = groups.last() else {
+            panic!("the turn must end on a message: {groups:?}");
+        };
+        assert!(
+            last.starts_with(FIRST_FINAL) && last.trim_end().ends_with("(no repository)"),
+            "the status line must continue the answer's own message: {groups:?}"
+        );
+        assert!(
+            !groups.contains(&Sent::Thought(format!("{CHECK_REASONING} "))),
+            "the confirmed reply's reasoning leaked: {groups:?}"
+        );
+        assert!(
+            report.as_deref().is_some_and(|r| r.starts_with(FIRST_FINAL)),
+            "lost the answer: {report:?}"
+        );
+    }
+
+    /// A real reply to the reminder loses none of its reasoning: it reaches
+    /// the client ahead of the reply's text, as the model produced it.
+    #[test]
+    fn a_real_replys_reasoning_is_sent_before_its_text() {
+        let reply = "The lint warning is gone too.";
+        let (_, _, sent) = run_turn_sent(
+            distill_tool_types::ExecutionMode::Normal,
+            vec![reasoning_then_text(CHECK_REASONING, reply)],
+        );
+        let groups = grouped(sent);
+        let tail: Vec<Sent> = groups.into_iter().rev().take(3).rev().collect();
+        assert_eq!(
+            tail,
+            vec![
+                Sent::Message(FIRST_FINAL.to_owned()),
+                // The script streams reasoning and text a word at a time, each with a trailing space.
+                Sent::Thought(format!("{CHECK_REASONING} ")),
+                Sent::Message(format!("{reply} ")),
+            ]
+        );
+    }
+
+    /// A reply that calls a tool is a real reply too: its reasoning is sent
+    /// once the reply is complete, before the turn goes on.
+    #[test]
+    fn a_tool_call_replys_reasoning_is_still_sent() {
+        let last = "Re-ran the update; done.";
+        let (_, _, sent) = run_turn_sent(
+            distill_tool_types::ExecutionMode::Normal,
+            vec![tool_call("call-2"), text(last)],
+        );
+        let groups = grouped(sent);
+        let tail: Vec<Sent> = groups.into_iter().rev().take(3).rev().collect();
+        assert_eq!(
+            tail,
+            vec![
+                Sent::Message(FIRST_FINAL.to_owned()),
+                Sent::Thought("update ".to_owned()),
+                Sent::Message(last.to_owned()),
+            ]
+        );
     }
 
     /// A token with more text is an answer, kept as the new last word.

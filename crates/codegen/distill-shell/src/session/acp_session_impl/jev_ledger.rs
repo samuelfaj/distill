@@ -140,10 +140,10 @@ pub(crate) struct JevTurnLedger {
     /// The pending reminder and what followed it, emitted once when its
     /// request ends.
     pub(crate) final_check_followup: Option<FinalCheckFollowup>,
-    /// Streamed text of the reply to the final-check reminder, held back while
-    /// it can still turn out to be the bare confirmation token. `Some` while
-    /// that reply is open.
-    final_check_hold: Option<String>,
+    /// Streamed output of the reply to the final-check reminder, held back
+    /// while it can still turn out to be the bare confirmation token. `Some`
+    /// while that reply is open.
+    final_check_hold: Option<FinalCheckHold>,
     /// When the last request ended, for F1's follow-up window. Session-scoped.
     pub(crate) last_request_end: Option<Instant>,
     /// Main-loop rounds of the current prompt turn by effective mode id; the
@@ -187,6 +187,26 @@ pub(crate) struct FinalCheckFollowup {
     pub(crate) fixed_token: bool,
 }
 
+/// One reasoning event of the reply to the final-check reminder.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum HeldReasoning {
+    Thought(String),
+    /// The signature that closes a thinking block.
+    Completed(String),
+}
+
+/// What the reply to the final-check reminder streamed while it was held.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct FinalCheckHold {
+    /// The reply's reasoning, in the order the model produced it. It leaves
+    /// with the text or not at all: a thought sent after the final answer
+    /// makes a client close that answer, so what the harness appends next
+    /// (the UltraCode status line) becomes a message of its own and replaces
+    /// the answer as the turn's last word.
+    pub(crate) reasoning: Vec<HeldReasoning>,
+    pub(crate) text: String,
+}
+
 /// Prompt size under which a main round may still change its effort mid-turn.
 ///
 /// On a backend whose cache is keyed by effort, a switch re-reads the whole
@@ -215,40 +235,68 @@ struct TurnRouteAnchor {
 }
 
 impl JevTurnLedger {
-    /// Opens the reply to the final-check reminder: its text is held back.
+    /// Opens the reply to the final-check reminder: its output is held back.
     pub(crate) fn begin_final_check_hold(&mut self) {
-        self.final_check_hold = Some(String::new());
+        self.final_check_hold = Some(FinalCheckHold::default());
     }
 
-    /// Drops text held from an abandoned attempt; a retry streams from scratch.
+    /// Drops output held from an abandoned attempt; a retry streams from scratch.
     pub(crate) fn restart_final_check_hold(&mut self) {
         if let Some(held) = self.final_check_hold.as_mut() {
-            held.clear();
+            *held = FinalCheckHold::default();
         }
     }
 
-    /// The text of a streamed chunk that may go to the client. While the reply
-    /// is open and still a prefix of `token`, nothing may; once it cannot be
-    /// the token the held text and this chunk are released together.
+    /// The reasoning chunk that may go to the client: none while the reply is
+    /// open, since its reasoning is released or dropped with its text.
+    pub(crate) fn hold_final_check_thought(&mut self, chunk: String) -> Option<String> {
+        let Some(held) = self.final_check_hold.as_mut() else {
+            return Some(chunk);
+        };
+        match held.reasoning.last_mut() {
+            Some(HeldReasoning::Thought(thought)) => thought.push_str(&chunk),
+            _ => held.reasoning.push(HeldReasoning::Thought(chunk)),
+        }
+        None
+    }
+
+    /// The thinking-block signature that may go to the client: none while the
+    /// reply is open, so it stays behind the thoughts it closes.
+    pub(crate) fn hold_final_check_signature(&mut self, signature: String) -> Option<String> {
+        let Some(held) = self.final_check_hold.as_mut() else {
+            return Some(signature);
+        };
+        held.reasoning.push(HeldReasoning::Completed(signature));
+        None
+    }
+
+    /// What a streamed text chunk lets go to the client. While the reply is
+    /// open and its text is still a prefix of `token`, nothing; once it cannot
+    /// be the token, the held reasoning and text are released with this chunk.
     pub(crate) fn filter_final_check_chunk(
         &mut self,
         chunk: String,
         token: &str,
-    ) -> Option<String> {
+    ) -> Option<FinalCheckHold> {
         let Some(held) = self.final_check_hold.as_mut() else {
-            return Some(chunk);
+            return Some(FinalCheckHold {
+                reasoning: Vec::new(),
+                text: chunk,
+            });
         };
-        held.push_str(&chunk);
-        if token.starts_with(held.trim()) {
+        held.text.push_str(&chunk);
+        if token.starts_with(held.text.trim()) {
             None
         } else {
             self.final_check_hold.take()
         }
     }
 
-    /// Closes the reply and returns the text still held, if any.
-    pub(crate) fn take_final_check_hold(&mut self) -> Option<String> {
-        self.final_check_hold.take().filter(|held| !held.is_empty())
+    /// Closes the reply and returns what is still held, if anything.
+    pub(crate) fn take_final_check_hold(&mut self) -> Option<FinalCheckHold> {
+        self.final_check_hold
+            .take()
+            .filter(|held| *held != FinalCheckHold::default())
     }
 
     pub(crate) fn set_turn_intent(&mut self, intent: impl Into<String>) {
@@ -606,6 +654,14 @@ mod tests {
 
     const TOKEN: &str = "NOTHING_OUTSTANDING";
 
+    /// What a text chunk releases when no reasoning was held with it.
+    fn text_only(text: &str) -> Option<FinalCheckHold> {
+        Some(FinalCheckHold {
+            reasoning: Vec::new(),
+            text: text.to_owned(),
+        })
+    }
+
     /// The bare confirmation token must never reach a client, whatever the
     /// chunking, or the user's last message becomes the token itself.
     #[test]
@@ -642,11 +698,11 @@ mod tests {
         );
         assert_eq!(
             ledger.filter_final_check_chunk(" else changed".into(), TOKEN),
-            Some("NOTHING else changed".to_owned())
+            text_only("NOTHING else changed")
         );
         assert_eq!(
             ledger.filter_final_check_chunk(" more".into(), TOKEN),
-            Some(" more".to_owned()),
+            text_only(" more"),
             "once released the rest streams straight through"
         );
         assert_eq!(ledger.take_final_check_hold(), None);
@@ -658,7 +714,7 @@ mod tests {
         let mut ledger = JevTurnLedger::default();
         assert_eq!(
             ledger.filter_final_check_chunk(TOKEN.into(), TOKEN),
-            Some(TOKEN.to_owned())
+            text_only(TOKEN)
         );
     }
 
@@ -679,8 +735,102 @@ mod tests {
             "the stale 'NOTHING_' would otherwise make this 'NOTHING_NOTHING_OUTSTANDING' and leak"
         );
         assert_eq!(
-            ledger.take_final_check_hold().as_deref(),
-            Some("NOTHING_OUTSTANDING")
+            ledger.take_final_check_hold(),
+            text_only("NOTHING_OUTSTANDING")
+        );
+    }
+
+    /// A confirmed reply must leave nothing on the wire. Its reasoning, sent
+    /// after the final answer, makes a client close that answer, and the
+    /// status line the harness appends next then replaces it as the turn's
+    /// last message. So reasoning is held with the token, signature included.
+    #[test]
+    fn reasoning_of_the_final_check_reply_is_held_with_the_token() {
+        let mut ledger = JevTurnLedger::default();
+        ledger.begin_final_check_hold();
+        assert_eq!(ledger.hold_final_check_thought("Nothing ".into()), None);
+        assert_eq!(ledger.hold_final_check_thought("is left.".into()), None);
+        assert_eq!(ledger.hold_final_check_signature("sig".into()), None);
+        assert_eq!(ledger.filter_final_check_chunk(TOKEN.into(), TOKEN), None);
+        assert_eq!(
+            ledger.take_final_check_hold(),
+            Some(FinalCheckHold {
+                reasoning: vec![
+                    HeldReasoning::Thought("Nothing is left.".to_owned()),
+                    HeldReasoning::Completed("sig".to_owned()),
+                ],
+                text: TOKEN.to_owned(),
+            }),
+            "the caller gets the whole reply back, to drop it as one"
+        );
+    }
+
+    /// A real reply loses nothing: the first chunk that rules the token out
+    /// releases the held reasoning ahead of the text, as the model produced it.
+    #[test]
+    fn a_real_reply_releases_its_reasoning_before_its_text() {
+        let mut ledger = JevTurnLedger::default();
+        ledger.begin_final_check_hold();
+        assert_eq!(ledger.hold_final_check_thought("One test is missing.".into()), None);
+        assert_eq!(ledger.hold_final_check_signature("sig".into()), None);
+        assert_eq!(
+            ledger.filter_final_check_chunk("Added the test.".into(), TOKEN),
+            Some(FinalCheckHold {
+                reasoning: vec![
+                    HeldReasoning::Thought("One test is missing.".to_owned()),
+                    HeldReasoning::Completed("sig".to_owned()),
+                ],
+                text: "Added the test.".to_owned(),
+            })
+        );
+        assert_eq!(
+            ledger.hold_final_check_thought("later".into()),
+            Some("later".to_owned()),
+            "once released, reasoning streams straight through again"
+        );
+    }
+
+    /// A reply that only calls tools has reasoning and no text; it is still a
+    /// real reply, so closing it hands the reasoning back for release.
+    #[test]
+    fn a_reply_with_reasoning_and_no_text_still_hands_it_back() {
+        let mut ledger = JevTurnLedger::default();
+        ledger.begin_final_check_hold();
+        assert_eq!(ledger.hold_final_check_thought("Run it again.".into()), None);
+        assert_eq!(
+            ledger.take_final_check_hold(),
+            Some(FinalCheckHold {
+                reasoning: vec![HeldReasoning::Thought("Run it again.".to_owned())],
+                text: String::new(),
+            })
+        );
+    }
+
+    /// Outside the final-check reply reasoning is never delayed.
+    #[test]
+    fn reasoning_streams_untouched_when_no_final_check_is_open() {
+        let mut ledger = JevTurnLedger::default();
+        assert_eq!(
+            ledger.hold_final_check_thought("thinking".into()),
+            Some("thinking".to_owned())
+        );
+        assert_eq!(
+            ledger.hold_final_check_signature("sig".into()),
+            Some("sig".to_owned())
+        );
+    }
+
+    /// A retried stream starts over, so reasoning of the dropped attempt
+    /// cannot be released in front of the retry's output.
+    #[test]
+    fn a_restarted_stream_forgets_the_dropped_attempts_reasoning() {
+        let mut ledger = JevTurnLedger::default();
+        ledger.begin_final_check_hold();
+        assert_eq!(ledger.hold_final_check_thought("abandoned".into()), None);
+        ledger.restart_final_check_hold();
+        assert_eq!(
+            ledger.filter_final_check_chunk("Done.".into(), TOKEN),
+            text_only("Done.")
         );
     }
 

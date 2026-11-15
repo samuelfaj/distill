@@ -52,6 +52,31 @@ impl SessionActor {
         .await;
     }
 
+    /// Sends the reasoning held from a reply to the final-check reminder, in
+    /// order, once the reply is known to be a real one.
+    pub(super) async fn send_held_reasoning(&self, held: Vec<super::jev_ledger::HeldReasoning>) {
+        use super::jev_ledger::HeldReasoning;
+        for reasoning in held {
+            match reasoning {
+                HeldReasoning::Thought(text) => {
+                    self.send_update(
+                        acp::SessionUpdate::AgentThoughtChunk(acp::ContentChunk::new(
+                            acp::ContentBlock::Text(acp::TextContent::new(text)),
+                        )),
+                        None,
+                    )
+                    .await;
+                }
+                HeldReasoning::Completed(signature) => {
+                    self.send_buffered_xai_update(XaiSessionUpdate::ReasoningCompleted {
+                        signature: Some(signature),
+                    })
+                    .await;
+                }
+            }
+        }
+    }
+
     /// Stamp ttft on the first token of any channel (reasoning, text, or tool call).
     pub(crate) fn record_turn_first_token(&self, request_id: Option<&distill_sampler::RequestId>) {
         let generation = match request_id {
@@ -255,14 +280,15 @@ impl SessionActor {
                         phase: crate::session::events::Phase::StreamingText,
                     });
                     // The reply to the final-check reminder may be the bare confirmation token, which no client may see
-                    let text = self.jev_ledger.borrow_mut().filter_final_check_chunk(
+                    let released = self.jev_ledger.borrow_mut().filter_final_check_chunk(
                         text,
                         super::turn::FINAL_CHECK_NOTHING_OUTSTANDING,
                     );
-                    if let Some(text) = text {
+                    if let Some(released) = released {
+                        self.send_held_reasoning(released.reasoning).await;
                         self.send_update(
                             acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(
-                                acp::ContentBlock::Text(acp::TextContent::new(text)),
+                                acp::ContentBlock::Text(acp::TextContent::new(released.text)),
                             )),
                             Some(chunk_index),
                         )
@@ -295,7 +321,11 @@ impl SessionActor {
                     self.emit_event(crate::session::events::Event::PhaseChanged {
                         phase: crate::session::events::Phase::StreamingReasoning,
                     });
-                    self.send_thought_chunk(text, chunk_index).await;
+                    // The reply to the final-check reminder is invisible when it is the bare confirmation token, and so is its reasoning
+                    let text = self.jev_ledger.borrow_mut().hold_final_check_thought(text);
+                    if let Some(text) = text {
+                        self.send_thought_chunk(text, chunk_index).await;
+                    }
                 }
             },
             SamplingEvent::ToolCallDelta {
@@ -348,10 +378,17 @@ impl SessionActor {
             SamplingEvent::ReasoningCompleted { signature, .. } => {
                 // Ride the buffered chunk rail so this lands right after the response's thought chunks and before its text
                 // That lets partial framing in headless mode emit `signature_delta` before the thinking block's `content_block_stop`
-                self.send_buffered_xai_update(XaiSessionUpdate::ReasoningCompleted {
-                    signature: Some(signature),
-                })
-                .await;
+                // Held reasoning of the final-check reply keeps its signature behind it
+                let signature = self
+                    .jev_ledger
+                    .borrow_mut()
+                    .hold_final_check_signature(signature);
+                if let Some(signature) = signature {
+                    self.send_buffered_xai_update(XaiSessionUpdate::ReasoningCompleted {
+                        signature: Some(signature),
+                    })
+                    .await;
+                }
             }
             SamplingEvent::DoomLoopSignals {
                 request_id,

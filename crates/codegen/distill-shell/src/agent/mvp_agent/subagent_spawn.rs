@@ -326,6 +326,10 @@ impl MvpAgent {
                 .cfg
                 .borrow()
                 .is_feature_enabled(crate::agent::config::Feature::WriteFile),
+            code_mode_enabled: self
+                .cfg
+                .borrow()
+                .is_feature_enabled(crate::agent::config::Feature::CodeMode),
             active_agent_messages_enabled: self
                 .cfg
                 .borrow()

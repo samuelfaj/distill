@@ -203,6 +203,7 @@ User-level configuration lives in `$GROK_HOME/config.toml` (default `~/.grok/con
 | `features.backend_tools` | `boolean` | `pin` | `user` | Enable or disable `backend_tools`. Default true. Also `GROK_BACKEND_SEARCH`. |
 | `features.campaigns` | `boolean` | `yes` | `user` | Enable remote campaign patches. `GROK_CAMPAIGNS=0` still disables even when requirements set this true. |
 | `features.cancel_rewind` | `boolean` | `pin` | `user` | Enable or disable `cancel_rewind`. Default true. Also `GROK_CANCEL_REWIND`. |
+| `features.code_mode` | `boolean` | `pin` | `user` | Experimental Code Mode: offer the `code` tool, which runs model-written JavaScript that calls the session's other tools. Default false. Also `GROK_CODE_MODE`. |
 | `features.codebase_indexing` | `boolean / string[]` | `pin` | `user` | Codebase graph indexing; true indexes git repos, or pass include/exclude globs. |
 | `features.compaction_detail` | `none / minimal / balanced / verbose` | `yes` | `user` | Verbatim detail level for `segments` compaction. Also GROK_COMPACTION_DETAIL. |
 | `features.compaction_mode` | `summary / transcript / segments` | `yes` | `user` | Compaction strategy. Also GROK_COMPACTION_MODE. |

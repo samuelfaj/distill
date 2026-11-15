@@ -78,6 +78,7 @@ fn registered_settings() {
             ),
             ("dock", ("GROK_DOCK", false)),
             ("terminal_theme", ("GROK_TERMINAL_THEME", false)),
+            ("code_mode", ("GROK_CODE_MODE", false)),
         ]),
     );
 }
@@ -115,6 +116,11 @@ fn every_registered_feature_reads_its_own_remote_setting() {
             // No remote tier either: turning third-party decision egress on is a
             // deliberate local (managed/env/user) decision, never a rollout.
             Feature::Jev => {
+                assert!(spec.remote.is_none(), "{} grew a remote tier", spec.key);
+                continue;
+            }
+            // Experimental: a rollout must not start running model-written scripts for anyone.
+            Feature::CodeMode => {
                 assert!(spec.remote.is_none(), "{} grew a remote tier", spec.key);
                 continue;
             }

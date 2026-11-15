@@ -14,6 +14,7 @@ pub mod app_builder;
 pub mod ask_stored_output;
 pub mod ask_user_question;
 pub mod bash;
+pub mod code_mode;
 #[path = "deploy_app_stub.rs"]
 pub mod deploy_app;
 pub mod enter_plan_mode;
@@ -67,6 +68,7 @@ pub use scheduler::delete::{SCHEDULER_DELETE_TOOL_NAME, SchedulerDeleteTool};
 pub use scheduler::list::SchedulerListTool;
 pub use search_replace::SearchReplaceTool;
 pub use ask_stored_output::{ASK_STORED_OUTPUT_TOOL_NAME, AskStoredOutputTool};
+pub use code_mode::{CODE_TOOL_NAME, CodeTool};
 pub use jev_decide::{JEV_DECIDE_TOOL_NAME, JevDecideTool};
 pub use send_feedback::{SEND_FEEDBACK_TOOL_NAME, SendFeedbackTool};
 pub use send_subagent_message::{

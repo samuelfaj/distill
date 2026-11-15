@@ -229,6 +229,7 @@ pub(super) async fn make_replay_send_update_fixture() -> ReplaySendUpdateFixture
         )),
         goal_enabled: false,
         background_workflows_enabled: false,
+        script_calls: Default::default(),
         goal_harness_enabled: std::sync::atomic::AtomicBool::new(false),
         goal_harness_availability_reconciled: std::sync::atomic::AtomicBool::new(false),
         goal_tracker: Arc::new(parking_lot::Mutex::new(

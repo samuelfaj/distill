@@ -13,6 +13,7 @@ members = [
     "crates/codegen/distill-acp-lib",
     "crates/codegen/distill-agent-lifecycle",
     "crates/codegen/distill-chat-state",
+    "crates/codegen/distill-code-mode",
     "crates/codegen/distill-codebase-graph",
     "crates/codegen/distill-compaction-transcript",
     "crates/codegen/distill-crash-handler",
@@ -138,6 +139,7 @@ backon = { version = "1.6" }
 backtrace = "0.3"
 base64 = "0.22"
 blake3 = "1"
+boa_engine = { version = "0.21", default-features = false }
 bytes = { version = "1", features = ["serde"] }
 camino = "1.1.10"
 chrono = "0.4"

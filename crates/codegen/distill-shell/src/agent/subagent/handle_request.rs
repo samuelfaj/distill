@@ -1981,6 +1981,7 @@ pub(crate) async fn run_shell_child(
         ctx.video_gen_config.clone(),
         ctx.app_builder_deployer_config.clone(),
         ctx.write_file_enabled,
+        ctx.code_mode_enabled,
         active_agent_messages_enabled,
         agent_message_sender,
         ctx.goal_enabled,

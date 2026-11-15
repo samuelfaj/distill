@@ -182,6 +182,7 @@ its subagents, and neither has an off switch:
 ### Read More:
 
 - [Accounts and local models](docs/local-models.md)
+- [Code Mode (experimental): the model scripts several tool calls in one step](crates/codegen/distill-pager/docs/user-guide/29-code-mode.md)
 - [How Jev routes work](docs/jev-routing.md)
 - [UltraCode activation, hierarchy limits and paired comparisons](docs/ultracode.md)
 - [UltraFast execution mode and paired speed/quality evaluation](docs/ultrafast.md)

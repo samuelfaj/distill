@@ -1399,6 +1399,11 @@ pub(in crate::app::dispatch) fn handle_session_created(
                 session_id_clone.0,
             )));
         }
+        if crate::app::code_mode_enabled() {
+            agent
+                .scrollback
+                .push_block(RenderBlock::system(crate::app::CODE_MODE_NOTICE.to_owned()));
+        }
         agent.bind_session_id(session_id);
         if let Some(m) = new_models {
             agent.session.models = Some(m).into();

@@ -56,3 +56,4 @@ Automate, script, and integrate Distill with other systems.
 | 25 | [Status Line](25-status-line.md) | The bottom status row: built-in segments, command scripts, and the stdin JSON contract |
 | 26 | [Configuration Reference](26-config-reference.md) | Field list for `config.toml`, `managed_config.toml`, and `requirements.toml` |
 | 28 | [Jev Decisions (TypeSafe System One)](28-jev-decisions.md) | The Jev decision layer: the 23-point catalogue, per-item config keys, the kill switch, what is sent, and the badge states |
+| 29 | [Code Mode (experimental)](29-code-mode.md) | The `code` tool: the model scripts several tool calls in one step, with every call still permission-checked |

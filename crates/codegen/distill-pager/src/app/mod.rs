@@ -217,6 +217,23 @@ pub(crate) fn resolve_dock_enabled(remote: Option<bool>) -> bool {
     sources.remote = remote;
     Feature::Dock.resolve(sources).value
 }
+/// Shown at the top of a session that starts with Code Mode on.
+pub(crate) const CODE_MODE_NOTICE: &str = "Code Mode (experimental) is on · turn it off with `[features] code_mode = false`";
+/// Whether a session this process starts gets Code Mode. Registry precedence: pin, `GROK_CODE_MODE`, config, default off.
+/// Read when a session starts, from the sources the session itself resolves the feature from.
+pub(crate) fn code_mode_enabled() -> bool {
+    use distill_shell::agent::config::{Feature, FeatureSources};
+    let flag_in = |layer: &toml::Value| layer.get("features")?.get(Feature::CodeMode.key())?.as_bool();
+    let mut sources = FeatureSources::from_process_env(Feature::CodeMode);
+    sources.pin = distill_config::load_merged_requirements()
+        .as_ref()
+        .and_then(flag_in);
+    sources.config = distill_shell::config::load_effective_config()
+        .ok()
+        .as_ref()
+        .and_then(flag_in);
+    Feature::CodeMode.resolve(sources).value
+}
 fn terminal_theme_flag_in(layer: &toml::Value) -> Option<bool> {
     layer
         .get("features")?

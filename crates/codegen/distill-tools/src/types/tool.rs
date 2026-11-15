@@ -112,6 +112,7 @@ pub enum ToolKind {
     GoalUpdate,
     Workflow,
     Feedback,
+    Code,
     #[serde(other)]
     Other,
 }

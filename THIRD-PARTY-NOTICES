@@ -1521,6 +1521,111 @@ Copyright notice:
 License text: see Part II — MIT
 
 --------------------------------------------------------------------------------
+boa_ast 0.21.1
+--------------------------------------------------------------------------------
+Source:  https://github.com/boa-dev/boa
+License: MIT  (upstream declares: Unlicense OR MIT)
+
+Copyright notice:
+  Copyright holders / authors (from package metadata):
+    - boa-dev
+
+License text: see Part II — MIT
+
+Additional requirements / notices:
+  Upstream license expression: Unlicense OR MIT. For this distribution, obligations are satisfied under: MIT.
+
+--------------------------------------------------------------------------------
+boa_engine 0.21.1
+--------------------------------------------------------------------------------
+Source:  https://github.com/boa-dev/boa
+License: MIT  (upstream declares: Unlicense OR MIT)
+
+Copyright notice:
+  Copyright holders / authors (from package metadata):
+    - boa-dev
+
+License text: see Part II — MIT
+
+Additional requirements / notices:
+  Upstream license expression: Unlicense OR MIT. For this distribution, obligations are satisfied under: MIT.
+
+--------------------------------------------------------------------------------
+boa_gc 0.21.1
+--------------------------------------------------------------------------------
+Source:  https://github.com/boa-dev/boa
+License: MIT  (upstream declares: Unlicense OR MIT)
+
+Copyright notice:
+  Copyright holders / authors (from package metadata):
+    - boa-dev
+
+License text: see Part II — MIT
+
+Additional requirements / notices:
+  Upstream license expression: Unlicense OR MIT. For this distribution, obligations are satisfied under: MIT.
+
+--------------------------------------------------------------------------------
+boa_interner 0.21.1
+--------------------------------------------------------------------------------
+Source:  https://github.com/boa-dev/boa
+License: MIT  (upstream declares: Unlicense OR MIT)
+
+Copyright notice:
+  Copyright holders / authors (from package metadata):
+    - boa-dev
+
+License text: see Part II — MIT
+
+Additional requirements / notices:
+  Upstream license expression: Unlicense OR MIT. For this distribution, obligations are satisfied under: MIT.
+
+--------------------------------------------------------------------------------
+boa_macros 0.21.1
+--------------------------------------------------------------------------------
+Source:  https://github.com/boa-dev/boa
+License: MIT  (upstream declares: Unlicense OR MIT)
+
+Copyright notice:
+  Copyright holders / authors (from package metadata):
+    - boa-dev
+
+License text: see Part II — MIT
+
+Additional requirements / notices:
+  Upstream license expression: Unlicense OR MIT. For this distribution, obligations are satisfied under: MIT.
+
+--------------------------------------------------------------------------------
+boa_parser 0.21.1
+--------------------------------------------------------------------------------
+Source:  https://github.com/boa-dev/boa
+License: MIT  (upstream declares: Unlicense OR MIT)
+
+Copyright notice:
+  Copyright holders / authors (from package metadata):
+    - boa-dev
+
+License text: see Part II — MIT
+
+Additional requirements / notices:
+  Upstream license expression: Unlicense OR MIT. For this distribution, obligations are satisfied under: MIT.
+
+--------------------------------------------------------------------------------
+boa_string 0.21.1
+--------------------------------------------------------------------------------
+Source:  https://github.com/boa-dev/boa
+License: MIT  (upstream declares: Unlicense OR MIT)
+
+Copyright notice:
+  Copyright holders / authors (from package metadata):
+    - boa-dev
+
+License text: see Part II — MIT
+
+Additional requirements / notices:
+  Upstream license expression: Unlicense OR MIT. For this distribution, obligations are satisfied under: MIT.
+
+--------------------------------------------------------------------------------
 brotli 7.0.0
 --------------------------------------------------------------------------------
 Source:  https://github.com/dropbox/rust-brotli
@@ -2530,6 +2635,17 @@ License: MIT
 
 Copyright notice:
   Copyright (c) 2015
+
+License text: see Part II — MIT
+
+--------------------------------------------------------------------------------
+cow-utils 0.1.3
+--------------------------------------------------------------------------------
+Source:  https://github.com/RReverser/cow-utils-rs
+License: MIT
+
+Copyright notice:
+  Copyright (c) 2020 Ingvar Stepanyan
 
 License text: see Part II — MIT
 
@@ -3571,6 +3687,36 @@ Additional requirements / notices:
   Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
+dynify 0.1.2
+--------------------------------------------------------------------------------
+Source:  https://github.com/loichyan/dynify
+License: MIT  (upstream declares: MIT OR Apache-2.0)
+
+Copyright notice:
+  Copyright holders / authors (from package metadata):
+    - Loi Chyan <loichyan@foxmail.com>
+
+License text: see Part II — MIT
+
+Additional requirements / notices:
+  Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
+
+--------------------------------------------------------------------------------
+dynify-macros 0.1.2
+--------------------------------------------------------------------------------
+Source:  https://github.com/loichyan/dynify
+License: MIT  (upstream declares: MIT OR Apache-2.0)
+
+Copyright notice:
+  Copyright holders / authors (from package metadata):
+    - Loi Chyan <loichyan@foxmail.com>
+
+License text: see Part II — MIT
+
+Additional requirements / notices:
+  Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
+
+--------------------------------------------------------------------------------
 ecdsa 0.16.9
 --------------------------------------------------------------------------------
 Source:  https://github.com/RustCrypto/signatures/tree/master/ecdsa
@@ -4595,6 +4741,21 @@ License: MIT  (upstream declares: MIT OR Apache-2.0)
 Copyright notice:
   Copyright (c) 2016 Alex Crichton
   Copyright (c) 2017 The Tokio Authors
+
+License text: see Part II — MIT
+
+Additional requirements / notices:
+  Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
+
+--------------------------------------------------------------------------------
+futures-concurrency 7.7.1
+--------------------------------------------------------------------------------
+Source:  https://github.com/yoshuawuyts/futures-concurrency
+License: MIT  (upstream declares: MIT OR Apache-2.0)
+
+Copyright notice:
+  Copyright 2020 Yoshua Wuyts
+  Copyright (c) 2020 Yoshua Wuyts
 
 License text: see Part II — MIT
 
@@ -6607,6 +6768,20 @@ Copyright notice:
 License text: see Part II — BSD-3-Clause
 
 --------------------------------------------------------------------------------
+intrusive-collections 0.9.7
+--------------------------------------------------------------------------------
+Source:  https://github.com/Amanieu/intrusive-rs
+License: MIT  (upstream declares: Apache-2.0/MIT)
+
+Copyright notice:
+  Copyright (c) 2016 Amanieu d'Antras
+
+License text: see Part II — MIT
+
+Additional requirements / notices:
+  Upstream license expression: Apache-2.0/MIT. For this distribution, obligations are satisfied under: MIT.
+
+--------------------------------------------------------------------------------
 ipnet 2.11.0
 --------------------------------------------------------------------------------
 Source:  https://github.com/krisprice/ipnet
@@ -8503,6 +8678,21 @@ License: MIT  (upstream declares: MIT OR Apache-2.0)
 
 Copyright notice:
   Copyright (c) 2015-2025 Sean McArthur
+
+License text: see Part II — MIT
+
+Additional requirements / notices:
+  Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
+
+--------------------------------------------------------------------------------
+num_threads 0.1.8
+--------------------------------------------------------------------------------
+Source:  https://github.com/jhpratt/num_threads
+License: MIT  (upstream declares: MIT OR Apache-2.0)
+
+Copyright notice:
+  Copyright 2021 Jacob Pratt
+  Copyright (c) 2021 Jacob Pratt
 
 License text: see Part II — MIT
 
@@ -10668,6 +10858,21 @@ Additional requirements / notices:
   Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
+regress 0.10.5
+--------------------------------------------------------------------------------
+Source:  https://github.com/ridiculousfish/regress
+License: MIT  (upstream declares: MIT OR Apache-2.0)
+
+Copyright notice:
+  Copyright 2020 ridiculous_fish
+  Copyright (c) 2020 ridiculous_fish
+
+License text: see Part II — MIT
+
+Additional requirements / notices:
+  Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
+
+--------------------------------------------------------------------------------
 regress 0.11.1
 --------------------------------------------------------------------------------
 Source:  https://github.com/ridiculousfish/regress
@@ -12213,6 +12418,21 @@ Additional requirements / notices:
   Zlib additional terms: this package is used unmodified; no changes were made to the upstream source as incorporated via crates.io.
 
 --------------------------------------------------------------------------------
+small_btree 0.1.0
+--------------------------------------------------------------------------------
+Source:  https://github.com/boa-dev/boa
+License: MIT  (upstream declares: Unlicense OR MIT)
+
+Copyright notice:
+  Copyright holders / authors (from package metadata):
+    - boa-dev
+
+License text: see Part II — MIT
+
+Additional requirements / notices:
+  Upstream license expression: Unlicense OR MIT. For this distribution, obligations are satisfied under: MIT.
+
+--------------------------------------------------------------------------------
 small_ctor 0.1.2
 --------------------------------------------------------------------------------
 Source:  https://github.com/mitsuhiko/small-ctor
@@ -13356,6 +13576,21 @@ Copyright notice:
 License text: see Part II — MIT
 
 --------------------------------------------------------------------------------
+tag_ptr 0.1.0
+--------------------------------------------------------------------------------
+Source:  https://github.com/boa-dev/boa
+License: MIT  (upstream declares: Unlicense OR MIT)
+
+Copyright notice:
+  Copyright holders / authors (from package metadata):
+    - boa-dev
+
+License text: see Part II — MIT
+
+Additional requirements / notices:
+  Upstream license expression: Unlicense OR MIT. For this distribution, obligations are satisfied under: MIT.
+
+--------------------------------------------------------------------------------
 tagptr 0.2.0
 --------------------------------------------------------------------------------
 Source:  https://github.com/oliver-giersch/tagptr
@@ -13369,6 +13604,17 @@ License text: see Part II — MIT
 
 Additional requirements / notices:
   Upstream license expression: MIT/Apache-2.0. For this distribution, obligations are satisfied under: MIT.
+
+--------------------------------------------------------------------------------
+tap 1.0.1
+--------------------------------------------------------------------------------
+Source:  https://github.com/myrrlyn/tap
+License: MIT
+
+Copyright notice:
+  Copyright (c) 2017 Elliot Linder <darfink@gmail.com>
+
+License text: see Part II — MIT
 
 --------------------------------------------------------------------------------
 tar 0.4.46
@@ -14860,6 +15106,20 @@ Additional requirements / notices:
   Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
+utf16_iter 1.1.0
+--------------------------------------------------------------------------------
+Source:  https://github.com/hsivonen/utf16_iter
+License: MIT  (upstream declares: Apache-2.0 OR MIT)
+
+Copyright notice:
+  Copyright Mozilla Foundation
+
+License text: see Part II — MIT
+
+Additional requirements / notices:
+  Upstream license expression: Apache-2.0 OR MIT. For this distribution, obligations are satisfied under: MIT.
+
+--------------------------------------------------------------------------------
 utf8-width 0.1.7
 --------------------------------------------------------------------------------
 Source:  https://github.com/magiclen/utf8-width
@@ -14893,6 +15153,20 @@ License: MIT  (upstream declares: Apache-2.0 OR MIT)
 
 Copyright notice:
   Copyright (c) 2016 Joe Wilm
+
+License text: see Part II — MIT
+
+Additional requirements / notices:
+  Upstream license expression: Apache-2.0 OR MIT. For this distribution, obligations are satisfied under: MIT.
+
+--------------------------------------------------------------------------------
+utf_types 1.0.0
+--------------------------------------------------------------------------------
+Source:  https://github.com/hsivonen/utf_types
+License: MIT  (upstream declares: Apache-2.0 OR MIT)
+
+Copyright notice:
+  Copyright Mozilla Foundation
 
 License text: see Part II — MIT
 
@@ -15959,6 +16233,20 @@ License text: see Part II — MIT
 
 Additional requirements / notices:
   Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
+
+--------------------------------------------------------------------------------
+write16 1.0.0
+--------------------------------------------------------------------------------
+Source:  https://github.com/hsivonen/write16
+License: MIT  (upstream declares: Apache-2.0 OR MIT)
+
+Copyright notice:
+  Copyright Mozilla Foundation
+
+License text: see Part II — MIT
+
+Additional requirements / notices:
+  Upstream license expression: Apache-2.0 OR MIT. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
 writeable 0.6.1

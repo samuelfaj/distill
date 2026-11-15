@@ -74,6 +74,7 @@ pub struct AgentBuilder {
     app_builder_deployer_config:
         distill_tools::implementations::distill::app_builder::AppBuilderDeployerConfig,
     write_file_enabled: bool,
+    code_mode_enabled: bool,
     active_agent_messages_enabled: bool,
     subagents_enabled: bool,
     /// Whether a depth-1 child may itself spawn; decides whether the child previews keep the Task tool.
@@ -212,6 +213,7 @@ impl AgentBuilder {
             video_gen_config: Default::default(),
             app_builder_deployer_config: Default::default(),
             write_file_enabled: true,
+            code_mode_enabled: false,
             active_agent_messages_enabled: false,
             subagents_enabled: false,
             child_nested_subagents_allowed: false,
@@ -480,6 +482,12 @@ impl AgentBuilder {
         self.write_file_enabled = enabled;
         self
     }
+    /// Gates Code Mode's `code` tool (default: disabled). It is added to every agent's toolset, whatever the
+    /// harness, because a script only reaches the tools that toolset already has.
+    pub fn with_code_mode_enabled(mut self, enabled: bool) -> Self {
+        self.code_mode_enabled = enabled;
+        self
+    }
     /// Gates the `send_subagent_message` tool (default: disabled).
     pub fn with_active_agent_messages_enabled(mut self, enabled: bool) -> Self {
         self.active_agent_messages_enabled = enabled;
@@ -737,6 +745,16 @@ impl AgentBuilder {
             tool_config
                 .tools
                 .push((&distill_tools::implementations::distill::SendFeedbackTool).into());
+        }
+        if self.code_mode_enabled
+            && !tool_config
+                .tools
+                .iter()
+                .any(|tool| tool.kind == Some(ToolKind::Code))
+        {
+            tool_config
+                .tools
+                .push((&distill_tools::implementations::distill::CodeTool).into());
         }
         if definition.inject_default_tools {
             if self.memory_backend.is_some() {
@@ -1040,7 +1058,10 @@ impl AgentBuilder {
                     tool_id_matches(&definition.tools, &tc.id)
                         || tc.kind.is_some_and(|k| allow_kinds.contains(&k))
                         || (has_agent_entry && task_deps.contains(&short_tool_name(&tc.id)))
-                        || matches!(tc.kind, Some(ToolKind::SearchTool | ToolKind::UseTool))
+                        || matches!(
+                            tc.kind,
+                            Some(ToolKind::SearchTool | ToolKind::UseTool | ToolKind::Code)
+                        )
                 });
                 tracing::debug!(agent = %definition.name, allowed = ?definition.tools, "tools allowlist applied");
             } else {
@@ -1661,6 +1682,121 @@ mod tests {
             .iter()
             .filter(|definition| definition.function.name == "send_subagent_message")
             .count()
+    }
+    /// How many `code` tools the model is offered by an agent built from `definition`.
+    async fn code_tool_count(
+        definition: crate::config::AgentDefinition,
+        code_mode: bool,
+        audience: PromptAudience,
+    ) -> usize {
+        use distill_tools::computer::local::LocalTerminalBackend;
+        AgentBuilder::new(
+            std::env::temp_dir(),
+            Arc::new(LocalTerminalBackend::new()),
+            ToolNotificationHandle::noop(),
+        )
+        .from_definition(definition)
+        .with_prompt_audience(audience)
+        .with_code_mode_enabled(code_mode)
+        .build()
+        .await
+        .expect("agent should build")
+        .tool_definitions()
+        .await
+        .iter()
+        .filter(|definition| definition.function.name == "code")
+        .count()
+    }
+    /// Code Mode is opt-in: nobody is handed a tool that runs model-written scripts by default.
+    #[tokio::test]
+    async fn code_mode_off_offers_no_code_tool() {
+        use strum::IntoEnumIterator;
+        for agent in crate::config::BuiltinAgentName::iter() {
+            assert_eq!(
+                code_tool_count(agent.definition(), false, PromptAudience::Primary).await,
+                0,
+                "{agent}"
+            );
+        }
+    }
+    /// "For all models": the harness a model runs under (its own toolset, curated or not) must not
+    /// decide whether it gets Code Mode.
+    #[tokio::test]
+    async fn code_mode_reaches_every_builtin_agent_once() {
+        use strum::IntoEnumIterator;
+        for agent in crate::config::BuiltinAgentName::iter() {
+            assert_eq!(
+                code_tool_count(agent.definition(), true, PromptAudience::Primary).await,
+                1,
+                "{agent}"
+            );
+        }
+    }
+    /// The description is the only Code Mode instruction every harness receives, so its example
+    /// must name a tool that this agent really has, under the name this agent's model sees.
+    #[tokio::test]
+    async fn the_code_tool_description_names_the_agents_own_tools() {
+        use distill_tools::computer::local::LocalTerminalBackend;
+        use strum::IntoEnumIterator;
+        for agent_name in crate::config::BuiltinAgentName::iter() {
+            let agent = AgentBuilder::new(
+                std::env::temp_dir(),
+                Arc::new(LocalTerminalBackend::new()),
+                ToolNotificationHandle::noop(),
+            )
+            .from_definition(agent_name.definition())
+            .with_code_mode_enabled(true)
+            .build()
+            .await
+            .expect("agent should build");
+            let definitions = agent.tool_definitions().await;
+            let code = definitions
+                .iter()
+                .find(|definition| definition.function.name == "code")
+                .expect("code tool");
+            let description = code.function.description.clone().unwrap_or_default();
+            assert!(!description.contains("${"), "{agent_name}: {description}");
+            let search = agent
+                .tool_bridge()
+                .toolset()
+                .tool_name_for_kind(ToolKind::Search)
+                .unwrap_or_else(|| "grep".to_owned());
+            assert!(
+                description.contains(&format!("tools.{search}(usageArgs)")),
+                "{agent_name} searches with `{search}`: {description}"
+            );
+        }
+    }
+    /// A script reaches only the tools the agent kept, so narrowing an agent's tools leaves it
+    /// `code` (over the narrowed set), while naming `code` as disallowed takes it away.
+    #[tokio::test]
+    async fn code_mode_survives_a_tool_allowlist_and_obeys_a_denylist() {
+        let mut allowlisted = crate::config::AgentDefinition::default_distill();
+        allowlisted.tools = vec!["read_file".to_owned()];
+        assert_eq!(
+            code_tool_count(allowlisted, true, PromptAudience::Primary).await,
+            1
+        );
+        let mut denied = crate::config::AgentDefinition::default_distill();
+        denied.disallowed_tools = vec!["code".to_owned()];
+        assert_eq!(code_tool_count(denied, true, PromptAudience::Primary).await, 0);
+    }
+    /// A read-only child keeps `code`: batching its reads is the point, and its scripts cannot
+    /// call a tool the capability filter removed.
+    #[tokio::test]
+    async fn code_mode_stays_in_capability_limited_children() {
+        use distill_tool_types::SubagentCapabilityMode;
+        use distill_tools::implementations::distill::task::types::SubagentCapabilityModeExt;
+        for mode in [
+            SubagentCapabilityMode::ReadOnly,
+            SubagentCapabilityMode::ReadWrite,
+            SubagentCapabilityMode::Execute,
+        ] {
+            assert!(mode.allows_tool_kind(ToolKind::Code), "{mode:?}");
+        }
+        let mut child = crate::config::AgentDefinition::explore();
+        child.capability_mode = Some(SubagentCapabilityMode::ReadOnly);
+        assert_eq!(code_tool_count(child, true, PromptAudience::Subagent).await, 1);
     }
     #[tokio::test]
     async fn active_agent_messages_default_and_false_are_absent() {

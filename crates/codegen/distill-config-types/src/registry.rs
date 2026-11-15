@@ -55,7 +55,7 @@ pub enum Feature {
     /// no remote tier, because enabling egress is a deliberate local decision.
     Jev,
     /// Code Mode: the `code` tool, where the model writes JavaScript that calls its other tools.
-    /// Experimental and off by default; no remote tier, so it is only ever a local choice.
+    /// Experimental and on by default; managed, environment and local settings can disable it.
     CodeMode,
 }
 
@@ -272,7 +272,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "code_mode",
         path: "features.code_mode",
         env: "GROK_CODE_MODE",
-        default_enabled: false,
+        default_enabled: true,
         remote: None,
     },
 ];

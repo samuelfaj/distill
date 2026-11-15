@@ -3,23 +3,23 @@
 
 With Code Mode on, the model gets one extra tool, `code`. Instead of calling its tools one by one, it can write a short JavaScript script that calls them: several at once, one feeding the next, with the output filtered before it reaches the model. A step that took five round trips to the model can take one, and the model reads the three lines it needed instead of the three hundred a tool printed.
 
-Code Mode works with every model and every provider Distill supports, and with subagents. It is off by default.
+Code Mode works with every model and every provider Distill supports, and with subagents. It is on by default.
 
 ---
 
-## Turn it on
+## Turn it off
 
 In `config.toml`:
 
 ```toml
 [features]
-code_mode = true
+code_mode = false
 ```
 
 or for one run:
 
 ```bash
-GROK_CODE_MODE=1 distill
+GROK_CODE_MODE=0 distill
 ```
 
 In the TUI, a session that starts with Code Mode on shows `Code Mode (experimental) is on` at its top. The switch is read when a session starts, so a running session keeps the setting it started with. Set `code_mode = false` (or `GROK_CODE_MODE=0`) to turn it off; a `requirements.toml` pin wins over both.
@@ -43,6 +43,8 @@ return { files, untested: files.filter((file) => !tests.includes(file)) };
 
 - `return` sends a value back to the model: a string as is, anything else as JSON. `console.log` output is returned too.
 - A tool call that fails or is refused throws, so `try`/`catch` works. A command that exits non-zero counts as failed.
+- A user rejection, cancellation or follow-up stops the script outside JavaScript; `try`/`catch` cannot override it.
+- Images and rendered PDF pages reach the model after the script's result, while the script receives the tool's text.
 - The script is plain JavaScript with nothing else attached: no `import` or `require`, no `fetch`, no timers, no file or process access. Files, commands and the network are reachable only through `tools`.
 
 ---
@@ -73,11 +75,12 @@ A script can call tools that read, search, edit, run commands, fetch from the we
 | --- | --- |
 | Tool calls per script | 200 |
 | Iterations of one loop | 10,000,000 |
+| Total JavaScript instructions, including Promise jobs and nested loops | 10,000,000 |
 | Output returned to the model | 64 KiB, then cut with a note |
 
 A script that fails is not rolled back. The model is told how many tool calls ran before the failure, and their effects remain.
 
-Cancelling the turn stops the script at its next tool call, and a call it had queued is dropped rather than run later.
+Cancellation is checked at tool calls and between Promise jobs. Computation within a job is bounded by the total instruction limit. Queued calls from a cancelled script are dropped rather than run later.
 
 ---
 

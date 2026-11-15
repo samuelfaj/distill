@@ -219,7 +219,7 @@ pub(crate) fn resolve_dock_enabled(remote: Option<bool>) -> bool {
 }
 /// Shown at the top of a session that starts with Code Mode on.
 pub(crate) const CODE_MODE_NOTICE: &str = "Code Mode (experimental) is on · turn it off with `[features] code_mode = false`";
-/// Whether a session this process starts gets Code Mode. Registry precedence: pin, `GROK_CODE_MODE`, config, default off.
+/// Whether a session this process starts gets Code Mode. Registry precedence: pin, `GROK_CODE_MODE`, config, default on.
 /// Read when a session starts, from the sources the session itself resolves the feature from.
 pub(crate) fn code_mode_enabled() -> bool {
     use distill_shell::agent::config::{Feature, FeatureSources};

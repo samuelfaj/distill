@@ -27,6 +27,8 @@ Use it when a step needs several tool calls (start them together with `Promise.a
 - `code` is the body of an async function. Use `await`, and `return` what you want to read back: a string comes back as is, anything else as JSON. `console.log` output comes back too.
 - Each of your other tools is `await tools.<tool_name>(args)`, where `args` is the same arguments object you would pass calling that tool directly. It resolves to the text that tool would have returned to you, and throws if the call fails or is refused, so `try`/`catch` works.
 - A call made by the script passes the same permission checks as a direct call.
+- A user rejection, cancellation or follow-up stops the script; `try`/`catch` cannot override it.
+- Images returned by tools are delivered to you after the script result; the script receives the tool's text.
 - Plain JavaScript only: no `import`, `require`, `fetch`, timers, file or process access. Reach files, commands and the network through `tools`.
 - Tools that talk to the user or steer the session (questions, plan mode, subagents, background tasks, todos) are not available inside a script; call them directly.
 
@@ -167,7 +169,7 @@ impl distill_tool_runtime::Tool for CodeTool {
 
 /// Runs the script on its own thread and carries its tool calls to the session and back.
 ///
-/// Dropping the returned future cancels the script: the engine sees its reply channel close at its next tool call.
+/// Dropping this future closes the engine's channels; it observes cancellation at tool calls and Promise jobs.
 async fn run_script(
     parent_call_id: &str,
     code: String,
@@ -180,11 +182,13 @@ async fn run_script(
         .name("code-mode".to_owned())
         .stack_size(SCRIPT_THREAD_STACK_BYTES)
         .spawn(move || {
+            let cancellation = call_tx.clone();
             let outcome = distill_code_mode::run_script(
                 &code,
                 move |call| call_tx.send(call).is_ok(),
                 &reply_rx,
                 distill_code_mode::Limits::default(),
+                move || cancellation.is_closed(),
             );
             let _ = done_tx.send(outcome);
         })
@@ -196,6 +200,7 @@ async fn run_script(
         })?;
 
     let mut in_flight = FuturesUnordered::new();
+    let mut tool_calls = 0;
     loop {
         tokio::select! {
             // A finished script's last calls are already answered, so its outcome wins.
@@ -206,6 +211,7 @@ async fn run_script(
                 });
             }
             Some(call) = call_rx.recv() => {
+                tool_calls += 1;
                 let (reply, answer) = oneshot::channel();
                 let sent = host.0.send(ScriptToolCall {
                     parent_call_id: parent_call_id.to_owned(),
@@ -215,13 +221,22 @@ async fn run_script(
                 });
                 in_flight.push(async move {
                     let result = match sent {
-                        Ok(()) => answer.await.unwrap_or_else(|_| Err("the session ended before this call finished".to_owned())),
-                        Err(_) => Err("the session is no longer running tool calls".to_owned()),
+                        Ok(()) => answer.await.ok(),
+                        Err(_) => None,
                     };
-                    distill_code_mode::ToolReply { id: call.id, result }
+                    result.map(|result| distill_code_mode::ToolReply { id: call.id, result })
                 });
             }
             Some(reply) = in_flight.next(), if !in_flight.is_empty() => {
+                // A terminal user decision closes the reply without answering. End the host future,
+                // rather than throwing a JavaScript error that the script could catch and ignore.
+                let Some(reply) = reply else {
+                    return Ok(distill_code_mode::ScriptOutcome {
+                        error: Some("the session stopped the script".to_owned()),
+                        tool_calls,
+                        ..Default::default()
+                    });
+                };
                 let _ = reply_tx.send(reply);
             }
         }

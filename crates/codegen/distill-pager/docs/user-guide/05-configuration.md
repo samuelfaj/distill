@@ -93,8 +93,8 @@ feedback = true                        # feedback system (default: true)
 lsp_tools = false                      # expose the lsp tool
 codebase_indexing = true               # code graph indexing (default: true)
 two_pass_compaction = true             # prefire two-pass compaction (default: true)
-code_mode = false                      # experimental Code Mode: the model can script its tool calls
-                                       # (default: false; see Code Mode)
+code_mode = true                       # experimental Code Mode: the model can script its tool calls
+                                       # (default: true; see Code Mode)
 remote_fetch = true                    # allow optional online model-catalog fetches (default: true;
                                        # set false for firewalled/air-gapped deployments; background
                                        # managed-config sync has its own switch: managed_config)
@@ -788,7 +788,7 @@ The key ones. See the README for the complete list.
 | `GROK_SUBAGENTS` | Enable (`1`) or disable (`0`) subagents |
 | `GROK_WORKFLOWS` | Enable (`1`) or disable (`0`) background workflows and select the `/goal` driver (default on: host-owned workflow driver; off: legacy `update_goal`) |
 | `GROK_WEB_FETCH` | Enable (`1`) or disable (`0`) the web_fetch tool |
-| `GROK_CODE_MODE` | Enable (`1`) or disable (`0`) experimental Code Mode, the `code` tool (default off) |
+| `GROK_CODE_MODE` | Enable (`1`) or disable (`0`) experimental Code Mode, the `code` tool (default on) |
 | `GROK_WEB_FETCH_ALLOW_LOCAL` | Allow `web_fetch` to explicit loopback hosts only (`localhost` / `127.0.0.0/8` / `::1`). Same as `[toolset.web_fetch] allow_local`. Default off; private/metadata stay blocked. |
 | `GROK_AGENT` | Custom agent definition path or name |
 | `GROK_SANDBOX` | Sandbox profile (off, workspace, devbox, read-only, strict; or a custom profile name) |

@@ -373,7 +373,7 @@ Copyright notice:
 License text: see Part II — BSD-2-Clause
 
 --------------------------------------------------------------------------------
-arrayvec 0.7.6
+arrayvec 0.7.8
 --------------------------------------------------------------------------------
 Source:  https://github.com/bluss/arrayvec
 License: MIT  (upstream declares: MIT OR Apache-2.0)
@@ -1424,7 +1424,7 @@ Additional requirements / notices:
   Upstream license expression: MIT/Apache-2.0. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
-bitflags 2.13.0
+bitflags 2.13.2
 --------------------------------------------------------------------------------
 Source:  https://github.com/bitflags/bitflags
 License: MIT  (upstream declares: MIT OR Apache-2.0)
@@ -1521,7 +1521,7 @@ Copyright notice:
 License text: see Part II — MIT
 
 --------------------------------------------------------------------------------
-boa_ast 0.21.1
+boa_ast 0.22.0
 --------------------------------------------------------------------------------
 Source:  https://github.com/boa-dev/boa
 License: MIT  (upstream declares: Unlicense OR MIT)
@@ -1536,7 +1536,7 @@ Additional requirements / notices:
   Upstream license expression: Unlicense OR MIT. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
-boa_engine 0.21.1
+boa_engine 0.22.0
 --------------------------------------------------------------------------------
 Source:  https://github.com/boa-dev/boa
 License: MIT  (upstream declares: Unlicense OR MIT)
@@ -1551,7 +1551,7 @@ Additional requirements / notices:
   Upstream license expression: Unlicense OR MIT. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
-boa_gc 0.21.1
+boa_gc 0.22.0
 --------------------------------------------------------------------------------
 Source:  https://github.com/boa-dev/boa
 License: MIT  (upstream declares: Unlicense OR MIT)
@@ -1566,7 +1566,7 @@ Additional requirements / notices:
   Upstream license expression: Unlicense OR MIT. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
-boa_interner 0.21.1
+boa_interner 0.22.0
 --------------------------------------------------------------------------------
 Source:  https://github.com/boa-dev/boa
 License: MIT  (upstream declares: Unlicense OR MIT)
@@ -1581,7 +1581,7 @@ Additional requirements / notices:
   Upstream license expression: Unlicense OR MIT. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
-boa_macros 0.21.1
+boa_macros 0.22.0
 --------------------------------------------------------------------------------
 Source:  https://github.com/boa-dev/boa
 License: MIT  (upstream declares: Unlicense OR MIT)
@@ -1596,7 +1596,7 @@ Additional requirements / notices:
   Upstream license expression: Unlicense OR MIT. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
-boa_parser 0.21.1
+boa_parser 0.22.0
 --------------------------------------------------------------------------------
 Source:  https://github.com/boa-dev/boa
 License: MIT  (upstream declares: Unlicense OR MIT)
@@ -1611,7 +1611,7 @@ Additional requirements / notices:
   Upstream license expression: Unlicense OR MIT. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
-boa_string 0.21.1
+boa_string 0.22.0
 --------------------------------------------------------------------------------
 Source:  https://github.com/boa-dev/boa
 License: MIT  (upstream declares: Unlicense OR MIT)
@@ -3214,7 +3214,7 @@ Copyright notice:
 License text: see Part II — MIT
 
 --------------------------------------------------------------------------------
-dashmap 6.1.0
+dashmap 6.2.1
 --------------------------------------------------------------------------------
 Source:  https://github.com/xacrimon/dashmap
 License: MIT
@@ -3320,7 +3320,7 @@ Additional requirements / notices:
   Upstream license expression: Apache-2.0 OR MIT. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
-deranged 0.5.5
+deranged 0.5.9
 --------------------------------------------------------------------------------
 Source:  https://github.com/jhpratt/deranged
 License: MIT  (upstream declares: MIT OR Apache-2.0)
@@ -4206,6 +4206,20 @@ Copyright notice:
   Copyright 2015 The Fancy Regex Authors.
 
 License text: see Part II — MIT
+
+--------------------------------------------------------------------------------
+fast-float2 0.2.4
+--------------------------------------------------------------------------------
+Source:  https://github.com/Alexhuszagh/fast-float-rust
+License: MIT  (upstream declares: MIT OR Apache-2.0)
+
+Copyright notice:
+  No separate copyright notice is stated in the upstream MIT license file.
+
+License text: see Part II — MIT
+
+Additional requirements / notices:
+  Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
 fast_image_resize 6.0.0
@@ -5987,6 +6001,20 @@ Additional requirements / notices:
   Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
+hashbrown 0.17.1
+--------------------------------------------------------------------------------
+Source:  https://github.com/rust-lang/hashbrown
+License: MIT  (upstream declares: MIT OR Apache-2.0)
+
+Copyright notice:
+  Copyright (c) 2016 Amanieu d'Antras
+
+License text: see Part II — MIT
+
+Additional requirements / notices:
+  Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
+
+--------------------------------------------------------------------------------
 hashlink 0.10.0
 --------------------------------------------------------------------------------
 Source:  https://github.com/kyren/hashlink
@@ -6422,7 +6450,7 @@ Additional requirements / notices:
   Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
-icu_collections 2.0.0
+icu_collections 2.3.0
 --------------------------------------------------------------------------------
 Source:  https://github.com/unicode-org/icu4x
 License: Unicode-3.0
@@ -6434,7 +6462,7 @@ Copyright notice:
 License text: see Part II — Unicode-3.0
 
 --------------------------------------------------------------------------------
-icu_locale_core 2.0.0
+icu_locale_core 2.4.0
 --------------------------------------------------------------------------------
 Source:  https://github.com/unicode-org/icu4x
 License: Unicode-3.0
@@ -6446,7 +6474,7 @@ Copyright notice:
 License text: see Part II — Unicode-3.0
 
 --------------------------------------------------------------------------------
-icu_normalizer 2.0.0
+icu_normalizer 2.3.0
 --------------------------------------------------------------------------------
 Source:  https://github.com/unicode-org/icu4x
 License: Unicode-3.0
@@ -6458,7 +6486,7 @@ Copyright notice:
 License text: see Part II — Unicode-3.0
 
 --------------------------------------------------------------------------------
-icu_normalizer_data 2.0.0
+icu_normalizer_data 2.3.0
 --------------------------------------------------------------------------------
 Source:  https://github.com/unicode-org/icu4x
 License: Unicode-3.0
@@ -6470,7 +6498,7 @@ Copyright notice:
 License text: see Part II — Unicode-3.0
 
 --------------------------------------------------------------------------------
-icu_properties 2.0.1
+icu_properties 2.3.0
 --------------------------------------------------------------------------------
 Source:  https://github.com/unicode-org/icu4x
 License: Unicode-3.0
@@ -6482,7 +6510,7 @@ Copyright notice:
 License text: see Part II — Unicode-3.0
 
 --------------------------------------------------------------------------------
-icu_properties_data 2.0.1
+icu_properties_data 2.3.0
 --------------------------------------------------------------------------------
 Source:  https://github.com/unicode-org/icu4x
 License: Unicode-3.0
@@ -6494,7 +6522,7 @@ Copyright notice:
 License text: see Part II — Unicode-3.0
 
 --------------------------------------------------------------------------------
-icu_provider 2.0.0
+icu_provider 2.4.0
 --------------------------------------------------------------------------------
 Source:  https://github.com/unicode-org/icu4x
 License: Unicode-3.0
@@ -6768,7 +6796,7 @@ Copyright notice:
 License text: see Part II — BSD-3-Clause
 
 --------------------------------------------------------------------------------
-intrusive-collections 0.9.7
+intrusive-collections 0.10.3
 --------------------------------------------------------------------------------
 Source:  https://github.com/Amanieu/intrusive-rs
 License: MIT  (upstream declares: Apache-2.0/MIT)
@@ -6874,7 +6902,21 @@ Additional requirements / notices:
   Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
-itoa 1.0.17
+itertools 0.15.0
+--------------------------------------------------------------------------------
+Source:  https://github.com/rust-itertools/itertools
+License: MIT  (upstream declares: MIT OR Apache-2.0)
+
+Copyright notice:
+  Copyright (c) 2015
+
+License text: see Part II — MIT
+
+Additional requirements / notices:
+  Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
+
+--------------------------------------------------------------------------------
+itoa 1.0.19
 --------------------------------------------------------------------------------
 Source:  https://github.com/dtolnay/itoa
 License: MIT  (upstream declares: MIT OR Apache-2.0)
@@ -8528,6 +8570,20 @@ Additional requirements / notices:
   Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
+num-bigint 0.5.1
+--------------------------------------------------------------------------------
+Source:  https://github.com/rust-num/num-bigint
+License: MIT  (upstream declares: MIT OR Apache-2.0)
+
+Copyright notice:
+  Copyright (c) 2014 The Rust Project Developers
+
+License text: see Part II — MIT
+
+Additional requirements / notices:
+  Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
+
+--------------------------------------------------------------------------------
 num-bigint-dig 0.8.6
 --------------------------------------------------------------------------------
 Source:  https://github.com/dignifiedquire/num-bigint
@@ -8571,7 +8627,7 @@ Additional requirements / notices:
   Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
-num-conv 0.2.0
+num-conv 0.2.2
 --------------------------------------------------------------------------------
 Source:  https://github.com/jhpratt/num-conv
 License: MIT  (upstream declares: MIT OR Apache-2.0)
@@ -8615,7 +8671,7 @@ Additional requirements / notices:
   Upstream license expression: MIT/Apache-2.0. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
-num-integer 0.1.46
+num-integer 0.1.47
 --------------------------------------------------------------------------------
 Source:  https://github.com/rust-num/num-integer
 License: MIT  (upstream declares: MIT OR Apache-2.0)
@@ -8683,6 +8739,34 @@ License text: see Part II — MIT
 
 Additional requirements / notices:
   Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
+
+--------------------------------------------------------------------------------
+num_enum 0.7.6
+--------------------------------------------------------------------------------
+Source:  https://github.com/illicitonion/num_enum
+License: MIT  (upstream declares: BSD-3-Clause OR MIT OR Apache-2.0)
+
+Copyright notice:
+  No separate copyright notice is stated in the upstream MIT license file.
+
+License text: see Part II — MIT
+
+Additional requirements / notices:
+  Upstream license expression: BSD-3-Clause OR MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
+
+--------------------------------------------------------------------------------
+num_enum_derive 0.7.6
+--------------------------------------------------------------------------------
+Source:  https://github.com/illicitonion/num_enum
+License: MIT  (upstream declares: BSD-3-Clause OR MIT OR Apache-2.0)
+
+Copyright notice:
+  No separate copyright notice is stated in the upstream MIT license file.
+
+License text: see Part II — MIT
+
+Additional requirements / notices:
+  Upstream license expression: BSD-3-Clause OR MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
 num_threads 0.1.8
@@ -8814,7 +8898,7 @@ Additional requirements / notices:
   Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
-once_cell 1.21.3
+once_cell 1.21.4
 --------------------------------------------------------------------------------
 Source:  https://github.com/matklad/once_cell
 License: MIT  (upstream declares: MIT OR Apache-2.0)
@@ -8836,6 +8920,20 @@ License: MIT  (upstream declares: MIT OR Apache-2.0)
 
 Copyright notice:
   Copyright (c) Individual contributors
+
+License text: see Part II — MIT
+
+Additional requirements / notices:
+  Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
+
+--------------------------------------------------------------------------------
+oneshot 0.2.1
+--------------------------------------------------------------------------------
+Source:  https://github.com/faern/oneshot
+License: MIT  (upstream declares: MIT OR Apache-2.0)
+
+Copyright notice:
+  No separate copyright notice is stated in the upstream MIT license file.
 
 License text: see Part II — MIT
 
@@ -9249,7 +9347,7 @@ Additional requirements / notices:
   Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
-pastey 0.2.1
+pastey 0.2.3
 --------------------------------------------------------------------------------
 Source:  https://github.com/as1100k/pastey
 License: MIT  (upstream declares: MIT OR Apache-2.0)
@@ -9904,7 +10002,7 @@ Additional requirements / notices:
   Upstream license expression: Apache-2.0 OR MIT. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
-portable-atomic 1.11.1
+portable-atomic 1.15.0
 --------------------------------------------------------------------------------
 Source:  https://github.com/taiki-e/portable-atomic
 License: MIT  (upstream declares: Apache-2.0 OR MIT)
@@ -10490,7 +10588,7 @@ Copyright notice:
 License text: see Part II — MIT
 
 --------------------------------------------------------------------------------
-quote 1.0.45
+quote 1.0.47
 --------------------------------------------------------------------------------
 Source:  https://github.com/dtolnay/quote
 License: MIT  (upstream declares: MIT OR Apache-2.0)
@@ -10535,7 +10633,7 @@ Additional requirements / notices:
   Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
-rand 0.10.0
+rand 0.10.3
 --------------------------------------------------------------------------------
 Source:  https://github.com/rust-random/rand
 License: MIT  (upstream declares: MIT OR Apache-2.0)
@@ -10858,7 +10956,7 @@ Additional requirements / notices:
   Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
-regress 0.10.5
+regress 0.12.0
 --------------------------------------------------------------------------------
 Source:  https://github.com/ridiculousfish/regress
 License: MIT  (upstream declares: MIT OR Apache-2.0)
@@ -11157,7 +11255,7 @@ Additional requirements / notices:
   Upstream license expression: MIT/Apache-2.0. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
-rustc-hash 2.1.1
+rustc-hash 2.1.3
 --------------------------------------------------------------------------------
 Source:  https://github.com/rust-lang/rustc-hash
 License: MIT  (upstream declares: Apache-2.0 OR MIT)
@@ -11330,7 +11428,7 @@ Additional requirements / notices:
   Upstream license expression: Apache-2.0 OR BSL-1.0. For this distribution, obligations are satisfied under: Apache-2.0.
 
 --------------------------------------------------------------------------------
-ryu-js 1.0.2
+ryu-js 1.0.3
 --------------------------------------------------------------------------------
 Source:  https://github.com/boa-dev/ryu-js
 License: Apache-2.0  (upstream declares: Apache-2.0 OR BSL-1.0)
@@ -11667,7 +11765,7 @@ Copyright notice:
 License text: see Part II — MIT
 
 --------------------------------------------------------------------------------
-serde 1.0.228
+serde 1.0.229
 --------------------------------------------------------------------------------
 Source:  https://github.com/serde-rs/serde
 License: MIT  (upstream declares: MIT OR Apache-2.0)
@@ -11694,7 +11792,7 @@ Copyright notice:
 License text: see Part II — MIT
 
 --------------------------------------------------------------------------------
-serde_core 1.0.228
+serde_core 1.0.229
 --------------------------------------------------------------------------------
 Source:  https://github.com/serde-rs/serde
 License: MIT  (upstream declares: MIT OR Apache-2.0)
@@ -11710,7 +11808,7 @@ Additional requirements / notices:
   Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
-serde_derive 1.0.228
+serde_derive 1.0.229
 --------------------------------------------------------------------------------
 Source:  https://github.com/serde-rs/serde
 License: MIT  (upstream declares: MIT OR Apache-2.0)
@@ -11757,7 +11855,7 @@ Additional requirements / notices:
   Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
-serde_json 1.0.149
+serde_json 1.0.154
 --------------------------------------------------------------------------------
 Source:  https://github.com/serde-rs/json
 License: MIT  (upstream declares: MIT OR Apache-2.0)
@@ -13551,6 +13649,17 @@ Copyright notice:
 License text: see Part II — MIT
 
 --------------------------------------------------------------------------------
+synstructure 0.14.0
+--------------------------------------------------------------------------------
+Source:  https://github.com/mystor/synstructure
+License: MIT
+
+Copyright notice:
+  Copyright 2016 Nika Layzell
+
+License text: see Part II — MIT
+
+--------------------------------------------------------------------------------
 syntect 5.3.0
 --------------------------------------------------------------------------------
 Source:  https://github.com/trishume/syntect
@@ -13728,6 +13837,20 @@ Copyright notice:
 License text: see Part II — MIT
 
 --------------------------------------------------------------------------------
+thin-vec 0.2.21
+--------------------------------------------------------------------------------
+Source:  https://github.com/mozilla/thin-vec
+License: MIT  (upstream declares: MIT OR Apache-2.0)
+
+Copyright notice:
+  No separate copyright notice is stated in the upstream MIT license file.
+
+License text: see Part II — MIT
+
+Additional requirements / notices:
+  Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
+
+--------------------------------------------------------------------------------
 thiserror 1.0.69
 --------------------------------------------------------------------------------
 Source:  https://github.com/dtolnay/thiserror
@@ -13743,7 +13866,7 @@ Additional requirements / notices:
   Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
-thiserror 2.0.18
+thiserror 2.0.21
 --------------------------------------------------------------------------------
 Source:  https://github.com/dtolnay/thiserror
 License: MIT  (upstream declares: MIT OR Apache-2.0)
@@ -13773,7 +13896,7 @@ Additional requirements / notices:
   Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
-thiserror-impl 2.0.18
+thiserror-impl 2.0.21
 --------------------------------------------------------------------------------
 Source:  https://github.com/dtolnay/thiserror
 License: MIT  (upstream declares: MIT OR Apache-2.0)
@@ -13866,7 +13989,7 @@ Additional requirements / notices:
   Upstream license expression: MIT/Apache-2.0. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
-time 0.3.47
+time 0.3.55
 --------------------------------------------------------------------------------
 Source:  https://github.com/time-rs/time
 License: MIT  (upstream declares: MIT OR Apache-2.0)
@@ -13880,7 +14003,7 @@ Additional requirements / notices:
   Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
-time-core 0.1.8
+time-core 0.1.9
 --------------------------------------------------------------------------------
 Source:  https://github.com/time-rs/time
 License: MIT  (upstream declares: MIT OR Apache-2.0)
@@ -13894,7 +14017,7 @@ Additional requirements / notices:
   Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
-time-macros 0.2.27
+time-macros 0.2.32
 --------------------------------------------------------------------------------
 Source:  https://github.com/time-rs/time
 License: MIT  (upstream declares: MIT OR Apache-2.0)
@@ -13932,7 +14055,7 @@ Copyright notice:
 License text: see Part II — BSD-3-Clause
 
 --------------------------------------------------------------------------------
-tinystr 0.8.1
+tinystr 0.8.5
 --------------------------------------------------------------------------------
 Source:  https://github.com/unicode-org/icu4x
 License: Unicode-3.0
@@ -16249,7 +16372,7 @@ Additional requirements / notices:
   Upstream license expression: Apache-2.0 OR MIT. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
-writeable 0.6.1
+writeable 0.6.4
 --------------------------------------------------------------------------------
 Source:  https://github.com/unicode-org/icu4x
 License: Unicode-3.0
@@ -16399,7 +16522,7 @@ Additional requirements / notices:
   Upstream license expression: MIT OR Apache-2.0. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
-yoke 0.8.0
+yoke 0.8.4
 --------------------------------------------------------------------------------
 Source:  https://github.com/unicode-org/icu4x
 License: Unicode-3.0
@@ -16411,7 +16534,7 @@ Copyright notice:
 License text: see Part II — Unicode-3.0
 
 --------------------------------------------------------------------------------
-yoke-derive 0.8.0
+yoke-derive 0.8.4
 --------------------------------------------------------------------------------
 Source:  https://github.com/unicode-org/icu4x
 License: Unicode-3.0
@@ -16538,7 +16661,7 @@ Additional requirements / notices:
   Upstream license expression: Apache-2.0 OR MIT. For this distribution, obligations are satisfied under: MIT.
 
 --------------------------------------------------------------------------------
-zerotrie 0.2.2
+zerotrie 0.2.5
 --------------------------------------------------------------------------------
 Source:  https://github.com/unicode-org/icu4x
 License: Unicode-3.0
@@ -16550,7 +16673,7 @@ Copyright notice:
 License text: see Part II — Unicode-3.0
 
 --------------------------------------------------------------------------------
-zerovec 0.11.4
+zerovec 0.11.9
 --------------------------------------------------------------------------------
 Source:  https://github.com/unicode-org/icu4x
 License: Unicode-3.0
@@ -16562,7 +16685,7 @@ Copyright notice:
 License text: see Part II — Unicode-3.0
 
 --------------------------------------------------------------------------------
-zerovec-derive 0.11.1
+zerovec-derive 0.11.7
 --------------------------------------------------------------------------------
 Source:  https://github.com/unicode-org/icu4x
 License: Unicode-3.0

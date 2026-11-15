@@ -33,6 +33,7 @@ fn run_with(
         move |call| call_tx.send(call).is_ok(),
         &reply_rx,
         limits,
+        || false,
     );
     drop(reply_rx);
     (outcome, host.join().expect("host thread"))
@@ -73,6 +74,7 @@ fn calls_started_together_are_pending_together() {
         move |call| call_tx.send(call).is_ok(),
         &reply_rx,
         Limits::default(),
+        || false,
     );
     host.join().expect("host thread");
     assert_eq!(outcome.error, None);
@@ -169,7 +171,10 @@ fn a_runaway_loop_ends_instead_of_pinning_the_thread() {
     };
     let (outcome, _) = run_with("while (true) {}", limits, |_| Ok(String::new()));
     let error = outcome.error.expect("the loop limit is an error");
-    assert!(error.to_lowercase().contains("loop iteration"), "{error}");
+    assert!(
+        error.contains("RuntimeLimitError") && error.contains("loops"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -228,6 +233,7 @@ fn a_host_that_goes_away_cancels_the_script() {
         move |call| call_tx.send(call).is_ok(),
         &reply_rx,
         Limits::default(),
+        || false,
     );
     host.join().expect("host thread");
     assert_eq!(outcome.error.as_deref(), Some("the script was cancelled"));
@@ -271,4 +277,53 @@ fn each_run_starts_clean() {
     let (second, calls) = run("return typeof globalThis.leak;");
     assert_eq!(second.value.as_deref(), Some("undefined"));
     assert_eq!((second.tool_calls, calls.len()), (0, 0));
+}
+
+#[test]
+fn total_instruction_budget_bounds_microtasks_and_nested_loops() {
+    let limits = Limits {
+        max_instructions: 10_000,
+        ..Limits::default()
+    };
+    for code in [
+        "const again = () => { Promise.resolve().then(again); }; again(); return 'done';",
+        "for (let i = 0; i < 1000; i++) { for (let j = 0; j < 1000; j++) {} }",
+    ] {
+        let (outcome, _) = run_with(code, limits, |_| Ok(String::new()));
+        assert!(
+            outcome
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("NoInstructionsRemain")),
+            "{outcome:?}"
+        );
+        assert_eq!(outcome.value, None);
+    }
+}
+
+#[test]
+fn cancellation_is_observed_between_microtasks_without_tool_calls() {
+    let (_reply_tx, reply_rx) = mpsc::channel();
+    let checks = std::cell::Cell::new(0);
+    let outcome = run_script(
+        "const again = () => { Promise.resolve().then(again); }; again(); return 'done';",
+        |_| panic!("this script makes no tool calls"),
+        &reply_rx,
+        Limits {
+            max_instructions: 10_000,
+            ..Limits::default()
+        },
+        move || {
+            checks.set(checks.get() + 1);
+            checks.get() >= 10
+        },
+    );
+    assert!(
+        outcome
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("cancelled")),
+        "{outcome:?}"
+    );
+    assert_eq!(outcome.tool_calls, 0);
 }

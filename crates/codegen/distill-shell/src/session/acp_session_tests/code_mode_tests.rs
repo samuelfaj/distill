@@ -409,3 +409,87 @@ async fn the_code_call_itself_raises_no_prompt() {
         })
         .await;
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_caught_user_rejection_still_stops_the_script() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            let (actor, _) = code_mode_actor(vec![], vec![], false, tx).await;
+            let prompted = answer_prompts(rx, "reject-once");
+            let dir = tempfile::tempdir().unwrap();
+            let (path, edit) = editable_file(&dir);
+            let later = dir.path().join("later.txt");
+            std::fs::write(&later, "AFTER_REFUSAL_READ_EXECUTED").unwrap();
+            let script = format!(
+                "try {{ {edit}; }} catch (_) {{}}\n\
+                 return await tools.read_file({{ target_file: {later:?} }});"
+            );
+            let outcome = run(&actor, code_call("call_caught", &script)).await;
+            assert!(
+                matches!(outcome, ToolLoop::PermissionReject { .. }),
+                "{outcome:?}"
+            );
+            assert_eq!(prompted.lock().unwrap().len(), 1);
+            assert_eq!(std::fs::read_to_string(path).unwrap(), "before\n");
+            let answer = tool_result_text(&actor, "call_caught").await;
+            assert!(
+                !answer.contains("AFTER_REFUSAL_READ_EXECUTED"),
+                "a tool still executed after the user's rejection: {answer}"
+            );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_scripts_image_read_preserves_vision_content() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("picture.png");
+            image::RgbImage::from_pixel(64, 64, image::Rgb([120, 80, 40]))
+                .save(&path)
+                .unwrap();
+            for script in [false, true] {
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                let (actor, _) = code_mode_actor(vec![], vec![], true, tx).await;
+                spawn_gateway_loop(rx);
+                let call = if script {
+                    code_call(
+                        "call_image_script",
+                        &format!("return await tools.read_file({{ target_file: {path:?} }});"),
+                    )
+                } else {
+                    ToolCallResponse {
+                        id: "call_image_direct".to_owned(),
+                        kind: "function".to_owned(),
+                        function: crate::sampling::types::ToolCallFunction::new(
+                            "read_file",
+                            serde_json::json!({"target_file":path}).to_string(),
+                        ),
+                    }
+                };
+                run(&actor, call).await;
+                let conversation = actor.chat_state_handle.get_conversation().await;
+                let images: usize = conversation
+                    .iter()
+                    .map(|item| match item {
+                        distill_sampling_types::ConversationItem::ToolResult(r) => r.images.len(),
+                        distill_sampling_types::ConversationItem::User(u) => u
+                            .content
+                            .iter()
+                            .filter(|part| {
+                                matches!(part, distill_sampling_types::ContentPart::Image { .. })
+                            })
+                            .count(),
+                        _ => 0,
+                    })
+                    .sum();
+                assert_eq!(
+                    images, 1,
+                    "script={script}: successful image read must deliver an image to the model"
+                );
+            }
+        })
+        .await;
+}

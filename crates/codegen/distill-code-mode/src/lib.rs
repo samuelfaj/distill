@@ -7,9 +7,11 @@
 #![deny(clippy::indexing_slicing)]
 
 use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::mpsc::Receiver;
 
 use boa_engine::builtins::promise::PromiseState;
+use boa_engine::job::{Job, JobExecutor, PromiseJob, SimpleJobExecutor};
 use boa_engine::object::builtins::JsPromise;
 use boa_engine::{
     Context, JsNativeError, JsObject, JsResult, JsString, JsValue, NativeFunction, Source,
@@ -40,6 +42,8 @@ pub struct Limits {
     pub max_tool_calls: u32,
     /// Iterations one loop may run, so `while (true) {}` ends instead of pinning a thread.
     pub max_loop_iterations: u64,
+    /// Total JavaScript instructions, including nested loops and Promise jobs.
+    pub max_instructions: usize,
 }
 
 impl Default for Limits {
@@ -47,6 +51,7 @@ impl Default for Limits {
         Self {
             max_tool_calls: 200,
             max_loop_iterations: 10_000_000,
+            max_instructions: 10_000_000,
         }
     }
 }
@@ -67,6 +72,7 @@ pub struct ScriptOutcome {
 
 struct Host {
     send: Box<dyn Fn(ToolCall) -> bool>,
+    is_cancelled: Box<dyn Fn() -> bool>,
     in_flight: u32,
     calls: u32,
     max_calls: u32,
@@ -86,6 +92,42 @@ impl Drop for HostGuard {
     }
 }
 
+fn check_cancelled() -> JsResult<()> {
+    if HOST.with(|host| {
+        host.borrow()
+            .as_ref()
+            .is_none_or(|host| (host.is_cancelled)())
+    }) {
+        return Err(JsNativeError::error()
+            .with_message("the script was cancelled")
+            .into());
+    }
+    Ok(())
+}
+
+/// Retain Boa's FIFO job handling, but observe cancellation even when promises keep scheduling jobs.
+#[derive(Default)]
+struct ScriptJobs(Rc<SimpleJobExecutor>);
+
+impl JobExecutor for ScriptJobs {
+    fn enqueue_job(self: Rc<Self>, job: Job, context: &mut Context) {
+        let job = match job {
+            Job::PromiseJob(job) => PromiseJob::new(move |context| {
+                check_cancelled()?;
+                job.call(context)
+            })
+            .into(),
+            job => job,
+        };
+        self.0.clone().enqueue_job(job, context);
+    }
+
+    fn run_jobs(self: Rc<Self>, context: &mut Context) -> JsResult<()> {
+        check_cancelled()?;
+        self.0.clone().run_jobs(context)
+    }
+}
+
 #[derive(serde::Deserialize)]
 struct Settled {
     ok: bool,
@@ -98,16 +140,20 @@ struct Settled {
 /// Runs `code` to completion on the calling thread, which it blocks while tool calls are pending.
 ///
 /// `send` hands a call to the host and returns `false` when the host is gone. Each call is answered
-/// through `replies`, in any order; dropping the sending side ends the script.
+/// through `replies`, in any order; dropping the sending side ends a waiting script.
+/// `is_cancelled` is also checked between Promise jobs. The total instruction budget also bounds
+/// JavaScript loops within each job.
 pub fn run_script(
     code: &str,
     send: impl Fn(ToolCall) -> bool + 'static,
     replies: &Receiver<ToolReply>,
     limits: Limits,
+    is_cancelled: impl Fn() -> bool + 'static,
 ) -> ScriptOutcome {
     HOST.with(|host| {
         *host.borrow_mut() = Some(Host {
             send: Box::new(send),
+            is_cancelled: Box::new(is_cancelled),
             in_flight: 0,
             calls: 0,
             max_calls: limits.max_tool_calls,
@@ -115,7 +161,11 @@ pub fn run_script(
     });
     let _guard = HostGuard;
 
-    let mut context = Context::default();
+    let mut context = Context::builder()
+        .instructions_remaining(limits.max_instructions)
+        .job_executor(Rc::new(ScriptJobs::default()))
+        .build()
+        .expect("default script context with a job executor");
     context
         .runtime_limits_mut()
         .set_loop_iteration_limit(limits.max_loop_iterations);
@@ -190,6 +240,7 @@ fn evaluate(
     replies: &Receiver<ToolReply>,
     context: &mut Context,
 ) -> Result<Settled, String> {
+    check_cancelled().map_err(|error| error.to_string())?;
     // The prefix shares the script's first line, so reported line numbers are the script's own.
     let wrapped = format!("(async () => {{{code}\n}})");
     let main = context
@@ -257,6 +308,7 @@ fn evaluate(
 /// `__distill_host_call(id, tool, argsJson)`: hands one call to the host. A thrown error rejects the
 /// promise the prelude made for this call.
 fn host_call(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    check_cancelled()?;
     let arg = |index: usize| args.get(index).cloned().unwrap_or_default();
     let id = arg(0).to_u32(context)?;
     let tool = arg(1).to_string(context)?.to_std_string_lossy();

@@ -129,6 +129,16 @@ impl ScriptCalls {
         };
         slot.text = Some(result.content.to_string());
         slot.failed |= failed;
+        if !result.images.is_empty() {
+            let mut message = ConversationItem::system_reminder(format!(
+                "[Images from script tool call {}]\n{}",
+                result.tool_call_id, result.content,
+            ));
+            if let ConversationItem::User(user) = &mut message {
+                user.content.extend(result.images.clone());
+            }
+            self.followups.lock().push(message);
+        }
         None
     }
 
@@ -194,7 +204,12 @@ impl SessionActor {
                 biased;
                 done = &mut turn_calls => return done,
                 Some(call) = receiver.recv() => running.push(self.run_script_tool_call(call)),
-                Some(()) = running.next(), if !running.is_empty() => {}
+                Some(()) = running.next(), if !running.is_empty() => {
+                    if self.script_calls.stop.lock().is_some() {
+                        // Drop pending inner calls, including any waiting on another permission prompt.
+                        running.clear();
+                    }
+                }
             }
         }
     }
@@ -207,7 +222,7 @@ impl SessionActor {
             reply,
         } = call;
         // The script that made this call is gone (its turn was cancelled), so nobody asked for it any more.
-        if reply.is_closed() {
+        if reply.is_closed() || self.script_calls.stop.lock().is_some() {
             return;
         }
         let result = match self.script_callable(&tool) {
@@ -217,7 +232,10 @@ impl SessionActor {
             }
             Err(refusal) => Err(refusal),
         };
-        let _ = reply.send(result);
+        // Closing the reply ends the script outside JavaScript, so try/catch cannot ignore a user stop.
+        if self.script_calls.stop.lock().is_none() {
+            let _ = reply.send(result);
+        }
     }
 
     fn script_callable(&self, tool: &str) -> Result<(), String> {

@@ -482,8 +482,8 @@ impl AgentBuilder {
         self.write_file_enabled = enabled;
         self
     }
-    /// Gates Code Mode's `code` tool (default: disabled). It is added to every agent's toolset, whatever the
-    /// harness, because a script only reaches the tools that toolset already has.
+    /// Gates Code Mode's `code` tool. The session enables it when a script host is available. It is added
+    /// to every harness because a script only reaches the tools that its toolset already has.
     pub fn with_code_mode_enabled(mut self, enabled: bool) -> Self {
         self.code_mode_enabled = enabled;
         self
@@ -1707,7 +1707,7 @@ mod tests {
         .filter(|definition| definition.function.name == "code")
         .count()
     }
-    /// Code Mode is opt-in: nobody is handed a tool that runs model-written scripts by default.
+    /// Explicitly disabling Code Mode removes it from every built-in harness.
     #[tokio::test]
     async fn code_mode_off_offers_no_code_tool() {
         use strum::IntoEnumIterator;

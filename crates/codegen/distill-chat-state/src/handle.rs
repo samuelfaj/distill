@@ -602,6 +602,21 @@ impl ChatStateHandle {
             .send(ChatStateCommand::PopStrandedContinueReminder);
     }
 
+    /// Drop a harness question that nothing will answer any more: every user
+    /// item whose text is `question` after the last real assistant reply
+    /// (one that is more than `bare_reply`). Left in, the question sits right
+    /// before the next instruction and the model answers it instead of the
+    /// instruction. Fire-and-forget; mailbox order puts the drop before any
+    /// subsequent command's view of history.
+    pub fn drop_unanswered_question(&self, question: String, bare_reply: String) {
+        let _ = self
+            .cmd_tx
+            .send(ChatStateCommand::DropUnansweredQuestion {
+                question,
+                bare_reply,
+            });
+    }
+
     // ═══ Async queries (via oneshot) ═══
 
     /// Send a query to the actor and await the reply.

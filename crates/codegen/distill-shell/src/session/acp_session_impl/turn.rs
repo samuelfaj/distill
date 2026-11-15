@@ -635,6 +635,8 @@ impl SessionActor {
             self.invalidate_side_calls_for_new_prompt();
         }
         self.ensure_session_disk_writable().await?;
+        // A reminder an earlier turn left unanswered must not precede this input.
+        self.drop_unanswered_final_check();
         let wake_message = match input_origin.as_prompt_origin() {
             super::super::PromptOrigin::SubagentCompleted { subagent_id } => {
                 Some(self.build_wake_turn_message(subagent_id).await)
@@ -3743,6 +3745,7 @@ impl SessionActor {
                     prompt_id = %req_id,
                     "final check: nothing outstanding; keeping the earlier final message"
                 );
+                self.drop_unanswered_final_check();
             } else {
                 self.record_response_items(response.items, usage_reported)
                     .await;
@@ -4501,6 +4504,18 @@ impl SessionActor {
             }
         });
     }
+
+    /// Takes the final-check reminder out of the history once nothing will
+    /// answer it: its reply was the bare confirmation, was cancelled or
+    /// failed. Left in, it reaches the model glued to the next instruction,
+    /// and the model answers the reminder with the token instead.
+    fn drop_unanswered_final_check(&self) {
+        self.chat_state_handle.drop_unanswered_question(
+            super::reminders::wrap_in_reminder_tag(JEV_FINAL_CHECK_REMINDER, "system-reminder")
+                .text_content(),
+            FINAL_CHECK_NOTHING_OUTSTANDING.to_owned(),
+        );
+    }
 }
 
 /// The labels C1 and C3 recorded for a final check, as one id.
@@ -5095,6 +5110,7 @@ mod final_check_confirmation_turn_tests {
                     let server = MockInferenceServer::start().await.expect("mock server");
                     server.enqueue_response("/v1/responses", tool_call("call-1"));
                     server.enqueue_response("/v1/responses", text(FIRST_FINAL));
+                    let scripted = 2 + after_reminder.len();
                     for response in after_reminder {
                         server.enqueue_response("/v1/responses", response);
                     }
@@ -5130,6 +5146,11 @@ mod final_check_confirmation_turn_tests {
                     .expect("turn must finish within timeout");
                     crate::jev::clear_test_decision_answers();
                     assert!(outcome.is_ok(), "turn must not error: {outcome:?}");
+                    assert_eq!(
+                        server.request_count_for("/v1/responses"),
+                        scripted,
+                        "the final check must have fired and its replies been requested"
+                    );
                     let report = actor.chat_state_handle.get_trailing_assistant_report().await;
                     let conversation = actor.chat_state_handle.get_conversation().await;
                     let sent = STREAMED.with(|streamed| streamed.borrow().clone());
@@ -5152,11 +5173,17 @@ mod final_check_confirmation_turn_tests {
     }
 
     /// Nothing outstanding: the first final message is what the user and any
-    /// parent read, and the token never enters the history.
+    /// parent read, and the token never enters the history. The reminder
+    /// leaves it with its reply: kept, it would be the history's last word,
+    /// and whatever the turn or the user says next would reach the model
+    /// glued to an instruction to answer with the token.
     #[test]
     fn a_bare_token_keeps_the_first_final_message() {
         let (report, conversation) = run_turn(vec![text(FINAL_CHECK_NOTHING_OUTSTANDING)]);
-        assert!(reminder_sent(&conversation), "the final check must have fired");
+        assert!(
+            !reminder_sent(&conversation),
+            "the confirmed reminder must leave the history"
+        );
         assert_eq!(report.as_deref(), Some(FIRST_FINAL));
         assert!(!conversation.iter().any(|item| {
             matches!(item, ConversationItem::Assistant(_))
@@ -5300,6 +5327,148 @@ mod final_check_confirmation_turn_tests {
             .filter(|item| matches!(item, ConversationItem::ToolResult(_)))
             .count();
         assert_eq!(results, 2, "the second tool call ran");
+    }
+
+    const NEXT_PROMPT: &str = "and the changelog?";
+    const NEXT_ANSWER: &str = "The changelog is updated.";
+
+    /// How the session's last turn left the final-check reminder.
+    enum LastTurn {
+        /// The turn ran here and the model confirmed with the bare token.
+        Confirmed,
+        /// The history ends on the reminder: an older version kept it after
+        /// a confirmation, or its reply was cancelled or failed.
+        LeftUnanswered,
+    }
+
+    /// Sends [`NEXT_PROMPT`] to a session whose last turn asked the final
+    /// check. Returns every request body the model was sent and the text the
+    /// client was sent for the new prompt.
+    fn run_next_prompt(last_turn: LastTurn) -> (Vec<String>, String) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            // A debug-build turn future outgrows the usual 16 MiB test stack.
+            .stack_size(256 * 1024 * 1024)
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("test runtime");
+                tokio::task::LocalSet::new().block_on(&runtime, async move {
+                    let server = MockInferenceServer::start().await.expect("mock server");
+                    let actor = actor_for(&server).await;
+                    let prompt = |actor: Arc<SessionActor>, id: &'static str, text: &'static str| async move {
+                        let outcome = tokio::time::timeout(
+                            std::time::Duration::from_secs(60),
+                            actor.handle_prompt(
+                                id,
+                                vec![acp::ContentBlock::Text(acp::TextContent::new(
+                                    text.to_string(),
+                                ))],
+                                PromptMode::Agent,
+                                None,
+                                None,
+                                None,
+                                None,
+                                true,
+                                false,
+                                None,
+                                None,
+                                None,
+                            ),
+                        )
+                        .await
+                        .expect("turn must finish within timeout");
+                        assert!(outcome.is_ok(), "turn must not error: {outcome:?}");
+                    };
+                    match last_turn {
+                        LastTurn::Confirmed => {
+                            server.enqueue_response("/v1/responses", tool_call("call-1"));
+                            server.enqueue_response("/v1/responses", text(FIRST_FINAL));
+                            server.enqueue_response(
+                                "/v1/responses",
+                                text(FINAL_CHECK_NOTHING_OUTSTANDING),
+                            );
+                            final_check_finds_work_missing();
+                            prompt(actor.clone(), "last-turn", "mark the todo done").await;
+                            crate::jev::clear_test_decision_answers();
+                        }
+                        LastTurn::LeftUnanswered => {
+                            actor
+                                .chat_state_handle
+                                .push_user_message(ConversationItem::user("mark the todo done"));
+                            actor
+                                .chat_state_handle
+                                .push_assistant_response(ConversationItem::assistant(FIRST_FINAL));
+                            actor.push_system_reminder(JEV_FINAL_CHECK_REMINDER);
+                        }
+                    }
+                    STREAMED.with(|streamed| streamed.borrow_mut().clear());
+                    server.enqueue_response("/v1/responses", text(NEXT_ANSWER));
+                    prompt(actor.clone(), "next-prompt", NEXT_PROMPT).await;
+                    let streamed = STREAMED.with(|streamed| {
+                        streamed
+                            .borrow()
+                            .iter()
+                            .filter_map(|chunk| match chunk {
+                                Sent::Message(text) => Some(text.clone()),
+                                Sent::Thought(_) => None,
+                            })
+                            .collect::<String>()
+                    });
+                    let requests = server
+                        .request_bodies()
+                        .iter()
+                        .map(serde_json::Value::to_string)
+                        .collect();
+                    sender.send((requests, streamed)).expect("send result");
+                });
+            })
+            .expect("spawn test thread")
+            .join()
+            .expect("test thread");
+        receiver.recv().expect("turn result")
+    }
+
+    /// The request for [`NEXT_PROMPT`] must carry the earlier answer and the
+    /// prompt, and nothing that asks for the token.
+    fn assert_next_prompt_is_clean(requests: &[String], streamed: &str) {
+        let request = requests.last().expect("the next prompt was sampled");
+        assert!(
+            request.contains(NEXT_PROMPT) && request.contains(FIRST_FINAL),
+            "not the next prompt's request: {request}"
+        );
+        assert!(
+            !request.contains(FINAL_CHECK_NOTHING_OUTSTANDING),
+            "the model was asked for the token along with the user's prompt: {request}"
+        );
+        assert_eq!(streamed, NEXT_ANSWER);
+    }
+
+    /// A confirmed final check must not leak into the next prompt. With the
+    /// reminder still in the history the model reads it and the new prompt
+    /// as one message, answers the reminder, and the user gets the bare
+    /// token as the whole reply to what they asked.
+    #[test]
+    fn the_next_prompt_is_not_sent_a_confirmed_reminder() {
+        let (requests, streamed) = run_next_prompt(LastTurn::Confirmed);
+        assert_eq!(requests.len(), 4, "{requests:?}");
+        assert!(
+            requests[2].contains(FINAL_CHECK_NOTHING_OUTSTANDING),
+            "the final check must have fired in the last turn: {}",
+            requests[2]
+        );
+        assert_next_prompt_is_clean(&requests, &streamed);
+    }
+
+    /// Sessions written before the reminder was dropped on confirmation end
+    /// on it, and so does a turn whose final-check reply was cancelled or
+    /// failed. Their next prompt must not meet it either.
+    #[test]
+    fn the_next_prompt_is_not_sent_a_reminder_left_unanswered() {
+        let (requests, streamed) = run_next_prompt(LastTurn::LeftUnanswered);
+        assert_eq!(requests.len(), 1, "{requests:?}");
+        assert_next_prompt_is_clean(&requests, &streamed);
     }
 
     const SENTINEL: &str = "SENTINEL-c41b-user-text";

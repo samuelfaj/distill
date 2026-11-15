@@ -147,6 +147,55 @@ impl ChatStateActor {
         });
     }
 
+    /// Drop a harness question that nothing will answer any more: every user
+    /// item whose text is `question` after the last real assistant reply.
+    /// An assistant item that is only `bare_reply` is no real reply: it is
+    /// what the model says when the stale question reaches it with a later
+    /// instruction. A question answered with real work stays, with its answer.
+    /// Like the continue reminder, `IntegrityRepair` leaves token totals untouched.
+    pub(super) fn drop_unanswered_question(&mut self, question: &str, bare_reply: &str) {
+        let is_question = |item: &ConversationItem| {
+            matches!(
+                item,
+                ConversationItem::User(u)
+                    if u.synthetic_reason
+                        == distill_sampling_types::SyntheticReason::SystemReminder
+            ) && item.text_content() == question
+        };
+        let answered_until = self
+            .state
+            .conversation
+            .iter()
+            .rposition(|item| match item {
+                ConversationItem::Assistant(a) => {
+                    !a.tool_calls.is_empty() || a.content.trim() != bare_reply
+                }
+                _ => false,
+            })
+            .map_or(0, |index| index + 1);
+        if !self
+            .state
+            .conversation
+            .iter()
+            .skip(answered_until)
+            .any(is_question)
+        {
+            return;
+        }
+        self.rewrite_history(HistoryRewrite::IntegrityRepair, |conversation| {
+            let before = conversation.len();
+            let mut index = 0;
+            conversation.retain(|item| {
+                let keep = index < answered_until || !is_question(item);
+                index += 1;
+                keep
+            });
+            let dropped = before - conversation.len();
+            tracing::info!(dropped, "Dropped an unanswered harness question");
+            dropped
+        });
+    }
+
     /// Out-of-band history repair: run [`crate::compaction_utils::repair_history`] and persist.
     /// Unlike integrity repair, this also removes orphaned `ToolResult`s that brick sessions with 400s.
     /// `dry_run` only reports.

@@ -410,6 +410,12 @@ impl ChatStateActor {
             ChatStateCommand::PopStrandedContinueReminder => {
                 self.pop_stranded_continue_reminder();
             }
+            ChatStateCommand::DropUnansweredQuestion {
+                question,
+                bare_reply,
+            } => {
+                self.drop_unanswered_question(&question, &bare_reply);
+            }
 
             // Queries are pure reads — repair only at write boundaries
             // (`ChatState::new`, `push_user_message`).

@@ -286,6 +286,13 @@ pub enum ChatStateCommand {
     /// continuation), so the dead cue does not persist into later turns.
     PopStrandedContinueReminder,
 
+    /// Drop a harness question that nothing will answer any more
+    /// ([`crate::ChatStateHandle::drop_unanswered_question`]).
+    DropUnansweredQuestion {
+        question: String,
+        bare_reply: String,
+    },
+
     /// Build a ConversationRequest ready to send to the API.
     /// Clones, prunes old tool results, repairs dangling calls, injects the memory reminder.
     BuildConversationRequest {

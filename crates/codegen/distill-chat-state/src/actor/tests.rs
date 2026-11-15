@@ -3820,6 +3820,148 @@ async fn working_directory_switch_append_drops_stranded_continue_reminder() {
     );
 }
 
+/// A harness question and the one-word reply that confirms it, as the shell
+/// passes them to `drop_unanswered_question`.
+const QUESTION: &str = "<system-reminder>\nAnything left? If not, reply DONE.\n</system-reminder>";
+const BARE_REPLY: &str = "DONE";
+
+/// The text of every item, in order.
+async fn texts(h: &TestHarness) -> Vec<String> {
+    h.handle
+        .get_conversation()
+        .await
+        .iter()
+        .map(ConversationItem::text_content)
+        .collect()
+}
+
+/// The reply to the question was dropped (it was only the confirmation):
+/// the question must not stay as the history's last word, where the next
+/// prompt would land on it.
+#[tokio::test]
+async fn an_unanswered_question_is_dropped_and_the_drop_is_persisted() {
+    let mut h = TestHarness::new();
+    h.handle.push_user_message(ConversationItem::user("q"));
+    h.handle
+        .push_assistant_response(ConversationItem::assistant("the answer"));
+    h.handle
+        .push_user_message(ConversationItem::system_reminder(QUESTION));
+    // A query first, so the pushes above are persisted before the drain.
+    assert_eq!(texts(&h).await.len(), 3);
+    h.drain_persistence();
+
+    h.handle
+        .drop_unanswered_question(QUESTION.to_owned(), BARE_REPLY.to_owned());
+
+    assert_eq!(texts(&h).await, ["q", "the answer"]);
+    assert!(
+        matches!(
+            h.drain_persistence().as_slice(),
+            [PersistenceRecord::ReplaceHistory(_)]
+        ),
+        "a resumed session must not get the question back"
+    );
+}
+
+/// A session an older version left with the question at its end, or whose
+/// reply was cancelled: the next prompt is already behind the question when
+/// the turn starts. The model reads the two as one message and answers the
+/// question, so it goes and the prompt stays.
+#[tokio::test]
+async fn an_unanswered_question_is_dropped_from_before_the_next_prompt() {
+    let h = TestHarness::new();
+    h.handle.push_user_message(ConversationItem::user("q"));
+    h.handle
+        .push_assistant_response(ConversationItem::assistant("the answer"));
+    h.handle
+        .push_user_message(ConversationItem::system_reminder(QUESTION));
+    h.handle.push_user_message(ConversationItem::user("next q"));
+
+    h.handle
+        .drop_unanswered_question(QUESTION.to_owned(), BARE_REPLY.to_owned());
+
+    assert_eq!(texts(&h).await, ["q", "the answer", "next q"]);
+}
+
+/// A question the model answered with real work is part of the record: the
+/// answer would make no sense without it, and removing it would re-bill
+/// everything after it.
+#[tokio::test]
+async fn a_question_answered_with_real_work_stays() {
+    let mut h = TestHarness::new();
+    h.handle.push_user_message(ConversationItem::user("q"));
+    h.handle
+        .push_assistant_response(ConversationItem::assistant("the answer"));
+    h.handle
+        .push_user_message(ConversationItem::system_reminder(QUESTION));
+    h.handle
+        .push_assistant_response(ConversationItem::assistant("One test was missing; added."));
+    h.handle.push_user_message(ConversationItem::user("next q"));
+    // A query first, so the pushes above are persisted before the drain.
+    assert_eq!(texts(&h).await.len(), 5);
+    h.drain_persistence();
+
+    h.handle
+        .drop_unanswered_question(QUESTION.to_owned(), BARE_REPLY.to_owned());
+
+    assert_eq!(
+        texts(&h).await,
+        [
+            "q",
+            "the answer",
+            QUESTION,
+            "One test was missing; added.",
+            "next q"
+        ]
+    );
+    assert!(
+        h.drain_persistence().is_empty(),
+        "nothing to drop must not rewrite the history"
+    );
+}
+
+/// The model already answered a later prompt with the bare confirmation,
+/// because the stale question came with it. That reply answers nothing, so
+/// the question is still unanswered and must go before the next prompt meets
+/// it too. What the model said is never removed.
+#[tokio::test]
+async fn a_bare_reply_does_not_count_as_an_answer() {
+    let h = TestHarness::new();
+    h.handle.push_user_message(ConversationItem::user("q"));
+    h.handle
+        .push_assistant_response(ConversationItem::assistant("the answer"));
+    h.handle
+        .push_user_message(ConversationItem::system_reminder(QUESTION));
+    h.handle.push_user_message(ConversationItem::user("next q"));
+    h.handle
+        .push_assistant_response(ConversationItem::assistant(BARE_REPLY));
+    h.handle.push_user_message(ConversationItem::user("third q"));
+
+    h.handle
+        .drop_unanswered_question(QUESTION.to_owned(), BARE_REPLY.to_owned());
+
+    assert_eq!(
+        texts(&h).await,
+        ["q", "the answer", "next q", BARE_REPLY, "third q"]
+    );
+}
+
+/// Only the harness's own reminder is dropped: a person who types the same
+/// words keeps their message.
+#[tokio::test]
+async fn a_human_message_with_the_questions_text_stays() {
+    let h = TestHarness::new();
+    h.handle.push_user_message(ConversationItem::user("q"));
+    h.handle
+        .push_assistant_response(ConversationItem::assistant("the answer"));
+    h.handle.push_user_message(ConversationItem::user(QUESTION));
+
+    h.handle
+        .drop_unanswered_question(QUESTION.to_owned(), BARE_REPLY.to_owned());
+
+    assert_eq!(texts(&h).await, ["q", "the answer", QUESTION]);
+}
+
 #[tokio::test]
 async fn get_trailing_assistant_report_joins_later_reminderless_segments() {
     let h = TestHarness::new();

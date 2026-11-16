@@ -2074,6 +2074,25 @@ fn stream_start_breaks_agent_msg_across_streams() {
     };
     assert_ne!(sb.get(*i0).unwrap().id, sb.get(*i1).unwrap().id,);
 }
+/// The shell sends a text reply to its final check as the next paragraph of the answer: a blank chunk, then the text.
+/// The reply is a response of its own, so here it opens a new entry, and the break must not become blank lines at its top.
+#[test]
+fn a_paragraph_break_that_opens_a_response_adds_no_blank_lines() {
+    let mut sb = ScrollbackState::new();
+    let mut tracker = AcpUpdateTracker::new();
+    let answer = meta_stream(1000);
+    let reply = meta_stream(2000);
+    tracker.handle_update(agent_chunk("The count is 10."), &answer, &mut sb);
+    tracker.handle_update(agent_chunk("\n\n"), &reply, &mut sb);
+    tracker.handle_update(agent_chunk("It is 12, not 10."), &reply, &mut sb);
+    let messages: Vec<String> = (0..sb.len())
+        .filter_map(|i| match &sb.get(i).unwrap().block {
+            RenderBlock::AgentMessage(message) => Some(message.text()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(messages, ["The count is 10.", "It is 12, not 10."]);
+}
 /// Same stream_start_ms should NOT break messages: chunks append normally.
 #[test]
 fn same_stream_start_appends_normally() {

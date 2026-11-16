@@ -3751,15 +3751,17 @@ impl SessionActor {
                     .await;
             }
             record_response_span.close();
-            // A real reply gets back what was held, reasoning first; a bare
-            // confirmation leaves nothing between the earlier final message
-            // and what the harness appends to it.
+            // A real reply gets back what was held: its text as the next
+            // paragraph of the earlier final message, or its reasoning when it
+            // only calls tools. A bare confirmation leaves nothing between the
+            // earlier final message and what the harness appends to it.
             if !final_check_confirmed && let Some(held) = held_final_check {
-                Box::pin(self.send_held_reasoning(held.reasoning)).await;
-                if !held.text.is_empty() {
+                let (reasoning, chunks) = held.released();
+                Box::pin(self.send_held_reasoning(reasoning)).await;
+                for text in chunks {
                     self.send_update(
                         acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(
-                            acp::ContentBlock::Text(acp::TextContent::new(held.text)),
+                            acp::ContentBlock::Text(acp::TextContent::new(text)),
                         )),
                         None,
                     )
@@ -5255,26 +5257,40 @@ mod final_check_confirmation_turn_tests {
         );
     }
 
-    /// A real reply to the reminder loses none of its reasoning: it reaches
-    /// the client ahead of the reply's text, as the model produced it.
+    /// A reply that adds text to the answer must reach the client inside the
+    /// answer's own message, in every mode. A client shows a turn's last
+    /// message as its reply and closes a message at a thought: sent as a
+    /// thought and then a message of its own, the addition was all the user
+    /// saw, and the answer it corrected was hidden with the turn's work.
     #[test]
-    fn a_real_replys_reasoning_is_sent_before_its_text() {
+    fn a_text_reply_continues_the_answers_own_message() {
         let reply = "The lint warning is gone too.";
-        let (_, _, sent) = run_turn_sent(
-            distill_tool_types::ExecutionMode::Normal,
-            vec![reasoning_then_text(CHECK_REASONING, reply)],
-        );
-        let groups = grouped(sent);
-        let tail: Vec<Sent> = groups.into_iter().rev().take(3).rev().collect();
-        assert_eq!(
-            tail,
-            vec![
-                Sent::Message(FIRST_FINAL.to_owned()),
-                // The script streams reasoning and text a word at a time, each with a trailing space.
-                Sent::Thought(format!("{CHECK_REASONING} ")),
-                Sent::Message(format!("{reply} ")),
-            ]
-        );
+        for mode in distill_tool_types::ExecutionMode::ALL {
+            let (_, conversation, sent) =
+                run_turn_sent(mode, vec![reasoning_then_text(CHECK_REASONING, reply)]);
+            let groups = grouped(sent);
+            let Some(Sent::Message(last)) = groups.last() else {
+                panic!("{mode:?}: the turn must end on a message: {groups:?}");
+            };
+            // The script streams reasoning and text a word at a time, each
+            // with a trailing space. UltraCode appends its status line.
+            assert!(
+                last.starts_with(&format!("{FIRST_FINAL}\n\n{reply} ")),
+                "{mode:?}: the reply must be the answer's next paragraph: {groups:?}"
+            );
+            assert!(
+                !groups.contains(&Sent::Thought(format!("{CHECK_REASONING} "))),
+                "{mode:?}: a thought split the answer from the reply: {groups:?}"
+            );
+            assert!(
+                reminder_sent(&conversation)
+                    && conversation.iter().any(|item| {
+                        matches!(item, ConversationItem::Assistant(_))
+                            && item.text_content().trim() == reply
+                    }),
+                "{mode:?}: the history keeps the reminder and the reply as the model wrote it"
+            );
+        }
     }
 
     /// A reply that calls a tool is a real reply too: its reasoning is sent
@@ -5310,8 +5326,8 @@ mod final_check_confirmation_turn_tests {
         assert_eq!(report.as_deref(), Some(reply));
         assert_eq!(
             streamed,
-            format!("{FIRST_FINAL}{reply}"),
-            "nothing is lost or reordered"
+            format!("{FIRST_FINAL}\n\n{reply}"),
+            "the reply follows the answer as its next paragraph; nothing is lost or reordered"
         );
     }
 

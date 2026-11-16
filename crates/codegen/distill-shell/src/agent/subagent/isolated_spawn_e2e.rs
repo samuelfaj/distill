@@ -79,6 +79,7 @@ fn spawn_ctx(parent_cwd: PathBuf) -> SubagentSpawnContext {
         video_gen_config: Default::default(),
         app_builder_deployer_config: Default::default(),
         write_file_enabled: true,
+        code_mode_enabled: false,
         active_agent_messages_enabled: false,
         goal_enabled: false,
         background_workflows_enabled: false,

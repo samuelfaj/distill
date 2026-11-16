@@ -275,6 +275,7 @@ pub(crate) struct SubagentSpawnContext {
     pub app_builder_deployer_config:
         distill_tools::implementations::distill::app_builder::AppBuilderDeployerConfig,
     pub write_file_enabled: bool,
+    pub code_mode_enabled: bool,
     pub active_agent_messages_enabled: bool,
     /// Whether goal mode (`/goal`) is enabled.
     pub goal_enabled: bool,

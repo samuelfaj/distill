@@ -116,6 +116,9 @@ pub(crate) struct AgentRebuildSpec {
     pub app_builder_deployer_config: AppBuilderDeployerConfig,
     pub media_gen_batch_limits: distill_tools::media_gen_limits::MediaGenBatchLimits,
     pub write_file_enabled: bool,
+    /// Where Code Mode scripts send their tool calls; `Some` turns Code Mode on for the session.
+    /// The session actor owns the receiving half, so a rebuild reuses this sender like the other channels above.
+    pub script_tool_call_tx: Option<UnboundedSender<distill_tools::implementations::distill::code_mode::ScriptToolCall>>,
     pub active_agent_messages_enabled: bool,
     pub subagents_enabled: bool,
     pub subagent_toggle: HashMap<String, bool>,
@@ -242,6 +245,7 @@ impl AgentRebuildSpec {
             app_builder_deployer_config,
             media_gen_batch_limits: _,
             write_file_enabled,
+            script_tool_call_tx,
             active_agent_messages_enabled,
             subagents_enabled,
             subagent_toggle,
@@ -341,6 +345,7 @@ impl AgentRebuildSpec {
         .with_app_builder_deployer_config(app_builder_deployer_config.clone())
         .with_web_fetch_config(web_fetch_config.clone())
         .with_write_file_enabled(*write_file_enabled)
+        .with_code_mode_enabled(script_tool_call_tx.is_some())
         .with_active_agent_messages_enabled(active_agent_messages_enabled)
         .with_fs(fs_backend.clone())
         .with_subagents_enabled(*subagents_enabled)
@@ -506,6 +511,9 @@ impl AgentRebuildSpec {
                     use distill_tools::implementations::distill::ask_user_question::UserQuestionSender;
                     resources.insert(UserQuestionSender(user_question_tx.clone()));
                 }
+                if let Some(tx) = script_tool_call_tx.clone() {
+                    resources.insert(distill_tools::implementations::distill::code_mode::ScriptToolCallSender(tx));
+                }
             })
             .await;
         Ok((agent, agent_build_elapsed))
@@ -544,6 +552,7 @@ pub(crate) fn test_rebuild_spec_default() -> Arc<AgentRebuildSpec> {
         app_builder_deployer_config: AppBuilderDeployerConfig::default(),
         media_gen_batch_limits: distill_tools::media_gen_limits::MediaGenBatchLimits::default(),
         write_file_enabled: true,
+        script_tool_call_tx: None,
         active_agent_messages_enabled: false,
         subagents_enabled: false,
         subagent_toggle: HashMap::new(),

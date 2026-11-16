@@ -36,7 +36,7 @@
   ],
   "definitions": {
     "ToolKind": {
-      "description": "Categorizes what a tool does at a high level. Open set — consumers must tolerate unknown values (Rust deserializes them to `other` via `#[serde(other)]`). Known values: `read`, `edit`, `delete`, `list_dir`, `write`, `move`, `search`, `lsp`, `execute`, `plan`, `web_search`, `web_fetch`, `background_task_action`, `wait_tasks_action`, `kill_task_action`, `list`, `skill`, `memory_search`, `memory_get`, `task`, `active_agent_message`, `enter_plan`, `exit_plan`, `ask_user`, `image_gen`, `video_gen`, `image_to_video`, `reference_to_video`, `deploy_app`, `init_or_update_app`, `search_tool`, `use_tool`, `monitor`, `goal_update`, `workflow`, `feedback`, `other`.",
+      "description": "Categorizes what a tool does at a high level. Open set — consumers must tolerate unknown values (Rust deserializes them to `other` via `#[serde(other)]`). Known values: `read`, `edit`, `delete`, `list_dir`, `write`, `move`, `search`, `lsp`, `execute`, `plan`, `web_search`, `web_fetch`, `background_task_action`, `wait_tasks_action`, `kill_task_action`, `list`, `skill`, `memory_search`, `memory_get`, `task`, `active_agent_message`, `enter_plan`, `exit_plan`, `ask_user`, `image_gen`, `video_gen`, `image_to_video`, `reference_to_video`, `deploy_app`, `init_or_update_app`, `search_tool`, `use_tool`, `monitor`, `goal_update`, `workflow`, `feedback`, `code`, `other`.",
       "type": "string"
     },
     "ToolNamespace": {

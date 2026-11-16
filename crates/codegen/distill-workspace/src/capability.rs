@@ -97,6 +97,7 @@ pub(crate) const ALL_TOOL_KINDS: &[ToolKind] = &[
     ToolKind::GoalUpdate,
     ToolKind::Workflow,
     ToolKind::Feedback,
+    ToolKind::Code,
     ToolKind::Other,
 ];
 
@@ -144,6 +145,10 @@ pub(crate) fn kind_allowed(mode: CapabilityMode, kind: ToolKind) -> bool {
 
         // Integration dispatch.
         UseTool => matches!(mode, M::ReadWrite | M::Execute),
+
+        // Code Mode runs its script's tool calls through the session that hosts it, and a
+        // capability-filtered workspace session hosts none: only `All` mode keeps it.
+        Code => false,
 
         // Catch-all: only `All` mode keeps it (early-return above)
         Other => false,

@@ -856,6 +856,20 @@ mod tests {
             "Write should produce AccessKind::Edit with the file path, got {access:?}"
         );
     }
+    /// A Code Mode script is inert on its own (the engine has no file, process or network access), and each tool
+    /// call it makes is gated as its own request. Prompting for the script too would ask the user to approve
+    /// source text instead of the actions it takes, however much shell or path text that source contains.
+    #[test]
+    fn a_code_mode_script_is_not_itself_a_gated_action() {
+        use distill_tools::implementations::distill::code_mode::CodeInput;
+        use distill_tools::types::ToolInput;
+        let script = ToolInput::from(CodeInput {
+            code: "await tools.bash({ command: 'rm -rf build' }); return { path: '/etc/passwd' };"
+                .into(),
+            description: Some("rm -rf build, then read /etc/passwd".into()),
+        });
+        assert!(matches!(AccessKind::from(&script), AccessKind::Read(None)));
+    }
     #[test]
     fn write_scoped_and_dynamic_inputs_map_to_edit_not_read() {
         use distill_tools::implementations::opencode::edit::EditInput;

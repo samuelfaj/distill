@@ -5,6 +5,8 @@ use super::*;
 use distill_hooks::result::HookDecision;
 use futures::StreamExt;
 use tracing::Instrument;
+#[path = "script_tool_calls.rs"]
+pub(super) mod script_tool_calls;
 #[path = "wait_interrupt.rs"]
 mod wait_interrupt;
 use wait_interrupt::{
@@ -415,25 +417,40 @@ impl SessionActor {
         let tool_calls = self.reject_excess_media_gen_calls(tool_calls).await?;
         let tool_calls = self.reject_deferred_tool_calls(tool_calls).await?;
         if !tool_calls.is_empty() {
-            if tool_calls.len() > 1 {
-                let kind_of = |name: &str| self.agent.borrow().tool_bridge().tool_kind(name);
-                let (body, tail) = split_exit_plan_tail(tool_calls, kind_of);
-                if !body.is_empty() {
-                    self.execute_tool_calls_batch(body, &mut deferred_followups, &mut final_result)
+            // A Code Mode script among these calls makes tool calls of its own while it runs.
+            self.serve_script_tool_calls(Box::pin(async {
+                if tool_calls.len() > 1 {
+                    let kind_of = |name: &str| self.agent.borrow().tool_bridge().tool_kind(name);
+                    let (body, tail) = split_exit_plan_tail(tool_calls, kind_of);
+                    if !body.is_empty() {
+                        self.execute_tool_calls_batch(
+                            body,
+                            &mut deferred_followups,
+                            &mut final_result,
+                        )
                         .await?;
-                }
-                if !tail.is_empty() {
-                    self.execute_tool_calls_batch(tail, &mut deferred_followups, &mut final_result)
+                    }
+                    if !tail.is_empty() {
+                        self.execute_tool_calls_batch(
+                            tail,
+                            &mut deferred_followups,
+                            &mut final_result,
+                        )
                         .await?;
+                    }
+                } else {
+                    self.execute_tool_calls_batch(
+                        tool_calls,
+                        &mut deferred_followups,
+                        &mut final_result,
+                    )
+                    .await?;
                 }
-            } else {
-                self.execute_tool_calls_batch(
-                    tool_calls,
-                    &mut deferred_followups,
-                    &mut final_result,
-                )
-                .await?;
-            }
+                Ok::<(), acp::Error>(())
+            }))
+            .await?;
+            self.script_calls
+                .drain_into(&mut deferred_followups, &mut final_result);
         }
         {
             let _span = if !deferred_followups.is_empty() {
@@ -635,8 +652,7 @@ impl SessionActor {
                         format!("Tool execution cancelled for tool `{}`", call.function.name)
                     }
                 };
-                self.chat_state_handle
-                    .push_tool_result(ConversationItem::tool_result(call.id.clone(), message));
+                self.push_tool_result(ConversationItem::tool_result(call.id.clone(), message), true);
                 continue;
             }
             self.emit_event(crate::session::events::Event::ToolStarted {
@@ -1949,7 +1965,7 @@ impl SessionActor {
                         self.send_update(acp::SessionUpdate::ToolCallUpdate(tool_update), None)
                             .await;
                         let tool_chat = ConversationItem::tool_result(call.id.clone(), message);
-                        self.chat_state_handle.push_tool_result(tool_chat);
+                        self.push_tool_result(tool_chat, true);
                         return Ok(Err(ToolLoop::Continue));
                     }
                     PlanApprovalOutcome::Cancelled => {
@@ -1971,7 +1987,7 @@ impl SessionActor {
                         self.send_update(acp::SessionUpdate::ToolCallUpdate(tool_update), None)
                             .await;
                         let tool_chat = ConversationItem::tool_result(call.id.clone(), message);
-                        self.chat_state_handle.push_tool_result(tool_chat);
+                        self.push_tool_result(tool_chat, true);
                         return Ok(Err(ToolLoop::Continue));
                     }
                     PlanApprovalOutcome::Approved => {
@@ -2394,6 +2410,17 @@ impl SessionActor {
                     vec![],
                 )
             }
+            ToolInput::Dynamic(ref input)
+                if self.agent.borrow().tool_bridge().tool_kind(wire_name)
+                    == Some(distill_tools::types::tool::ToolKind::Code) =>
+            {
+                (
+                    script_tool_calls::script_call_title(input),
+                    acp::ToolKind::Other,
+                    vec![],
+                    vec![],
+                )
+            }
             ToolInput::Dynamic(_) => (
                 "Dynamic tool call".to_string(),
                 acp::ToolKind::Other,
@@ -2716,7 +2743,7 @@ impl SessionActor {
         )
         .await;
         let tool_chat = ConversationItem::tool_result(call_id.to_string(), message);
-        self.chat_state_handle.push_tool_result(tool_chat);
+        self.push_tool_result(tool_chat, true);
         Ok(())
     }
     /// Queued auto-wake synthetic prompts for a task/subagent the model already learned about are dropped before they get flushed to chat history.
@@ -3011,6 +3038,12 @@ impl SessionActor {
             appended_notices.as_deref(),
         ) {
             None => prompt_text,
+            // A script filters and parses what it reads, so it gets the tool's own text as the tool wrote it. The
+            // harness notices are for the model and reach it after the script's result.
+            Some((body, notices)) if self.script_calls.is_script_call(call_id) => {
+                self.script_calls.keep_notices(notices);
+                body
+            }
             // A hook chose this text: only a large one is narrowed, by the
             // utility alone.
             Some((body, notices)) if matches!(effective_tool_name, "jev_decide" | "ask_stored_output") => format!("{body}{notices}"),
@@ -3063,7 +3096,7 @@ impl SessionActor {
                 inline_images,
             )
         };
-        self.chat_state_handle.push_tool_result(tool_chat);
+        self.push_tool_result(tool_chat, result.output.is_error());
         let mut deferred_followups = Vec::new();
         if !extracted_images.is_empty() {
             let count = extracted_images.len();
@@ -3251,7 +3284,7 @@ impl SessionActor {
         )
         .await;
         let tool_chat = ConversationItem::tool_result(call_id.to_string(), message);
-        self.chat_state_handle.push_tool_result(tool_chat);
+        self.push_tool_result(tool_chat, true);
         vec![]
     }
     /// Model-facing rejection for a non-plan-file edit while plan mode is active.
@@ -3289,7 +3322,7 @@ impl SessionActor {
         self.send_update(acp::SessionUpdate::ToolCallUpdate(tool_update), None)
             .await;
         let tool_chat = ConversationItem::tool_result(model_call_id.to_owned(), reason);
-        self.chat_state_handle.push_tool_result(tool_chat);
+        self.push_tool_result(tool_chat, true);
         Ok(())
     }
 }

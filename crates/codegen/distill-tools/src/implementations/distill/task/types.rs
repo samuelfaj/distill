@@ -370,6 +370,7 @@ impl SubagentCapabilityModeExt for SubagentCapabilityMode {
     }
 
     /// Return the set of `ToolKind`s allowed under this capability mode.
+    /// `Code` is in every mode: a script reaches only the tools its own session kept, so it adds no capability.
     fn allowed_tool_kinds(self) -> &'static [crate::types::tool::ToolKind] {
         use crate::types::tool::ToolKind;
         match self {
@@ -391,6 +392,7 @@ impl SubagentCapabilityModeExt for SubagentCapabilityMode {
                 ToolKind::ExitPlan,
                 ToolKind::AskUser,
                 ToolKind::Skill,
+                ToolKind::Code,
             ],
             Self::ReadWrite => &[
                 ToolKind::Read,
@@ -420,6 +422,7 @@ impl SubagentCapabilityModeExt for SubagentCapabilityMode {
                 ToolKind::ExitPlan,
                 ToolKind::AskUser,
                 ToolKind::Skill,
+                ToolKind::Code,
             ],
             Self::Execute => &[
                 ToolKind::Read,
@@ -441,6 +444,7 @@ impl SubagentCapabilityModeExt for SubagentCapabilityMode {
                 ToolKind::ExitPlan,
                 ToolKind::AskUser,
                 ToolKind::Skill,
+                ToolKind::Code,
             ],
             Self::All => &[
                 ToolKind::Read,
@@ -470,6 +474,7 @@ impl SubagentCapabilityModeExt for SubagentCapabilityMode {
                 ToolKind::ExitPlan,
                 ToolKind::AskUser,
                 ToolKind::Skill,
+                ToolKind::Code,
             ],
         }
     }

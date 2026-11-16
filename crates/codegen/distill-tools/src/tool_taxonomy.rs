@@ -71,6 +71,7 @@ impl ToolKind {
             ToolKind::GoalUpdate => "Update Goal",
             ToolKind::Workflow => "Workflow",
             ToolKind::Feedback => "Feedback",
+            ToolKind::Code => "Code",
             ToolKind::Other => "Tool",
         }
     }
@@ -115,6 +116,7 @@ impl ToolKind {
             | ToolKind::GoalUpdate
             | ToolKind::Workflow
             | ToolKind::Feedback
+            | ToolKind::Code
             | ToolKind::Other => false,
         }
     }

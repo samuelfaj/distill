@@ -18,6 +18,7 @@ educe = { workspace = true, features = ["Debug"] }
 async-openai = { workspace = true }
 distill-tty-utils = { workspace = true }
 distill-auth = { workspace = true }
+distill-code-mode = { path = "../distill-code-mode" }
 distill-config = { path = "../distill-config" }
 distill-extra-ca = { workspace = true }
 distill-feedback = { workspace = true }

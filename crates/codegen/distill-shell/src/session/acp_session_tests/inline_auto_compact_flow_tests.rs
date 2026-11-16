@@ -213,6 +213,7 @@ async fn create_test_actor(
         background_workflows_enabled: false,
         goal_harness_enabled: std::sync::atomic::AtomicBool::new(false),
         goal_harness_availability_reconciled: std::sync::atomic::AtomicBool::new(false),
+        script_calls: Default::default(),
         goal_tracker: Arc::new(parking_lot::Mutex::new(
             crate::session::goal_tracker::GoalTracker::new(std::path::PathBuf::from(
                 "/tmp/test-session",
@@ -666,6 +667,7 @@ async fn create_test_actor_with_memory(
         background_workflows_enabled: false,
         goal_harness_enabled: std::sync::atomic::AtomicBool::new(false),
         goal_harness_availability_reconciled: std::sync::atomic::AtomicBool::new(false),
+        script_calls: Default::default(),
         goal_tracker: Arc::new(parking_lot::Mutex::new(
             crate::session::goal_tracker::GoalTracker::new(std::path::PathBuf::from(
                 "/tmp/test-session",

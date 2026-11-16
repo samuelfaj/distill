@@ -54,6 +54,9 @@ pub enum Feature {
     /// The Jev (TypeSafe System One) decision path. Default OFF (plan §1.6/I-1);
     /// no remote tier, because enabling egress is a deliberate local decision.
     Jev,
+    /// Code Mode: the `code` tool, where the model writes JavaScript that calls its other tools.
+    /// Experimental and on by default; managed, environment and local settings can disable it.
+    CodeMode,
 }
 
 /// How one feature is written on each surface it can be set from.
@@ -263,6 +266,14 @@ pub const FEATURES: &[FeatureSpec] = &[
         env: "GROK_TERMINAL_THEME",
         default_enabled: false,
         remote: Some(|settings| settings.terminal_theme_enabled),
+    },
+    FeatureSpec {
+        id: Feature::CodeMode,
+        key: "code_mode",
+        path: "features.code_mode",
+        env: "GROK_CODE_MODE",
+        default_enabled: true,
+        remote: None,
     },
 ];
 

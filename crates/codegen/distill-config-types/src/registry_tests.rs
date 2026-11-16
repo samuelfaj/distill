@@ -78,6 +78,7 @@ fn registered_settings() {
             ),
             ("dock", ("GROK_DOCK", false)),
             ("terminal_theme", ("GROK_TERMINAL_THEME", false)),
+            ("code_mode", ("GROK_CODE_MODE", true)),
         ]),
     );
 }
@@ -115,6 +116,11 @@ fn every_registered_feature_reads_its_own_remote_setting() {
             // No remote tier either: turning third-party decision egress on is a
             // deliberate local (managed/env/user) decision, never a rollout.
             Feature::Jev => {
+                assert!(spec.remote.is_none(), "{} grew a remote tier", spec.key);
+                continue;
+            }
+            // Code Mode remains controlled by managed, environment and local settings, not remote rollout.
+            Feature::CodeMode => {
                 assert!(spec.remote.is_none(), "{} grew a remote tier", spec.key);
                 continue;
             }
@@ -181,6 +187,38 @@ fn pin_outranks_env_outranks_config_outranks_remote_outranks_default() {
     let fallback = Feature::SessionSearch.resolve(FeatureSources::default());
     assert!(fallback.value);
     assert_eq!(fallback.source, ConfigSource::Default);
+}
+
+#[test]
+fn code_mode_defaults_on_and_respects_explicit_opt_outs() {
+    assert!(Feature::CodeMode.resolve(FeatureSources::default()).value);
+    assert!(
+        !Feature::CodeMode
+            .resolve(FeatureSources {
+                config: Some(false),
+                ..Default::default()
+            })
+            .value
+    );
+    assert!(
+        !Feature::CodeMode
+            .resolve(FeatureSources {
+                env: Some(false),
+                config: Some(true),
+                ..Default::default()
+            })
+            .value
+    );
+    assert!(
+        !Feature::CodeMode
+            .resolve(FeatureSources {
+                pin: Some(false),
+                env: Some(true),
+                config: Some(true),
+                ..Default::default()
+            })
+            .value
+    );
 }
 
 #[test]

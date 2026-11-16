@@ -261,6 +261,7 @@ pub(crate) async fn spawn_session_actor(
     video_gen_config: distill_tools::implementations::distill::video_gen::VideoGenConfig,
     app_builder_deployer_config: distill_tools::implementations::distill::app_builder::AppBuilderDeployerConfig,
     write_file_enabled: bool,
+    code_mode_enabled: bool,
     active_agent_messages_enabled: bool,
     agent_message_sender: Option<
         distill_tools::implementations::distill::task::types::AgentMessageSender,
@@ -842,6 +843,12 @@ pub(crate) async fn spawn_session_actor(
         two_pass_enabled,
     };
     let reminder_policy = resolve_reminder_policy(remote_settings.as_ref(), todo_gate);
+    let (script_tool_call_tx, script_tool_call_rx) = if code_mode_enabled {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
     let (user_question_tx, user_question_rx) = tokio::sync::mpsc::unbounded_channel::<
         distill_tools::implementations::distill::ask_user_question::types::UserQuestionRequest,
     >();
@@ -1204,6 +1211,7 @@ pub(crate) async fn spawn_session_actor(
         app_builder_deployer_config: app_builder_deployer_config.clone(),
         media_gen_batch_limits,
         write_file_enabled,
+        script_tool_call_tx,
         active_agent_messages_enabled,
         agent_message_sender,
         subagents_enabled,
@@ -2032,6 +2040,7 @@ pub(crate) async fn spawn_session_actor(
         plan_mode: plan_mode.clone(),
         goal_enabled,
         background_workflows_enabled,
+        script_calls: tool_calls::script_tool_calls::ScriptCalls::new(script_tool_call_rx),
         goal_harness_enabled: std::sync::atomic::AtomicBool::new(if background_workflows_enabled {
             goal_enabled
         } else {
@@ -2671,6 +2680,7 @@ pub(crate) async fn spawn_session_on_thread(
     video_gen_config: distill_tools::implementations::distill::video_gen::VideoGenConfig,
     app_builder_deployer_config: distill_tools::implementations::distill::app_builder::AppBuilderDeployerConfig,
     write_file_enabled: bool,
+    code_mode_enabled: bool,
     active_agent_messages_enabled: bool,
     agent_message_sender: Option<
         distill_tools::implementations::distill::task::types::AgentMessageSender,
@@ -2887,6 +2897,7 @@ pub(crate) async fn spawn_session_on_thread(
                     video_gen_config,
                     app_builder_deployer_config,
                     write_file_enabled,
+                    code_mode_enabled,
                     active_agent_messages_enabled,
                     agent_message_sender,
                     goal_enabled,

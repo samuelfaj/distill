@@ -15,9 +15,11 @@ const CLASSIFIER_REQUEST_TOKEN_RESERVE: u64 = 16_384;
 /// Tools UltraFast and UltraSave offer: direct inspection, editing, shell access
 /// and MCP lookup. Everything else is a whole-round detour from the objective.
 /// The scheduler tools stay: `/loop` and its fires (which end the loop with
-/// `scheduler_delete`) have no other way to run.
+/// `scheduler_delete`) have no other way to run. `code` exists only with Code
+/// Mode on, where it folds several of these tools' rounds into one.
 pub(crate) const EXECUTION_MODE_TOOLS: &[&str] = &[
     "ask_stored_output",
+    "code",
     "get_command_or_subagent_output",
     "grep",
     "kill_command_or_subagent",

@@ -10,7 +10,10 @@ use distill_tools::types::tool::ToolKind;
 use tracing::Instrument;
 static TURNS_ACTIVE: distill_telemetry::activity::ActivityGauge =
     distill_telemetry::activity::ActivityGauge::work(distill_telemetry::activity::TURNS_ACTIVE_KEY);
-pub(super) const JEV_FINAL_CHECK_REMINDER: &str = "Review the user request and current evidence. Complete any clearly outstanding requested work or proof, or explain the blocker. This reminder is advisory; do not claim work that was not done. If nothing is outstanding, reply with exactly NOTHING_OUTSTANDING and nothing else: your previous message then stays the final answer.";
+pub(super) const JEV_FINAL_CHECK_REMINDER: &str = "Review the user request and current evidence. Complete any clearly outstanding requested work or proof, or explain the blocker. This reminder is advisory; do not claim work that was not done. If nothing is outstanding, reply with exactly NOTHING_OUTSTANDING and nothing else: your previous message then stays the final answer. If you do more work, your previous message still stays in front of the user and your next one is shown right below it: write only what changed, and do not repeat what it already says.";
+/// The reminder as sent up to 2.0.77. A session an older version left with it
+/// unanswered still has to lose it before the next input.
+const JEV_FINAL_CHECK_REMINDER_UNTIL_2_0_77: &str = "Review the user request and current evidence. Complete any clearly outstanding requested work or proof, or explain the blocker. This reminder is advisory; do not claim work that was not done. If nothing is outstanding, reply with exactly NOTHING_OUTSTANDING and nothing else: your previous message then stays the final answer.";
 /// The whole reply that confirms the final check found nothing outstanding;
 /// [`JEV_FINAL_CHECK_REMINDER`] offers it.
 pub(super) const FINAL_CHECK_NOTHING_OUTSTANDING: &str = "NOTHING_OUTSTANDING";
@@ -2863,6 +2866,9 @@ impl SessionActor {
         // Set when the final-check reminder was just sent: the next reply may
         // be the bare confirmation token.
         let mut final_check_reply_pending = false;
+        // Set while the reply to the reminder is back at work: the response
+        // that ends that work may be the bare confirmation token too.
+        let mut final_check_work_pending = false;
         let mut length_salvage_streak = LengthSalvageStreak::default();
         let mut auth_retry_schedule = AuthRetrySchedule::new();
         let mut rate_limit_waits = self.rate_limit_wait_budget(
@@ -3754,7 +3760,8 @@ impl SessionActor {
             // A bare confirmation after the final-check reminder is dropped,
             // so the earlier final message stays the turn's last word.
             let final_check_reply = std::mem::take(&mut final_check_reply_pending);
-            let final_check_confirmed = final_check_reply
+            let final_check_work = std::mem::take(&mut final_check_work_pending);
+            let final_check_confirmed = (final_check_reply || final_check_work)
                 && final_answer_text.is_none()
                 && is_final_check_confirmation(&response.assistant_text(), !tool_calls.is_empty());
             if final_check_confirmed
@@ -3778,6 +3785,15 @@ impl SessionActor {
             // the reply's reasoning or tool calls can close it in the client.
             if final_check_reply && !tool_calls.is_empty() {
                 self.send_update(turn_answer_marker(), None).await;
+            }
+            // The work the reply went back to may end on the token as well. A
+            // client adds what follows the marked answer to it, so a token
+            // sent there is shown as the answer's last paragraph.
+            if (final_check_reply || final_check_work) && !tool_calls.is_empty() {
+                final_check_work_pending = true;
+                self.jev_ledger
+                    .borrow_mut()
+                    .begin_final_check_hold_after_tool_calls();
             }
             // A real reply gets back what was held: its text as the next
             // paragraph of the earlier final message, or its reasoning when it
@@ -4540,11 +4556,15 @@ impl SessionActor {
     /// failed. Left in, it reaches the model glued to the next instruction,
     /// and the model answers the reminder with the token instead.
     fn drop_unanswered_final_check(&self) {
-        self.chat_state_handle.drop_unanswered_question(
-            super::reminders::wrap_in_reminder_tag(JEV_FINAL_CHECK_REMINDER, "system-reminder")
-                .text_content(),
-            FINAL_CHECK_NOTHING_OUTSTANDING.to_owned(),
-        );
+        for reminder in [
+            JEV_FINAL_CHECK_REMINDER,
+            JEV_FINAL_CHECK_REMINDER_UNTIL_2_0_77,
+        ] {
+            self.chat_state_handle.drop_unanswered_question(
+                super::reminders::wrap_in_reminder_tag(reminder, "system-reminder").text_content(),
+                FINAL_CHECK_NOTHING_OUTSTANDING.to_owned(),
+            );
+        }
     }
 }
 
@@ -5407,6 +5427,69 @@ mod final_check_confirmation_turn_tests {
         assert_eq!(results, 2, "the second tool call ran");
     }
 
+    /// The work a reply goes back to can end on the token: the model checks
+    /// again, finds nothing to add and confirms. A client adds what follows
+    /// the marked answer to it, so a token sent there is shown as the
+    /// answer's last paragraph (RemoteCode, 2026-11-16). It must stay hidden
+    /// in every execution mode, and out of the history and the report.
+    #[test]
+    fn a_token_after_the_replys_tool_calls_is_never_sent_to_the_client() {
+        for mode in distill_tool_types::ExecutionMode::ALL {
+            let (report, conversation, streamed) = run_turn_streamed(
+                mode,
+                vec![tool_call("call-2"), text(FINAL_CHECK_NOTHING_OUTSTANDING)],
+            );
+            // UltraCode appends its review status line to the final message.
+            assert!(
+                streamed.starts_with(FIRST_FINAL)
+                    && !streamed.contains(FINAL_CHECK_NOTHING_OUTSTANDING),
+                "{mode:?} streamed: {streamed:?}"
+            );
+            assert!(
+                report.as_deref().is_some_and(|r| r.starts_with(FIRST_FINAL)),
+                "{mode:?} lost the answer: {report:?}"
+            );
+            assert!(
+                !conversation.iter().any(|item| {
+                    matches!(item, ConversationItem::Assistant(_))
+                        && item.text_content().contains(FINAL_CHECK_NOTHING_OUTSTANDING)
+                }),
+                "{mode:?} kept the token in the history"
+            );
+            let results = conversation
+                .iter()
+                .filter(|item| matches!(item, ConversationItem::ToolResult(_)))
+                .count();
+            assert_eq!(results, 2, "{mode:?} lost the work the reply did");
+        }
+    }
+
+    /// Only the reply itself has its reasoning held. After its tool calls
+    /// the answer is already closed in the client, so the thoughts and the
+    /// text of the work that follows reach it as the model wrote them.
+    #[test]
+    fn work_after_the_replys_tool_calls_streams_its_reasoning_and_text() {
+        let last = "Re-ran the update; done.";
+        let (report, _, sent) = run_turn_sent(
+            distill_tool_types::ExecutionMode::Normal,
+            vec![
+                tool_call("call-2"),
+                reasoning_then_text(CHECK_REASONING, last),
+            ],
+        );
+        let groups = grouped(sent);
+        let tail: Vec<Sent> = groups.into_iter().rev().take(2).rev().collect();
+        // The scripted reply ends its reasoning and its text on a space.
+        assert_eq!(
+            tail,
+            vec![
+                Sent::Thought(format!("update {CHECK_REASONING} ")),
+                Sent::Message(format!("{last} ")),
+            ]
+        );
+        assert_eq!(report.as_deref().map(str::trim), Some(last));
+    }
+
     const NEXT_PROMPT: &str = "and the changelog?";
     const NEXT_ANSWER: &str = "The changelog is updated.";
 
@@ -5414,9 +5497,10 @@ mod final_check_confirmation_turn_tests {
     enum LastTurn {
         /// The turn ran here and the model confirmed with the bare token.
         Confirmed,
-        /// The history ends on the reminder: an older version kept it after
-        /// a confirmation, or its reply was cancelled or failed.
-        LeftUnanswered,
+        /// The history ends on the reminder, in this wording: an older
+        /// version kept it after a confirmation, or its reply was cancelled
+        /// or failed.
+        LeftUnanswered(&'static str),
     }
 
     /// Sends [`NEXT_PROMPT`] to a session whose last turn asked the final
@@ -5471,14 +5555,14 @@ mod final_check_confirmation_turn_tests {
                             prompt(actor.clone(), "last-turn", "mark the todo done").await;
                             crate::jev::clear_test_decision_answers();
                         }
-                        LastTurn::LeftUnanswered => {
+                        LastTurn::LeftUnanswered(reminder) => {
                             actor
                                 .chat_state_handle
                                 .push_user_message(ConversationItem::user("mark the todo done"));
                             actor
                                 .chat_state_handle
                                 .push_assistant_response(ConversationItem::assistant(FIRST_FINAL));
-                            actor.push_system_reminder(JEV_FINAL_CHECK_REMINDER);
+                            actor.push_system_reminder(reminder);
                         }
                     }
                     STREAMED.with(|streamed| streamed.borrow_mut().clear());
@@ -5541,12 +5625,18 @@ mod final_check_confirmation_turn_tests {
 
     /// Sessions written before the reminder was dropped on confirmation end
     /// on it, and so does a turn whose final-check reply was cancelled or
-    /// failed. Their next prompt must not meet it either.
+    /// failed. Their next prompt must not meet it either, in the wording
+    /// sent today or in the one a session written up to 2.0.77 ends on.
     #[test]
     fn the_next_prompt_is_not_sent_a_reminder_left_unanswered() {
-        let (requests, streamed) = run_next_prompt(LastTurn::LeftUnanswered);
-        assert_eq!(requests.len(), 1, "{requests:?}");
-        assert_next_prompt_is_clean(&requests, &streamed);
+        for reminder in [
+            JEV_FINAL_CHECK_REMINDER,
+            JEV_FINAL_CHECK_REMINDER_UNTIL_2_0_77,
+        ] {
+            let (requests, streamed) = run_next_prompt(LastTurn::LeftUnanswered(reminder));
+            assert_eq!(requests.len(), 1, "{requests:?}");
+            assert_next_prompt_is_clean(&requests, &streamed);
+        }
     }
 
     const SENTINEL: &str = "SENTINEL-c41b-user-text";

@@ -53,7 +53,7 @@ impl SessionActor {
     }
 
     /// Sends the reasoning held from a reply to the final-check reminder, in
-    /// order, once the reply is known to be a real one.
+    /// order, once the reply ended with no text to continue the answer with.
     pub(super) async fn send_held_reasoning(&self, held: Vec<super::jev_ledger::HeldReasoning>) {
         use super::jev_ledger::HeldReasoning;
         for reasoning in held {
@@ -284,11 +284,10 @@ impl SessionActor {
                         text,
                         super::turn::FINAL_CHECK_NOTHING_OUTSTANDING,
                     );
-                    if let Some(released) = released {
-                        self.send_held_reasoning(released.reasoning).await;
+                    for text in released {
                         self.send_update(
                             acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(
-                                acp::ContentBlock::Text(acp::TextContent::new(released.text)),
+                                acp::ContentBlock::Text(acp::TextContent::new(text)),
                             )),
                             Some(chunk_index),
                         )

@@ -53,6 +53,28 @@ fn final_check_reminder(
     (c1_incomplete || c3_incomplete).then_some(JEV_FINAL_CHECK_REMINDER)
 }
 
+/// Chunk `_meta` key that marks the assistant message sent so far as the
+/// turn's answer. It rides an empty message chunk, so a client that does not
+/// know the key is sent nothing it would show.
+pub(super) const TURN_ANSWER_META_KEY: &str = "turnAnswer";
+
+/// Tells the client that the message it was sent so far is the turn's answer.
+///
+/// A reply to the final check that goes back to work puts tool calls between
+/// that answer and whatever the turn ends on. A client that shows a turn's
+/// last message as its reply would show that closing note alone; with the
+/// marker it can keep the answer and add the later text to it.
+fn turn_answer_marker() -> acp::SessionUpdate {
+    let mut meta = serde_json::Map::new();
+    meta.insert(TURN_ANSWER_META_KEY.into(), serde_json::json!(true));
+    acp::SessionUpdate::AgentMessageChunk(
+        acp::ContentChunk::new(acp::ContentBlock::Text(
+            acp::TextContent::new(String::new()),
+        ))
+        .meta(Some(meta)),
+    )
+}
+
 /// Whether the reply to the final-check reminder is only the confirmation
 /// token. Anything more, or any tool call, is a real reply and is kept.
 fn is_final_check_confirmation(text: &str, has_tool_calls: bool) -> bool {
@@ -3731,7 +3753,8 @@ impl SessionActor {
             );
             // A bare confirmation after the final-check reminder is dropped,
             // so the earlier final message stays the turn's last word.
-            let final_check_confirmed = std::mem::take(&mut final_check_reply_pending)
+            let final_check_reply = std::mem::take(&mut final_check_reply_pending);
+            let final_check_confirmed = final_check_reply
                 && final_answer_text.is_none()
                 && is_final_check_confirmation(&response.assistant_text(), !tool_calls.is_empty());
             if final_check_confirmed
@@ -3751,6 +3774,11 @@ impl SessionActor {
                     .await;
             }
             record_response_span.close();
+            // A reply that goes back to work: the answer is marked before
+            // the reply's reasoning or tool calls can close it in the client.
+            if final_check_reply && !tool_calls.is_empty() {
+                self.send_update(turn_answer_marker(), None).await;
+            }
             // A real reply gets back what was held: its text as the next
             // paragraph of the earlier final message, or its reasoning when it
             // only calls tools. A bare confirmation leaves nothing between the
@@ -4917,6 +4945,8 @@ mod final_check_confirmation_turn_tests {
     enum Sent {
         Thought(String),
         Message(String),
+        /// The empty message chunk that marks the answer so far.
+        AnswerMarker,
     }
 
     thread_local! {
@@ -4932,6 +4962,18 @@ mod final_check_confirmation_turn_tests {
                     continue;
                 };
                 let sent = match &notification.update {
+                    acp::SessionUpdate::AgentMessageChunk(chunk)
+                        if chunk
+                            .meta
+                            .as_ref()
+                            .is_some_and(|meta| meta.contains_key(TURN_ANSWER_META_KEY)) =>
+                    {
+                        assert!(
+                            matches!(&chunk.content, acp::ContentBlock::Text(text) if text.text.is_empty()),
+                            "the marker must carry no text a client would show"
+                        );
+                        Sent::AnswerMarker
+                    }
                     acp::SessionUpdate::AgentMessageChunk(chunk) => match &chunk.content {
                         acp::ContentBlock::Text(text) => Sent::Message(text.text.clone()),
                         _ => continue,
@@ -5087,7 +5129,7 @@ mod final_check_confirmation_turn_tests {
             .into_iter()
             .filter_map(|chunk| match chunk {
                 Sent::Message(text) => Some(text),
-                Sent::Thought(_) => None,
+                Sent::Thought(_) | Sent::AnswerMarker => None,
             })
             .collect();
         (report, conversation, streamed)
@@ -5295,23 +5337,43 @@ mod final_check_confirmation_turn_tests {
 
     /// A reply that calls a tool is a real reply too: its reasoning is sent
     /// once the reply is complete, before the turn goes on.
+    ///
+    /// The tool calls come between the answer and the note the turn ends on,
+    /// and a client that shows a turn's last message as its reply would show
+    /// that note alone. So the answer is marked first, while it is still the
+    /// client's open message: the reasoning sent next closes it.
     #[test]
-    fn a_tool_call_replys_reasoning_is_still_sent() {
+    fn a_reply_that_goes_back_to_work_marks_the_answer_first() {
         let last = "Re-ran the update; done.";
         let (_, _, sent) = run_turn_sent(
             distill_tool_types::ExecutionMode::Normal,
             vec![tool_call("call-2"), text(last)],
         );
         let groups = grouped(sent);
-        let tail: Vec<Sent> = groups.into_iter().rev().take(3).rev().collect();
+        let tail: Vec<Sent> = groups.into_iter().rev().take(4).rev().collect();
         assert_eq!(
             tail,
             vec![
                 Sent::Message(FIRST_FINAL.to_owned()),
+                Sent::AnswerMarker,
                 Sent::Thought("update ".to_owned()),
                 Sent::Message(last.to_owned()),
             ]
         );
+    }
+
+    /// A turn that ends on its answer, or on a paragraph added to it, has no
+    /// later message to keep the answer from, so nothing is marked.
+    #[test]
+    fn a_reply_that_adds_no_work_marks_nothing() {
+        for reply in [
+            text(FINAL_CHECK_NOTHING_OUTSTANDING),
+            reasoning_then_text(CHECK_REASONING, "The lint warning is gone too."),
+        ] {
+            let (_, _, sent) =
+                run_turn_sent(distill_tool_types::ExecutionMode::Normal, vec![reply]);
+            assert!(!sent.contains(&Sent::AnswerMarker), "{sent:?}");
+        }
     }
 
     /// A token with more text is an answer, kept as the new last word.
@@ -5428,7 +5490,7 @@ mod final_check_confirmation_turn_tests {
                             .iter()
                             .filter_map(|chunk| match chunk {
                                 Sent::Message(text) => Some(text.clone()),
-                                Sent::Thought(_) => None,
+                                Sent::Thought(_) | Sent::AnswerMarker => None,
                             })
                             .collect::<String>()
                     });

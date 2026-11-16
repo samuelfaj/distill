@@ -205,6 +205,10 @@ pub(crate) struct FinalCheckHold {
     /// its own and replaces the answer as the turn's last word.
     pub(crate) reasoning: Vec<HeldReasoning>,
     pub(crate) text: String,
+    /// Set for a response that follows the reply's tool calls. Those calls
+    /// already closed the answer in the client, so only the text is held, in
+    /// case it is the bare token, and it leaves as it was written.
+    pub(crate) after_tool_calls: bool,
 }
 
 impl FinalCheckHold {
@@ -221,6 +225,10 @@ impl FinalCheckHold {
     /// block for every response drops a blank chunk that would open one, and
     /// would render a break glued to the text as blank lines above it.
     pub(crate) fn released(self) -> (Vec<HeldReasoning>, Vec<String>) {
+        if self.after_tool_calls {
+            let text = Some(self.text).filter(|text| !text.is_empty());
+            return (self.reasoning, text.into_iter().collect());
+        }
         if self.text.trim().is_empty() {
             let blank = Some(self.text).filter(|text| !text.is_empty());
             return (self.reasoning, blank.into_iter().collect());
@@ -265,17 +273,38 @@ impl JevTurnLedger {
         self.final_check_hold = Some(FinalCheckHold::default());
     }
 
+    /// Opens a response that follows the tool calls of the reply to the
+    /// final-check reminder. The work the reply went back to can end on the
+    /// bare token too, so the text of each such response is held back. Its
+    /// reasoning is not: thoughts keep streaming while the reply works.
+    pub(crate) fn begin_final_check_hold_after_tool_calls(&mut self) {
+        self.final_check_hold = Some(FinalCheckHold {
+            after_tool_calls: true,
+            ..FinalCheckHold::default()
+        });
+    }
+
     /// Drops output held from an abandoned attempt; a retry streams from scratch.
     pub(crate) fn restart_final_check_hold(&mut self) {
         if let Some(held) = self.final_check_hold.as_mut() {
-            *held = FinalCheckHold::default();
+            *held = FinalCheckHold {
+                after_tool_calls: held.after_tool_calls,
+                ..FinalCheckHold::default()
+            };
         }
+    }
+
+    /// The open hold, when it also holds reasoning.
+    fn reasoning_hold(&mut self) -> Option<&mut FinalCheckHold> {
+        self.final_check_hold
+            .as_mut()
+            .filter(|held| !held.after_tool_calls)
     }
 
     /// The reasoning chunk that may go to the client: none while the reply is
     /// open, since its reasoning is released or dropped with its text.
     pub(crate) fn hold_final_check_thought(&mut self, chunk: String) -> Option<String> {
-        let Some(held) = self.final_check_hold.as_mut() else {
+        let Some(held) = self.reasoning_hold() else {
             return Some(chunk);
         };
         match held.reasoning.last_mut() {
@@ -288,7 +317,7 @@ impl JevTurnLedger {
     /// The thinking-block signature that may go to the client: none while the
     /// reply is open, so it stays behind the thoughts it closes.
     pub(crate) fn hold_final_check_signature(&mut self, signature: String) -> Option<String> {
-        let Some(held) = self.final_check_hold.as_mut() else {
+        let Some(held) = self.reasoning_hold() else {
             return Some(signature);
         };
         held.reasoning.push(HeldReasoning::Completed(signature));
@@ -317,7 +346,7 @@ impl JevTurnLedger {
     pub(crate) fn take_final_check_hold(&mut self) -> Option<FinalCheckHold> {
         self.final_check_hold
             .take()
-            .filter(|held| *held != FinalCheckHold::default())
+            .filter(|held| !held.reasoning.is_empty() || !held.text.is_empty())
     }
 
     pub(crate) fn set_turn_intent(&mut self, intent: impl Into<String>) {
@@ -688,6 +717,7 @@ mod tests {
         Some(FinalCheckHold {
             reasoning: Vec::new(),
             text: text.to_owned(),
+            after_tool_calls: false,
         })
     }
 
@@ -770,6 +800,68 @@ mod tests {
         );
     }
 
+    /// The work a reply goes back to can end on the token as well. The tool
+    /// calls already closed the answer in the client, so thoughts stream as
+    /// usual and only the text waits; a retry must not turn that hold into
+    /// one that keeps thoughts back for the rest of the turn.
+    #[test]
+    fn after_the_replys_tool_calls_only_text_is_held() {
+        let mut ledger = JevTurnLedger::default();
+        ledger.begin_final_check_hold_after_tool_calls();
+        ledger.restart_final_check_hold();
+        assert_eq!(
+            ledger.hold_final_check_thought("Checking again.".into()),
+            Some("Checking again.".to_owned())
+        );
+        assert_eq!(
+            ledger.hold_final_check_signature("sig".into()),
+            Some("sig".to_owned())
+        );
+        assert_eq!(
+            ledger.filter_final_check_chunk("NOTHING_".into(), TOKEN),
+            NOTHING
+        );
+        assert_eq!(
+            ledger.filter_final_check_chunk("OUTSTANDING".into(), TOKEN),
+            NOTHING
+        );
+        assert_eq!(
+            ledger.take_final_check_hold().map(|held| held.text),
+            Some(TOKEN.to_owned()),
+            "the held text is handed back so the caller can drop it as the token"
+        );
+    }
+
+    /// Text after the reply's tool calls continues nothing: the tool calls
+    /// are between it and the answer. It leaves as it was written, without
+    /// the paragraph break a reply's own text gets.
+    #[test]
+    fn text_after_the_replys_tool_calls_is_released_as_written() {
+        let mut ledger = JevTurnLedger::default();
+        ledger.begin_final_check_hold_after_tool_calls();
+        assert_eq!(
+            ledger.filter_final_check_chunk("NOTHING".into(), TOKEN),
+            NOTHING
+        );
+        assert_eq!(
+            ledger.filter_final_check_chunk(" else changed".into(), TOKEN),
+            vec!["NOTHING else changed".to_owned()]
+        );
+        assert_eq!(ledger.take_final_check_hold(), None);
+
+        ledger.begin_final_check_hold_after_tool_calls();
+        assert_eq!(
+            ledger.filter_final_check_chunk("NOTHING".into(), TOKEN),
+            NOTHING
+        );
+        let cut_short = ledger.take_final_check_hold().expect("held text");
+        assert_eq!(
+            cut_short.released(),
+            (Vec::new(), vec!["NOTHING".to_owned()]),
+            "a response that ends while still a prefix of the token is not the token"
+        );
+    }
+
     /// A confirmed reply must leave nothing on the wire. Its reasoning, sent
     /// after the final answer, makes a client close that answer, and the
     /// status line the harness appends next then replaces it as the turn's
@@ -793,6 +885,7 @@ mod tests {
                     HeldReasoning::Completed("sig".to_owned()),
                 ],
                 text: TOKEN.to_owned(),
+                after_tool_calls: false,
             }),
             "the caller gets the whole reply back, to drop it as one"
         );
@@ -837,6 +930,7 @@ mod tests {
         let held = FinalCheckHold {
             reasoning: vec![HeldReasoning::Thought("One count is off.".to_owned())],
             text: "\n\n  It is 12, not 10.\n".to_owned(),
+            after_tool_calls: false,
         };
         assert_eq!(
             held.released(),
@@ -867,6 +961,7 @@ mod tests {
                 Some(FinalCheckHold {
                     reasoning: reasoning(),
                     text: text.to_owned(),
+                    after_tool_calls: false,
                 })
             );
             let chunks = if text.is_empty() {
@@ -913,6 +1008,7 @@ mod tests {
             Some(FinalCheckHold {
                 reasoning: vec![HeldReasoning::Thought("Run it again.".to_owned())],
                 text: String::new(),
+                after_tool_calls: false,
             })
         );
     }

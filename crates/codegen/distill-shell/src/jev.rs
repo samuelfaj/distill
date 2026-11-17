@@ -94,6 +94,9 @@ pub fn flags_from_tiers(cfg: &JevConfig, env_enabled: Option<bool>) -> JevFlags 
             f1_followup_label: cfg.ladder.f1_followup_label,
             b8_criteria_v2: cfg.ladder.b8_criteria_v2,
             b8_up_only: cfg.ladder.b8_up_only,
+            b2_step_battery: cfg.ladder.b2_step_battery,
+            b6_work_shape: cfg.ladder.b6_work_shape,
+            b7_utility_children: cfg.ladder.b7_utility_children,
         },
     )
 }
@@ -118,8 +121,10 @@ pub fn client_config_from(cfg: &JevConfig) -> Result<JevClientConfig, distill_wo
         return Err(distill_workspace::jev::JevError::invalid("Jev requires OPENROUTER_API_KEY"));
     }
     let model = cfg.model.clone().unwrap_or(defaults.model);
-    if !(model.starts_with("~typesafe/jev") || model.starts_with("typesafe/jev")) {
-        return Err(distill_workspace::jev::JevError::invalid("Jev model must be a typesafe/jev model"));
+    if !distill_workspace::jev::client::is_decision_model(&model) {
+        return Err(distill_workspace::jev::JevError::invalid(
+            "decision model must be a typesafe/jev or liquid/d1.2 model",
+        ));
     }
     let reasoning_shape = cfg.reasoning_shape.as_deref()
         .map(|name| ReasoningShape::from_name(name).ok_or_else(|| distill_workspace::jev::JevError::invalid("unknown Jev reasoning shape")))
@@ -950,7 +955,7 @@ async fn ask_once(
     if !flags.lever_active(lever) {
         return Err((JevNoAnswerKind::LeverOff, 0));
     }
-    let Some(client) = client_cached().filter(|client| client.credential_present()) else {
+    let Some(client) = client_for(lever.as_str()).filter(|client| client.credential_present()) else {
         return Err((JevNoAnswerKind::NoCredential, 0));
     };
     crate::jev_shadow::capture(lever, &client.config().model, &state, &questions);
@@ -1783,7 +1788,7 @@ pub fn note_payload_read(hash: &str, label: &str) -> Option<String> {
 /// fails because this optimization could not be invalidated.
 pub fn invalidate_payload_reads_for_active_session() {
     let session_id = active_session_id();
-    if let Some(client) = client_cached() {
+    for client in all_clients() {
         client.clear_memo_for_session(&session_id);
     }
     forget_test_failures(&session_id);
@@ -2971,6 +2976,94 @@ pub(crate) fn observed_client(
     Some(client.with_call_observer(observer))
 }
 
+/// The decision model each lever uses when `[jev.models]` names none, chosen
+/// on measurements in `docs/d1.2-decision-results.md`:
+/// - the evidence selector found 20/20 evidence groups on d1.2 against 16/20
+///   on Jev 1.14, at 46% of Jev's cost;
+/// - the work shape and the child task scored the same on Jev 1.14, d1.2 and
+///   d1.2-ultra, so they run on d1.2, the cheapest (the work shape is asked in
+///   the background, so its latency never holds a request);
+/// - `jev_decide` fields need a d1.2 model (Jev serves no extraction); one
+///   probe on a test log found more failure lines on d1.2-ultra than on d1.2.
+///
+/// The step battery stays on `[jev] model`: it scored 32/32 on Jev 1.14 and
+/// on d1.2-ultra, and it is awaited before every main round, where Jev
+/// answered in about 0.6 s and d1.2-ultra in 0.8 to 3.2 s. Every other lever
+/// stays on `[jev] model` too.
+const LEVER_MODEL_DEFAULTS: &[(&str, &str)] = &[
+    ("b6_work_shape", "liquid/d1.2"),
+    ("b7_utility_children", "liquid/d1.2"),
+    ("stored_output_search", "liquid/d1.2"),
+    ("jev_decide_fields", "liquid/d1.2-ultra"),
+];
+
+/// The decision model for `key` (a lever name, or `stored_output_search`):
+/// `[jev.models]`, else the lever's shipped model, else `[jev] model`.
+pub(crate) fn decision_model_for(cfg: &JevConfig, key: &str) -> String {
+    if let Some(model) = cfg.models.get(key) {
+        if distill_workspace::jev::client::is_decision_model(model) {
+            return model.clone();
+        }
+        tracing::warn!(key, model, "[jev.models] names a model that is not a decision model; keeping the shipped one");
+    }
+    if let Some((_, model)) = LEVER_MODEL_DEFAULTS.iter().find(|(lever, _)| *lever == key) {
+        return (*model).to_owned();
+    }
+    cfg.model
+        .clone()
+        .unwrap_or_else(|| distill_workspace::jev::client::DEFAULT_MODEL.to_owned())
+}
+
+/// The clients built so far, one per decision model.
+fn model_clients(
+) -> &'static std::sync::Mutex<std::collections::HashMap<String, Option<&'static distill_workspace::jev::JevClient>>> {
+    static CLIENTS: OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, Option<&'static distill_workspace::jev::JevClient>>>,
+    > = OnceLock::new();
+    CLIENTS.get_or_init(Default::default)
+}
+
+/// The client for `key`'s decision model: the `[jev] model` client when they
+/// match, else one built once per model with the same transport settings.
+pub(crate) fn client_for(key: &str) -> Option<&'static distill_workspace::jev::JevClient> {
+    let cfg = resolve_config_from_disk_cached();
+    let model = decision_model_for(cfg, key);
+    let base = client_cached();
+    if base.is_some_and(|client| client.config().model == model) {
+        return base;
+    }
+    let mut clients = model_clients().lock().ok()?;
+    if let Some(client) = clients.get(&model) {
+        return *client;
+    }
+    let client = client_config_from(cfg)
+        .and_then(|mut config| {
+            config.model = model.clone();
+            distill_workspace::jev::JevClient::new(config)
+        })
+        .map_err(|error| tracing::warn!(%error, model, "decision client unavailable"))
+        .ok()
+        .filter(|client| client.credential_present())
+        .map(|client| &*Box::leak(Box::new(client)));
+    clients.insert(model, client);
+    client
+}
+
+/// Every client built so far, for memo invalidation.
+fn all_clients() -> Vec<&'static distill_workspace::jev::JevClient> {
+    let mut clients: Vec<_> = client_cached().into_iter().collect();
+    if let Ok(built) = model_clients().lock() {
+        clients.extend(built.values().flatten().copied());
+    }
+    clients
+}
+
+/// The resolved `[jev]` configuration, read once per process.
+fn resolve_config_from_disk_cached() -> &'static JevConfig {
+    static CONFIG: OnceLock<JevConfig> = OnceLock::new();
+    CONFIG.get_or_init(resolve_config_from_disk)
+}
+
 /// One client per process, built lazily and only when a credential exists.
 pub(crate) fn client_cached() -> Option<&'static distill_workspace::jev::JevClient> {
     static CLIENT: OnceLock<Option<distill_workspace::jev::JevClient>> = OnceLock::new();
@@ -3021,6 +3114,29 @@ fn item_budget(client: &distill_workspace::jev::JevClient) -> std::time::Duratio
 #[cfg(test)]
 mod catalogue_helper_tests {
     use super::*;
+
+    /// Each lever runs on the model it was measured best on, `[jev.models]`
+    /// moves one lever, and a model outside the two decision families never
+    /// reaches the wire: the lever keeps its shipped model.
+    #[test]
+    fn decision_models_follow_the_measurements_and_the_override() {
+        let mut cfg = JevConfig::default();
+        assert_eq!(decision_model_for(&cfg, "stored_output_search"), "liquid/d1.2");
+        assert_eq!(decision_model_for(&cfg, "b6_work_shape"), "liquid/d1.2");
+        assert_eq!(decision_model_for(&cfg, "jev_decide_fields"), "liquid/d1.2-ultra");
+        assert_eq!(
+            decision_model_for(&cfg, "b2_step_battery"),
+            distill_workspace::jev::client::DEFAULT_MODEL,
+            "the awaited per-round battery stays on the fastest model"
+        );
+        assert_eq!(decision_model_for(&cfg, "c4_diff_risk"), distill_workspace::jev::client::DEFAULT_MODEL);
+        cfg.model = Some("typesafe/jev-1.14-20261014".to_owned());
+        cfg.models.insert("b2_step_battery".to_owned(), "liquid/d1.2-ultra".to_owned());
+        cfg.models.insert("b6_work_shape".to_owned(), "openai/gpt-6-luna".to_owned());
+        assert_eq!(decision_model_for(&cfg, "b2_step_battery"), "liquid/d1.2-ultra");
+        assert_eq!(decision_model_for(&cfg, "b6_work_shape"), "liquid/d1.2", "not a decision model");
+        assert_eq!(decision_model_for(&cfg, "c4_diff_risk"), "typesafe/jev-1.14-20261014");
+    }
 
     #[test]
     fn item_budget_is_capped_per_backend() {

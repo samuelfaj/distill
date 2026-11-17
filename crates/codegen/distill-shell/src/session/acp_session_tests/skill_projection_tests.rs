@@ -539,11 +539,151 @@ async fn delegation_hints(actor: &SessionActor) -> Vec<String> {
         .collect()
 }
 
+/// The B6 pair on the turn-start request: the path `b6_work_shape = false`
+/// keeps. The work-shape tests below cover the default.
 fn flags_with_b6(on: bool) -> distill_workspace::jev::JevFlags {
     distill_workspace::jev::JevFlags {
         b6_delegation_hint: on,
+        b6_work_shape: false,
         ..distill_workspace::jev::JevFlags::harness_default()
     }
+}
+
+fn work_shape_answers(shape: &[(&str, f64)], parallel: f64) -> distill_workspace::jev::JevAnswerSet {
+    use distill_workspace::jev::Answer;
+    let choice = shape
+        .iter()
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(id, _)| (*id).to_owned())
+        .unwrap_or_default();
+    distill_workspace::jev::JevAnswerSet {
+        model: "liquid/d1.2-20261116".to_owned(),
+        answers: [
+            (
+                "work_shape".to_owned(),
+                Answer::Choice {
+                    choice,
+                    probabilities: shape.iter().map(|(id, p)| ((*id).to_owned(), *p)).collect(),
+                    confidence: None,
+                },
+            ),
+            ("needs_parallel".to_owned(), Answer::Noul { noul: parallel }),
+        ]
+        .into(),
+        usage: Default::default(),
+        latency_ms: 5,
+        request_id: None,
+    }
+}
+
+/// Lets the background work-shape ask finish before a flush.
+async fn settle_work_shape(actor: &SessionActor) {
+    for _ in 0..100 {
+        let done = actor
+            .jev_ledger
+            .borrow()
+            .work_shape
+            .as_ref()
+            .is_none_or(|(_, answer)| answer.as_ref().is_none_or(|answer| answer.is_finished()));
+        if done {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+}
+
+/// The work shape is asked on its own for every new request with a worker,
+/// even in UltraSave where the tool-family pass never runs, and its hint
+/// says what to hand over. A plain one-call request gets none: a subagent
+/// would cost more than it saves.
+#[tokio::test(flavor = "current_thread")]
+async fn the_work_shape_hint_names_what_to_hand_over_and_skips_short_work() {
+    with_actor(|actor| async move {
+        crate::jev::with_session_scope("b6-work-shape", async {
+            crate::jev::set_test_flags(distill_workspace::jev::JevFlags::harness_default());
+            set_worker_model(&actor, Some("worker-model"));
+            actor.execution_mode.store(distill_tool_types::ExecutionMode::Ultrasave);
+            for (request, shape, parallel, hint) in [
+                (
+                    "rename getUserName to get_user_name in all 14 files",
+                    &[("specified_work", 0.8), ("single_action", 0.2)][..],
+                    0.1,
+                    Some("already specifies"),
+                ),
+                (
+                    "find out why the integration test flakes on CI and fix it",
+                    &[("investigation", 0.7), ("specified_work", 0.2), ("single_action", 0.1)][..],
+                    0.1,
+                    Some("found out first"),
+                ),
+                (
+                    "design and implement a plugin system for the CLI",
+                    &[("open_design", 0.6), ("specified_work", 0.3), ("direct_answer", 0.1)][..],
+                    0.7,
+                    Some("leaves decisions open"),
+                ),
+                ("what does ENOENT mean?", &[("direct_answer", 0.9), ("single_action", 0.1)][..], 0.0, None),
+            ] {
+                ask_about(&actor, request);
+                crate::jev::set_test_decision_answers([Some(work_shape_answers(shape, parallel))]);
+                actor
+                    .jev_filter_tool_definitions(optional_family_defs(), false)
+                    .await;
+                settle_work_shape(&actor).await;
+                actor.jev_flush_delegation_hint().await;
+                // A later round of the same request asks nothing and adds nothing.
+                actor
+                    .jev_filter_tool_definitions(optional_family_defs(), false)
+                    .await;
+                actor.jev_flush_delegation_hint().await;
+                let hints = delegation_hints(&actor).await;
+                match hint {
+                    Some(text) => {
+                        assert_eq!(hints.len(), 1, "{request}: {hints:?}");
+                        assert!(hints[0].contains(text), "{request}: {hints:?}");
+                    }
+                    None => assert!(hints.is_empty(), "{request}: {hints:?}"),
+                }
+            }
+            let asked = crate::jev::take_test_asked_questions();
+            assert_eq!(asked.len(), 4, "one work-shape request per human request: {asked:?}");
+            assert!(asked.iter().all(|ids| ids == &["needs_parallel", "work_shape"]), "{asked:?}");
+            assert_eq!(
+                b6_decisions("b6-work-shape"),
+                ["delegate", "investigate", "settle_then_delegate", "single"]
+            );
+        })
+        .await;
+    })
+    .await;
+}
+
+/// No worker, a child session or B6 off: nobody to delegate to, so nothing
+/// is asked.
+#[tokio::test(flavor = "current_thread")]
+async fn the_work_shape_is_not_asked_without_a_worker_or_with_b6_off() {
+    with_actor(|actor| async move {
+        crate::jev::with_session_scope("b6-work-shape-off", async {
+            ask_about(&actor, "rename the module in every file");
+            crate::jev::set_test_flags(distill_workspace::jev::JevFlags::harness_default());
+            set_worker_model(&actor, None);
+            crate::jev::set_test_decision_answers([None, None, None]);
+            actor.execution_mode.store(distill_tool_types::ExecutionMode::Ultrasave);
+            actor
+                .jev_filter_tool_definitions(optional_family_defs(), false)
+                .await;
+            crate::jev::set_test_flags(flags_with_b6(false));
+            set_worker_model(&actor, Some("worker-model"));
+            ask_about(&actor, "rename the other module too");
+            actor
+                .jev_filter_tool_definitions(optional_family_defs(), false)
+                .await;
+            settle_work_shape(&actor).await;
+            assert!(crate::jev::take_test_asked_questions().is_empty());
+        })
+        .await;
+    })
+    .await;
 }
 
 /// Shadow mode: with the flag off (the default) B6 still rides on the

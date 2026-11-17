@@ -1,0 +1,563 @@
+{
+ "schema_version": 1,
+ "note": "Synthetic, hand-written states for the effort, delegation and child-model decisions. No user content. Labels are the author's judgment of the acceptable answers under the Normal mode policy on a menu of low, medium, high, xhigh, max.",
+ "effort": [
+  {
+   "id": "e01",
+   "label": [
+    "low"
+   ],
+   "request": "What does the --locked flag do in cargo build?",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": []
+  },
+  {
+   "id": "e02",
+   "label": [
+    "low"
+   ],
+   "request": "Show me the contents of src/main.rs",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": []
+  },
+  {
+   "id": "e03",
+   "label": [
+    "low"
+   ],
+   "request": "Find where parse_header is called and explain what it returns",
+   "step": "after_tool_results",
+   "plan": "Now I'll search for the callers of parse_header.",
+   "calls": [
+    "read_file — {\"path\":\"src/lib.rs\"}"
+   ],
+   "results": [
+    "read_file: success, 4210 bytes — pub fn parse_header(input: &[u8]) -> Result<Header, Error> { ..."
+   ]
+  },
+  {
+   "id": "e04",
+   "label": [
+    "low"
+   ],
+   "request": "Make the cache tests pass",
+   "step": "after_tool_results",
+   "plan": "Run the test suite to see the current state.",
+   "calls": [
+    "grep — {\"pattern\":\"fn evict\"}"
+   ],
+   "results": [
+    "grep: success, 312 bytes — src/cache.rs:88: fn evict(&mut self) {"
+   ]
+  },
+  {
+   "id": "e05",
+   "label": [
+    "low"
+   ],
+   "request": "Add the missing doc comment to Cache::new and check the tests still pass",
+   "step": "after_tool_results",
+   "plan": "All tests pass. Summarize the change for the user.",
+   "calls": [
+    "run_terminal_command — {\"command\":\"cargo test -p cache\"}"
+   ],
+   "results": [
+    "run_terminal_command: success, 1840 bytes — test result: ok. 42 passed; 0 failed; 0 ignored"
+   ]
+  },
+  {
+   "id": "e06",
+   "label": [
+    "low",
+    "medium"
+   ],
+   "request": "Rename the function getUserName to get_user_name in src/user.rs and its two call sites",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": []
+  },
+  {
+   "id": "e07",
+   "label": [
+    "low"
+   ],
+   "request": "Fix the typo in the README heading",
+   "step": "after_tool_results",
+   "plan": "Fix the typo 'recieve' -> 'receive' in the README heading.",
+   "calls": [
+    "read_file — {\"path\":\"README.md\"}"
+   ],
+   "results": [
+    "read_file: success, 2210 bytes — # How to recieve webhooks ..."
+   ]
+  },
+  {
+   "id": "e08",
+   "label": [
+    "medium"
+   ],
+   "request": "Implement retry_with_backoff as described in the issue",
+   "step": "after_tool_results",
+   "plan": "Implement the retry_with_backoff function as specified: 3 attempts, exponential delay starting at 100ms, return the last error.",
+   "calls": [
+    "read_file — {\"path\":\"src/net.rs\"}"
+   ],
+   "results": [
+    "read_file: success, 5120 bytes — pub async fn fetch(url: &str) -> Result<Bytes, NetError> { ..."
+   ]
+  },
+  {
+   "id": "e09",
+   "label": [
+    "medium",
+    "high"
+   ],
+   "request": "Add a --json flag to the status command that prints the same fields as JSON",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": []
+  },
+  {
+   "id": "e10",
+   "label": [
+    "high"
+   ],
+   "request": "Make the cache tests pass",
+   "step": "after_tool_results",
+   "plan": "The eviction test fails; I need to find why the cache keeps 4 entries.",
+   "calls": [
+    "run_terminal_command — {\"command\":\"cargo test -p cache\"}"
+   ],
+   "results": [
+    "run_terminal_command: failure, 2304 bytes — test cache::tests::evicts_oldest ... FAILED assertion `left == right` failed left: 4 right: 3"
+   ]
+  },
+  {
+   "id": "e11",
+   "label": [
+    "high",
+    "xhigh"
+   ],
+   "request": "Make the cache tests pass",
+   "step": "after_tool_results",
+   "plan": "My fix did not work; the test still fails with the same assertion.",
+   "calls": [
+    "run_terminal_command — {\"command\":\"cargo test -p cache\"}"
+   ],
+   "results": [
+    "run_terminal_command: failure, 2304 bytes — test cache::tests::evicts_oldest ... FAILED assertion `left == right` failed left: 4 right: 3"
+   ]
+  },
+  {
+   "id": "e12",
+   "label": [
+    "low",
+    "medium"
+   ],
+   "request": "Fix the build",
+   "step": "after_tool_results",
+   "plan": "Fix the type mismatch by converting the length with u32::try_from.",
+   "calls": [
+    "run_terminal_command — {\"command\":\"cargo build\"}"
+   ],
+   "results": [
+    "run_terminal_command: failure, 812 bytes — error[E0308]: mismatched types: expected `u32`, found `usize` --> src/a.rs:10:17"
+   ]
+  },
+  {
+   "id": "e13",
+   "label": [
+    "high",
+    "xhigh"
+   ],
+   "request": "Design how we should migrate sessions from JSON files to SQLite without downtime. I need a plan with trade-offs.",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": []
+  },
+  {
+   "id": "e14",
+   "label": [
+    "high",
+    "xhigh"
+   ],
+   "request": "Review the lock-free queue change before we merge it",
+   "step": "after_tool_results",
+   "plan": "Review this lock-free queue change for data races before merging.",
+   "calls": [
+    "run_terminal_command — {\"command\":\"git diff main -- src/queue.rs\"}"
+   ],
+   "results": [
+    "run_terminal_command: success, 6120 bytes — @@ -40,12 +40,19 @@ impl<T> Queue<T> { let tail = self.tail.load(Ordering::Relaxed); ..."
+   ]
+  },
+  {
+   "id": "e15",
+   "label": [
+    "medium",
+    "high"
+   ],
+   "request": "Write a SQL migration that drops the legacy payments_old table after copying its rows into payments",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": []
+  },
+  {
+   "id": "e16",
+   "label": [
+    "low"
+   ],
+   "request": "Use the fixture for the empty-config test",
+   "step": "after_tool_results",
+   "plan": "List the files in the tests directory to find the fixture.",
+   "calls": [
+    "read_file — {\"path\":\"tests/config.rs\"}"
+   ],
+   "results": [
+    "read_file: success, 1408 bytes — #[test] fn empty_config() { let cfg = load(fixture(\"empty.toml\")); ..."
+   ]
+  },
+  {
+   "id": "e17",
+   "label": [
+    "low"
+   ],
+   "request": "What is the rate limit of the Acme API?",
+   "step": "after_tool_results",
+   "plan": "Read the API reference page to find the rate limit.",
+   "calls": [
+    "web_search — {\"query\":\"Acme API rate limit\"}"
+   ],
+   "results": [
+    "web_search: success, 3012 bytes — Acme API Reference - Limits: https://acme.example/docs/limits ..."
+   ]
+  },
+  {
+   "id": "e18",
+   "label": [
+    "high"
+   ],
+   "request": "Why is the CI build three times slower since last week? The timing log is in ci-times.txt.",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": []
+  },
+  {
+   "id": "e19",
+   "label": [
+    "low"
+   ],
+   "request": "Commit this",
+   "step": "after_tool_results",
+   "plan": "Commit the changes with a descriptive message.",
+   "calls": [
+    "run_terminal_command — {\"command\":\"git status --short\"}"
+   ],
+   "results": [
+    "run_terminal_command: success, 120 bytes — M src/cache.rs M tests/cache.rs"
+   ]
+  },
+  {
+   "id": "e20",
+   "label": [
+    "medium",
+    "high"
+   ],
+   "request": "Add pagination to the list endpoint",
+   "step": "after_tool_results",
+   "plan": "The worker's diff looks right; check that it handles the empty-input edge case before accepting.",
+   "calls": [
+    "task — {\"description\":\"Add pagination to GET /items\"}"
+   ],
+   "results": [
+    "task: success, 3900 bytes — Done. Changed src/api/items.rs (+48 -6), tests pass: 18 passed."
+   ]
+  },
+  {
+   "id": "e21",
+   "label": [
+    "high",
+    "xhigh"
+   ],
+   "request": "Prove that the scheduler's priority function is monotonic in the wait time",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": []
+  },
+  {
+   "id": "e22",
+   "label": [
+    "low",
+    "medium"
+   ],
+   "request": "Add tests for parse_duration",
+   "step": "after_tool_results",
+   "plan": "Write unit tests for parse_duration covering the cases listed in the issue: '1h', '30m', '1h30m' and invalid input.",
+   "calls": [
+    "read_file — {\"path\":\"src/duration.rs\"}"
+   ],
+   "results": [
+    "read_file: success, 2048 bytes — pub fn parse_duration(s: &str) -> Result<Duration, ParseError> { ..."
+   ]
+  },
+  {
+   "id": "e23",
+   "label": [
+    "low"
+   ],
+   "request": "Build the release binary",
+   "step": "after_tool_results",
+   "plan": "The build timed out; rerun it in the background.",
+   "calls": [
+    "run_terminal_command — {\"command\":\"cargo build --release\"}"
+   ],
+   "results": [
+    "run_terminal_command: failure, 96 bytes — command timed out after 15s"
+   ]
+  },
+  {
+   "id": "e24",
+   "label": [
+    "high",
+    "xhigh"
+   ],
+   "request": "Refactor the payment module to support multiple currencies across the API, the database and the UI",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": []
+  },
+  {
+   "id": "e25",
+   "heldout": true,
+   "label": [
+    "medium",
+    "high"
+   ],
+   "request": "Delete all rows older than 90 days from the events table in production",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": []
+  },
+  {
+   "id": "e26",
+   "heldout": true,
+   "label": [
+    "low"
+   ],
+   "request": "Raise the default timeout to 60 seconds",
+   "step": "after_tool_results",
+   "plan": "Change the default timeout from 30 to 60 seconds in config.toml as asked.",
+   "calls": [
+    "read_file — {\"path\":\"config.toml\"}"
+   ],
+   "results": [
+    "read_file: success, 640 bytes — [server] timeout_secs = 30 ..."
+   ]
+  },
+  {
+   "id": "e27",
+   "heldout": true,
+   "label": [
+    "low"
+   ],
+   "request": "Explain the difference between Arc and Rc",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": []
+  },
+  {
+   "id": "e28",
+   "heldout": true,
+   "label": [
+    "low",
+    "medium"
+   ],
+   "request": "Fix the grid test",
+   "step": "after_tool_results",
+   "plan": "The panic is an off-by-one in the loop bound at grid.rs:41; change `<=` to `<`.",
+   "calls": [
+    "run_terminal_command — {\"command\":\"cargo test grid\"}"
+   ],
+   "results": [
+    "run_terminal_command: failure, 1210 bytes — thread panicked at 'index out of bounds: the len is 3 but the index is 3', src/grid.rs:41:9"
+   ]
+  },
+  {
+   "id": "e29",
+   "heldout": true,
+   "label": [
+    "high"
+   ],
+   "request": "Our service sometimes returns stale data after a deploy. Figure out why.",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": []
+  },
+  {
+   "id": "e30",
+   "heldout": true,
+   "label": [
+    "low"
+   ],
+   "request": "How are sessions stored?",
+   "step": "after_tool_results",
+   "plan": "Read the three files that define the session store.",
+   "calls": [
+    "grep — {\"pattern\":\"SessionStore\"}"
+   ],
+   "results": [
+    "grep: success, 410 bytes — src/session/store.rs:12: pub struct SessionStore { ..."
+   ]
+  },
+  {
+   "id": "e31",
+   "heldout": true,
+   "label": [
+    "medium"
+   ],
+   "request": "Implement a function that parses ISO-8601 durations such as P1DT2H, with tests",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": []
+  },
+  {
+   "id": "e32",
+   "heldout": true,
+   "label": [
+    "high",
+    "xhigh"
+   ],
+   "request": "Review the new auth middleware",
+   "step": "after_tool_results",
+   "plan": "Check that the new token validation cannot be bypassed with an expired token.",
+   "calls": [
+    "run_terminal_command — {\"command\":\"git diff main -- src/auth/middleware.rs\"}"
+   ],
+   "results": [
+    "run_terminal_command: success, 4380 bytes — @@ -12,9 +12,22 @@ fn validate(token: &Token) -> Result<Claims> { if token.exp < now() ..."
+   ]
+  }
+ ],
+ "delegation": [
+  {
+   "id": "d01",
+   "label": "none",
+   "request": "What does this error mean: ENOENT: no such file or directory?"
+  },
+  {
+   "id": "d02",
+   "label": "none",
+   "request": "Run the tests"
+  },
+  {
+   "id": "d03",
+   "label": [
+    "delegate",
+    "parallel"
+   ],
+   "request": "Rename getUserName to get_user_name across the repo; it is used in 14 files"
+  },
+  {
+   "id": "d04",
+   "label": "parallel",
+   "request": "Add input validation to the five API handlers listed in issue #42; each must reject an empty name with a 400"
+  },
+  {
+   "id": "d05",
+   "label": "delegate",
+   "request": "Find out why the integration test flakes on CI and fix it"
+  },
+  {
+   "id": "d06",
+   "label": "none",
+   "request": "Should we use Postgres or SQLite for the new cache? Explain the trade-offs."
+  },
+  {
+   "id": "d07",
+   "label": "delegate",
+   "request": "Implement the OAuth login flow described in docs/oauth-spec.md and add tests for it"
+  },
+  {
+   "id": "d08",
+   "label": "none",
+   "request": "Update the copyright year in LICENSE to 2026"
+  },
+  {
+   "id": "d09",
+   "label": "parallel",
+   "request": "Translate docs/a.md, docs/b.md and docs/c.md to Portuguese, one file each"
+  },
+  {
+   "id": "d10",
+   "label": "settle_then_delegate",
+   "request": "Design and implement a plugin system for the CLI"
+  },
+  {
+   "id": "d11",
+   "label": "none",
+   "request": "Summarize what changed in the last commit"
+  },
+  {
+   "id": "d12",
+   "label": "delegate",
+   "request": "Upgrade all dependencies to their latest versions and fix whatever breaks"
+  }
+ ],
+ "child": [
+  {
+   "id": "c01",
+   "label": "utility",
+   "task": "Find every call site of parse_header in the repository and list them as file:line."
+  },
+  {
+   "id": "c02",
+   "label": "utility",
+   "task": "Read src/cache.rs and summarize how eviction works in five bullet points."
+  },
+  {
+   "id": "c03",
+   "label": "worker",
+   "task": "Investigate why cache::tests::keeps_hot_entry fails: read the test and the cache code, form a hypothesis about the root cause and explain it with evidence."
+  },
+  {
+   "id": "c04",
+   "label": "utility",
+   "task": "List the public functions in crates/foo/src/lib.rs with their signatures."
+  },
+  {
+   "id": "c05",
+   "label": "utility",
+   "task": "Search the docs folder for how the retry policy is configured and quote the relevant section."
+  },
+  {
+   "id": "c06",
+   "label": "worker",
+   "task": "Compare the caching strategies in modules a and b and recommend which one to keep, with reasoning about concurrency risks."
+  },
+  {
+   "id": "c07",
+   "label": "utility",
+   "task": "Find which config file sets max_connections and report its value."
+  },
+  {
+   "id": "c08",
+   "label": "worker",
+   "task": "Trace how a request flows from the HTTP handler to the database layer, identify where the transaction boundary is, and note any place where an error could leave partial writes."
+  }
+ ]
+}

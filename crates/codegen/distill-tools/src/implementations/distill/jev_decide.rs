@@ -6,17 +6,25 @@ use crate::types::tool::{ToolKind, ToolNamespace};
 use crate::types::tool_io::ToolInput;
 use std::collections::BTreeMap;
 pub const JEV_DECIDE_TOOL_NAME: &str = "jev_decide";
-const DESCRIPTION: &str = r#"Consult Jev for evidence-backed decisions among caller-supplied choices or scores. Use it when a choice, ranking or score is uncertain; batch independent questions in one call and cite concise source identifiers instead of copying large payloads. Never retry a Jev consultation recursively. Supply nonempty questions keyed by stable IDs and either non-null state or source/image IDs. Each question is tagged: {"type":"noul","instructions":"...","criteria":{"true":"...","false":"..."}}; {"type":"choice","instructions":"...","criteria":{"label":"meaning"}}; or {"type":"score","instructions":"...","criteria":["low","high"]}. Criteria must define exact options/rubric and evaluation rules. `sources` and `images` are identifiers resolved by the runtime, not payloads; image use requires runtime image support. Jev advises only; it does not authorize actions or generate free-form choices. Read-only call may incur network cost."#;
+const DESCRIPTION: &str = r#"Consult Jev for evidence-backed decisions among caller-supplied choices or scores. Use it when a choice, ranking or score is uncertain; batch independent questions in one call and cite concise source identifiers instead of copying large payloads. Never retry a Jev consultation recursively. Supply nonempty questions keyed by stable IDs and either non-null state or source/image IDs. Each question is tagged: {"type":"noul","instructions":"...","criteria":{"true":"...","false":"..."}}; {"type":"choice","instructions":"...","criteria":{"label":"meaning"}}; or {"type":"score","instructions":"...","criteria":["low","high"]}. Criteria must define exact options/rubric and evaluation rules. `sources` and `images` are identifiers resolved by the runtime, not payloads; image use requires runtime image support. Jev advises only; it does not authorize actions or generate free-form choices. To pull a value out of stored outputs without reading them, add `fields` (with `sources`): {"type":"text","instructions":"..."} or {"type":"number","instructions":"..."} for one value, {"type":"list","instructions":"..."} for every matching passage, {"type":"estimate","instructions":"...","min":0,"max":30} for an estimate; text and number take an optional `null_threshold` (default 0.5). Each value comes back with the `S<n>:<line>` it was read from, and a value the sources do not hold is dropped. Read-only call may incur network cost."#;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct JevDecideInput {
     /// Small context needed to decide; avoid copying long source payloads.
     pub state: Option<serde_json::Value>,
-    /// Nonempty map of stable question IDs to tagged question objects.
+    /// Map of stable question IDs to tagged question objects; may be empty when `fields` is not.
     /// Example: {"retain":{"type":"noul","instructions":"Keep this evidence?","criteria":{"true":"needed","false":"irrelevant"}}};
     /// choice uses `{"type":"choice","instructions":"Pick best","criteria":{"a":"...","b":"..."}}`;
     /// score uses `{"type":"score","instructions":"Rate fit","criteria":["poor","good"]}`.
+    #[serde(default)]
     pub questions: BTreeMap<String, serde_json::Value>,
+    /// Values to extract verbatim from `sources`, keyed by stable IDs:
+    /// `{"first_error":{"type":"text","instructions":"The first error location"}}`,
+    /// `{"failed":{"type":"number","instructions":"How many tests failed"}}`,
+    /// `{"causes":{"type":"list","instructions":"Lines that say why a test failed"}}`,
+    /// `{"rounds":{"type":"estimate","instructions":"...","min":0,"max":30}}`.
+    #[serde(default)]
+    pub fields: BTreeMap<String, serde_json::Value>,
     /// Source IDs resolvable by runtime. Provide non-null `state` or at least one source/image ID.
     #[serde(default)]
     pub sources: Vec<String>,
@@ -39,8 +47,33 @@ impl TryFrom<ToolInput> for JevDecideInput {
 }
 impl JevDecideInput {
     fn validate(&self) -> Result<(), String> {
-        if self.questions.is_empty() {
-            return Err("questions must contain at least one decision question".into());
+        if self.questions.is_empty() && self.fields.is_empty() {
+            return Err("questions or fields must contain at least one entry".into());
+        }
+        if !self.fields.is_empty() && self.sources.is_empty() {
+            return Err("fields read stored outputs: provide at least one source identifier".into());
+        }
+        for (id, field) in &self.fields {
+            let valid = field.as_object().is_some_and(|object| {
+                let has_instructions = object
+                    .get("instructions")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|text| !text.trim().is_empty());
+                let number = |key: &str| object.get(key).and_then(serde_json::Value::as_f64);
+                has_instructions
+                    && match object.get("type").and_then(serde_json::Value::as_str) {
+                        Some("text" | "number" | "list") => true,
+                        Some("estimate") => number("min")
+                            .zip(number("max"))
+                            .is_some_and(|(min, max)| min < max),
+                        _ => false,
+                    }
+            });
+            if !valid {
+                return Err(format!(
+                    "field `{id}` must be {{\"type\": text|number|list|estimate, \"instructions\": ...}} (estimate also needs min < max)"
+                ));
+            }
         }
         if self.state.as_ref().is_none_or(serde_json::Value::is_null)
             && self.sources.is_empty()
@@ -233,6 +266,25 @@ mod tests {
             let mut value = valid();
             value["questions"]["bad"] = question;
             assert!(input(value).is_err());
+        }
+    }
+
+    /// Fields read stored outputs, so they need a source; a field without
+    /// instructions or with an impossible range never reaches the network.
+    #[test]
+    fn fields_need_sources_and_a_known_shape() {
+        let fields_only = |fields: serde_json::Value, sources: serde_json::Value| {
+            input(serde_json::json!({"state": null, "fields": fields, "sources": sources}))
+        };
+        let failed = serde_json::json!({"failed": {"type": "number", "instructions": "How many tests failed"}});
+        assert!(fields_only(failed.clone(), serde_json::json!(["tool-output:1"])).is_ok(), "no questions needed");
+        assert!(fields_only(failed, serde_json::json!([])).unwrap_err().contains("source"));
+        for field in [
+            serde_json::json!({"type": "list"}),
+            serde_json::json!({"type": "table", "instructions": "x"}),
+            serde_json::json!({"type": "estimate", "instructions": "x", "min": 5, "max": 1}),
+        ] {
+            assert!(fields_only(serde_json::json!({"f": field}), serde_json::json!(["tool-output:1"])).is_err());
         }
     }
 

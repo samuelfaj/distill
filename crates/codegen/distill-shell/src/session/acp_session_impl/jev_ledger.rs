@@ -72,6 +72,13 @@ pub(crate) struct JevTurnLedger {
     /// B6: the human request whose delegation hint waits for the next model
     /// request, and the hint's text.
     pub(crate) delegation_hint: Option<(String, &'static str)>,
+    /// B6 (work shape): the last human request asked about, with its answer
+    /// while it is on its way (`None` once taken). Asked in the background so
+    /// the turn never waits for it.
+    pub(crate) work_shape: Option<(
+        String,
+        Option<tokio::task::JoinHandle<Option<distill_workspace::jev::JevAnswerSet>>>,
+    )>,
     pub(crate) last_execution: Option<(String, Option<distill_sampling_types::ReasoningEffort>)>,
     /// The session's optional tool families. Session-scoped: draining the turn
     /// keeps it, so the tools array only grows when a later request needs

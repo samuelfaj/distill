@@ -339,6 +339,12 @@ impl SessionActor {
                 )
             })
             .collect();
+        if crate::jev::lever_active(JevLever::B2StepBattery) {
+            let Some(tier) = Box::pin(self.battery_tier(&entries, &all_entries)).await else {
+                return skip("Jev gave no step battery answer");
+            };
+            return self.apply_routed_tier(cfg, tier, &slugs, &config_of, None);
+        }
         let Some(questions) = tier_questions(mode, &descriptions) else {
             return skip("tier question could not be built");
         };
@@ -391,18 +397,111 @@ impl SessionActor {
         if let Some(kept) = self.escalation_refused_switch(tier, &all_entries) {
             tier = kept;
         }
+        self.apply_routed_tier(cfg, tier, &slugs, &config_of, Some((confidence, &answers)))
+    }
+
+    /// The tier the step battery picks for this round, among `entries`. The
+    /// battery is asked with the same bytes as the effort pass, so whichever
+    /// asks first pays and the other reads the decision memo. A pick that
+    /// moves a turn to a cheaper model mid-turn on a prompt past the free
+    /// switch size keeps the previous model: the switch would re-read the
+    /// whole prompt uncached.
+    async fn battery_tier(&self, entries: &[TierEntry], all_entries: &[TierEntry]) -> Option<Tier> {
+        use distill_workspace::jev::catalog::battery::{compose_step_tier, tier as rank};
+        let (state, questions) = self.step_battery_request().await?;
+        let answers = crate::jev::ask_item(JevLever::B2StepBattery, state, questions).await?;
+        let rank_of = |tier: Tier| match tier {
+            Tier::Utility => rank::UTILITY,
+            Tier::Worker => rank::WORKER,
+            Tier::Main => rank::MAIN,
+        };
+        let offered: Vec<u8> = entries.iter().map(|entry| rank_of(entry.tier)).collect();
+        let confidence =
+            answers.confidence(distill_workspace::jev::catalog::battery::STEP_KIND_QUESTION);
+        let Some((picked, step)) =
+            compose_step_tier(&answers, &offered, distill_tool_types::JEV_CHOICE_QUANTILE)
+        else {
+            crate::jev::record_item(
+                JevLever::B2ExecutionTier,
+                "defer",
+                "no usable step battery answer; the main model keeps the round",
+                confidence,
+                Some(&answers),
+            );
+            return None;
+        };
+        let mut tier = entries
+            .iter()
+            .map(|entry| entry.tier)
+            .find(|tier| rank_of(*tier) == picked)?;
+        let (previous_model, prompt_tokens) = {
+            let ledger = self.jev_ledger.borrow();
+            (
+                ledger.last_execution.as_ref().map(|(model, _)| model.clone()),
+                ledger.last_main_prompt_tokens(),
+            )
+        };
+        let previous = previous_model.and_then(|model| {
+            all_entries
+                .iter()
+                .find(|entry| entry.model == model)
+                .map(|entry| entry.tier)
+        });
+        if super::escalation::refuses_midturn_switch(previous, tier, prompt_tokens)
+            && let Some(previous) = previous
+        {
+            crate::jev::record_item(
+                JevLever::B2ExecutionTier,
+                "tier:kept_cached_prefix",
+                &format!("kept {} over {}: the prompt is cached there", previous.id(), tier.id()),
+                confidence,
+                Some(&answers),
+            );
+            tier = previous;
+        }
+        crate::jev::record_item(
+            JevLever::B2ExecutionTier,
+            &format!("step:{}", step.kind.id()),
+            &format!("battery picked {}{}", tier.id(), if step.costly { " (costly step)" } else { "" }),
+            confidence,
+            None,
+        );
+        Some(tier)
+    }
+
+    /// Runs the round on `tier`: `false` keeps the main model, `true` replaces
+    /// `cfg` with the routed model's config.
+    fn apply_routed_tier<'a>(
+        &self,
+        cfg: &mut SamplingConfig,
+        tier: Tier,
+        slugs: &[(Tier, String)],
+        config_of: &dyn Fn(Tier) -> Option<&'a SamplingConfig>,
+        decision: Option<(Option<f64>, &distill_workspace::jev::JevAnswerSet)>,
+    ) -> bool {
+        let (confidence, answers) = match decision {
+            Some((confidence, answers)) => (confidence, Some(answers)),
+            None => (None, None),
+        };
         if tier == Tier::Main {
             crate::jev::record_item(
                 JevLever::B2ExecutionTier,
                 "main",
                 &format!("model {}", cfg.model),
                 confidence,
-                Some(&answers),
+                answers,
             );
             return false;
         }
         let Some(mut routed) = config_of(tier).cloned() else {
-            return skip("chosen tier has no resolved config");
+            crate::jev::record_item(
+                JevLever::B2ExecutionTier,
+                "skip",
+                "chosen tier has no resolved config",
+                None,
+                None,
+            );
+            return false;
         };
         // Keep the effort only where the new model offers it; otherwise the
         // effort pass that follows chooses one from its own menu.
@@ -415,7 +514,7 @@ impl SessionActor {
             tier.id(),
             &format!("model {} for this round", routed.model),
             confidence,
-            Some(&answers),
+            answers,
         );
         {
             let mut ledger = self.jev_ledger.borrow_mut();

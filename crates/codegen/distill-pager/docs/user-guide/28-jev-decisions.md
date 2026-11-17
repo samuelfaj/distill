@@ -57,13 +57,24 @@ b8_review_hygiene     = true # Auto mid-turn review on a large prompt: no return
 f1_followup_label     = true # a message within 10 minutes of the last turn's end also asks whether it reports that result as wrong or incomplete; only the label is recorded, nothing acts on it
 b8_criteria_v2        = true # Auto: the mode question judges the whole request; each mode says what it is for, what it is not for, with example requests; false restores the first question; not yet through replay, shadow or a benchmark
 b8_up_only            = true # Auto: inside a request the mode only moves up (a review needs 0.25 over the current mode, or the escalation ratchet); a leaner pick waits for the next request; false restores the review that moves either way; not yet through replay, shadow or a benchmark
-b6_delegation_hint    = true  # B6: with a worker model, the turn-start request also asks whether the request takes more than one call and whether it has independent parts; every answer is logged, and true adds one <delegation_hint> line before the turn's next model request when the work is multi-step, and one more for every 8 rounds the main model then works hands-on without delegating
+b6_delegation_hint    = true  # B6: with a worker model, a delegation hint before the turn's next model request when the work is multi-step, and one more for every 8 rounds the main model then works hands-on without delegating
+b6_work_shape         = true  # B6 asks the work shape (direct answer, one or two calls, specified work, investigation, open design) on every new request, in the background, and the hint says what to hand over; false restores the two questions on the tool-family request
+b2_step_battery       = true  # auto effort and UltraSave's tier come from the kind of step (lookup ... review) and a table per mode, one question per round; false restores the effort choice
+b7_utility_children   = true  # a fresh explore child whose assignment is plain reading runs on the utility model, falling back to its own model on any failed request
 
 # Off until their own gate passes (the plan's standing rule):
 b2_model_tier         = false # money lever: only ever downgrades a routine turn
 c6_injection_screen   = false # cost per tool output not measured yet
 d2_big_output_retention = false # D2: asked at ingest, before the model read the output; it never dropped one
 d6_warm_batches       = false # D6 also on a warm cache, in batches that should pay for the break; unmeasured
+
+# The decision model per lever; these are the shipped choices
+# (docs/d1.2-decision-results.md), every other lever uses [jev] model:
+# [jev.models]
+# b6_work_shape        = "liquid/d1.2"
+# b7_utility_children  = "liquid/d1.2"
+# stored_output_search = "liquid/d1.2"        # ask_stored_output evidence selection
+# jev_decide_fields    = "liquid/d1.2-ultra"  # jev_decide extraction (d1.2 only)
 
 # Optional, with the defaults shown
 # base_url      = "https://api.typesafe.ai"
@@ -131,6 +142,17 @@ What the decision sees for each call:
 | `phase` | `start_of_turn` (the user's request) or `mid_turn_after_tools` (continuing after tool results) |
 | `recent_steps` | the last few tool calls and results, as short labels (no bodies) |
 | `turn_items` / `request` | how far the turn has progressed, and the user's request (bounded) |
+
+By default (`[jev.ladder] b2_step_battery`) Jev is not asked for a level at all.
+It answers what kind of step the call is — `lookup`, `relay`, `edit_specified`,
+`implement`, `diagnose`, `design` or `review`; on a request's first step, the
+kind of the request — and whether a wrong step would be expensive, and a table
+per mode sets the level: reading and relaying at the cheapest level in every
+mode, code from clear requirements at medium in Normal, diagnosis, design and
+review at high in Normal (medium in UltraSave and UltraFast, xhigh for design
+and review in UltraCode), one level more for an expensive step. The table is in
+`docs/jev-routing.md` in the repository. With the battery off,
+the fields above go to a `choice` over the menu and the rules below apply to it.
 
 Rules that hold in auto mode:
 

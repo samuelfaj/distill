@@ -66,6 +66,12 @@ async fn actor_with_menu(
     actor.chat_state_handle.update_sampling_config(config);
     actor.jev_effort_auto.store(true, Ordering::Relaxed);
     actor.execution_mode.store(mode);
+    // These tests pin the mode rows of the effort `choice`, the path
+    // `b2_step_battery = false` keeps; the battery has its own tests.
+    crate::jev::set_test_flags(distill_workspace::jev::JevFlags {
+        b2_step_battery: false,
+        ..distill_workspace::jev::JevFlags::harness_default()
+    });
     actor
         .chat_state_handle
         .push_user_message_and_ack(ConversationItem::user("Fix the failing parser test"))
@@ -682,10 +688,11 @@ async fn c4_waits_the_rows_deadline() {
 #[serial_test::serial]
 fn a_pinned_ultrafast_turn_awaits_no_jev_call_before_its_first_request() {
     let (today_log, today_efforts) = run_ultrafast_turn(today());
+    // The effort question is the step battery's by default.
     assert!(
         today_log.iter().any(|ask| !ask.detached
             && ask.dispatched_before == 0
-            && ask.lever == "b2_micro_effort"),
+            && ask.lever == "b2_step_battery"),
         "{today_log:?}"
     );
     assert_eq!(today_efforts, ["medium", "medium"]);
@@ -699,7 +706,7 @@ fn a_pinned_ultrafast_turn_awaits_no_jev_call_before_its_first_request() {
     assert!(
         v2_log
             .iter()
-            .any(|ask| ask.detached && ask.lever == "b2_micro_effort"),
+            .any(|ask| ask.detached && ask.lever == "b2_step_battery"),
         "{v2_log:?}"
     );
     assert_eq!(v2_efforts, ["low", "medium"]);
@@ -808,4 +815,67 @@ fn run_ultrafast_turn(modes: Option<V2Modes>) -> (Vec<crate::jev::TestAsk>, Vec<
         .join()
         .expect("test thread");
     receiver.recv().expect("turn result")
+}
+
+/// The step battery's answer for one round: `kind` per step kind, and how
+/// likely a wrong step is to be expensive.
+fn battery_answer(kind: &[(&str, f64)], costly: f64) -> JevAnswerSet {
+    use distill_workspace::jev::catalog::battery::{STEP_KIND_QUESTION, WRONG_STEP_COSTLY_QUESTION};
+    let choice = kind
+        .iter()
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(id, _)| (*id).to_owned())
+        .unwrap_or_default();
+    JevAnswerSet {
+        model: "liquid/d1.2-ultra-20261116".to_owned(),
+        answers: BTreeMap::from([
+            (
+                STEP_KIND_QUESTION.to_owned(),
+                distill_workspace::jev::Answer::Choice {
+                    choice,
+                    probabilities: kind.iter().map(|(id, p)| ((*id).to_owned(), *p)).collect(),
+                    confidence: Some(0.9),
+                },
+            ),
+            (
+                WRONG_STEP_COSTLY_QUESTION.to_owned(),
+                distill_workspace::jev::Answer::Noul { noul: costly },
+            ),
+        ]),
+        usage: Default::default(),
+        latency_ms: 5,
+        request_id: None,
+    }
+}
+
+/// With the battery the decision model only says what kind of step it is;
+/// the mode's table sets the level. The question names no model and no
+/// policy, so the same bytes serve the tier pass.
+#[tokio::test(flavor = "current_thread")]
+#[serial_test::serial]
+async fn the_step_battery_sets_the_level_from_the_mode_table() {
+    let session = "mode-effort-battery";
+    let menu = ["low", "medium", "high", "xhigh", "max"];
+    with_rows(v2(), async {
+        for (mode, kind, costly, expected) in [
+            (ExecutionMode::Normal, &[("lookup", 0.9), ("relay", 0.1)][..], 0.1, ReasoningEffort::Low),
+            (ExecutionMode::Normal, &[("diagnose", 0.9), ("lookup", 0.1)][..], 0.1, ReasoningEffort::High),
+            (ExecutionMode::Normal, &[("implement", 1.0)][..], 0.9, ReasoningEffort::High),
+            (ExecutionMode::Ultrasave, &[("diagnose", 0.9), ("lookup", 0.1)][..], 0.1, ReasoningEffort::Medium),
+            (ExecutionMode::Ultracode, &[("design", 1.0)][..], 0.1, ReasoningEffort::Xhigh),
+        ] {
+            let actor = actor_with_menu(mode, &menu, None).await;
+            crate::jev::set_test_flags(distill_workspace::jev::JevFlags::harness_default());
+            crate::jev::set_test_decision_answers([Some(battery_answer(kind, costly))]);
+            let prepared = prepare(&actor, session).await;
+            assert_eq!(prepared.reasoning_effort, Some(expected), "{mode:?} {kind:?} costly={costly}");
+            let bodies = crate::jev::take_test_asked_bodies();
+            assert_eq!(bodies.len(), 1, "one battery request per round");
+            assert!(bodies[0].contains("step_kind") && bodies[0].contains("wrong_step_costly"));
+            assert!(!bodies[0].contains("execution_policy"), "the policy lives in code");
+            assert!(!bodies[0].contains("\"model\""), "no model in the battery state");
+        }
+        let _ = rows(session);
+    })
+    .await;
 }

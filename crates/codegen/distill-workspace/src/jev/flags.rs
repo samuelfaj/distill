@@ -132,6 +132,15 @@ pub struct JevLadderOverlay {
     pub b8_criteria_v2: Option<bool>,
     /// B8 mid-turn review: inside a request the mode only moves up.
     pub b8_up_only: Option<bool>,
+    /// B2: effort and tier come from the step battery (step kind + costly)
+    /// and the policy tables, one request per round for both.
+    pub b2_step_battery: Option<bool>,
+    /// B6: the delegation hint is asked on every new request when a worker is
+    /// set, from the work shape, instead of riding the tool-family request.
+    pub b6_work_shape: Option<bool>,
+    /// B7: a fresh `explore` child whose assignment is plain reading runs on
+    /// the utility model, by one decision per child.
+    pub b7_utility_children: Option<bool>,
 }
 
 /// Resolves one boolean switch: an explicit value from any trusted layer wins
@@ -216,6 +225,18 @@ impl JevFlags {
             // `false` restores the first wording and the free review.
             b8_criteria_v2: true,
             b8_up_only: true,
+            // On by the owner's rule for new efficiency work; measured only on
+            // the labelled set in scripts/benchmarks/jev-decisions (32/32 on
+            // Jev 1.14 against 24/32 for the effort `choice`), never in a
+            // paired benchmark. `false` restores the effort `choice` and the
+            // tier `choice`.
+            b2_step_battery: true,
+            // On, same evidence (12/12 on the labelled requests); `false`
+            // restores the two-noul hint on the tool-family request.
+            b6_work_shape: true,
+            // On, same evidence (8/8 on labelled assignments); utility
+            // reports are not measured against the worker's yet.
+            b7_utility_children: true,
         }
     }
 
@@ -323,6 +344,12 @@ impl JevFlags {
             && resolve_switch(ladder.b8_criteria_v2, None, self.b8_criteria_v2);
         self.b8_up_only =
             self.b8_execution_mode && resolve_switch(ladder.b8_up_only, None, self.b8_up_only);
+        self.b2_step_battery =
+            self.enabled && resolve_switch(ladder.b2_step_battery, None, self.b2_step_battery);
+        self.b6_work_shape = self.b6_delegation_hint
+            && resolve_switch(ladder.b6_work_shape, None, self.b6_work_shape);
+        self.b7_utility_children = self.b7_subagent_model
+            && resolve_switch(ladder.b7_utility_children, None, self.b7_utility_children);
         self
     }
 }
@@ -427,6 +454,12 @@ pub struct JevFlags {
     /// B8: inside a request Auto's mode only moves up; a leaner pick waits
     /// for the next request.
     pub b8_up_only: bool,
+    /// B2: effort and tier from the step battery and the policy tables.
+    pub b2_step_battery: bool,
+    /// B6: the delegation hint from the work shape, on every new request.
+    pub b6_work_shape: bool,
+    /// B7: reading-only `explore` children run on the utility model.
+    pub b7_utility_children: bool,
 }
 
 impl JevFlags {
@@ -475,6 +508,9 @@ impl JevFlags {
             f1_followup_label: false,
             b8_criteria_v2: false,
             b8_up_only: false,
+            b2_step_battery: false,
+            b6_work_shape: false,
+            b7_utility_children: false,
         }
     }
 
@@ -582,6 +618,10 @@ impl JevFlags {
             JevLever::F1FollowupLabel => self.f1_followup_label,
             JevLever::B8CriteriaV2 => self.b8_criteria_v2,
             JevLever::B8UpOnly => self.b8_up_only,
+            JevLever::B2StepBattery => self.b2_step_battery,
+            // Refinements of B6 and B7: off with their parent lever.
+            JevLever::B6WorkShape => self.b6_delegation_hint && self.b6_work_shape,
+            JevLever::B7UtilityChildren => self.b7_subagent_model && self.b7_utility_children,
         }
     }
 
@@ -637,6 +677,9 @@ pub enum JevLever {
     F1FollowupLabel,
     B8CriteriaV2,
     B8UpOnly,
+    B2StepBattery,
+    B6WorkShape,
+    B7UtilityChildren,
 }
 
 impl JevLever {
@@ -683,6 +726,9 @@ impl JevLever {
             Self::F1FollowupLabel => "f1_followup_label",
             Self::B8CriteriaV2 => "b8_criteria_v2",
             Self::B8UpOnly => "b8_up_only",
+            Self::B2StepBattery => "b2_step_battery",
+            Self::B6WorkShape => "b6_work_shape",
+            Self::B7UtilityChildren => "b7_utility_children",
         }
     }
 }
@@ -942,6 +988,36 @@ mod tests {
                 .lever_active(JevLever::F1FollowupLabel)
         );
         assert_eq!(JevLever::F1FollowupLabel.as_str(), "f1_followup_label");
+    }
+
+    /// The step battery, the work-shape hint and utility children ship on,
+    /// each turns off alone, and the two that refine B6 and B7 follow them.
+    #[test]
+    fn the_battery_switches_default_on_and_follow_their_parent_levers() {
+        let overlaid = |ladder| JevFlags::harness_default().overlaid(None, None, None, ladder);
+        let default = overlaid(JevLadderOverlay::default());
+        for lever in [JevLever::B2StepBattery, JevLever::B6WorkShape, JevLever::B7UtilityChildren] {
+            assert!(default.lever_active(lever), "{}", lever.as_str());
+        }
+        let battery_off = overlaid(JevLadderOverlay {
+            b2_step_battery: Some(false),
+            ..JevLadderOverlay::default()
+        });
+        assert!(!battery_off.lever_active(JevLever::B2StepBattery));
+        assert!(battery_off.lever_active(JevLever::B2MicroEffort), "the old effort question stays");
+        let hint_off = overlaid(JevLadderOverlay {
+            b6_delegation_hint: Some(false),
+            ..JevLadderOverlay::default()
+        });
+        assert!(!hint_off.lever_active(JevLever::B6WorkShape));
+        let b7_off = overlaid(JevLadderOverlay {
+            b7_subagent_model: Some(false),
+            ..JevLadderOverlay::default()
+        });
+        assert!(!b7_off.lever_active(JevLever::B7UtilityChildren));
+        let master_off = JevFlags::harness_default().overlaid(Some(false), None, None, JevLadderOverlay::default());
+        assert!(!master_off.lever_active(JevLever::B2StepBattery));
+        assert_eq!(JevLever::B7UtilityChildren.as_str(), "b7_utility_children");
     }
 
     /// Auto v2's two levers ship on, each has its own off switch, and both

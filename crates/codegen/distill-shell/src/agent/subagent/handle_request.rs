@@ -1052,7 +1052,7 @@ pub(crate) async fn run_shell_child(
             &ctx,
         )
         .await;
-    let cheap_agent = crate::agent::subagent::cheap_agent_eligible(
+    let cheap_agent = crate::agent::subagent::cheap_agent_candidate(
         &request,
         !is_wake && resume_source.is_none() && request.resume_from.is_none(),
         effective_runtime.model.is_some()
@@ -1061,7 +1061,8 @@ pub(crate) async fn run_shell_child(
                 .subagent_model_overrides
                 .contains_key(&request.subagent_type),
         &ctx.parent_session_id,
-    );
+    ) && (crate::jev::lever_active(distill_workspace::jev::flags::JevLever::ECheapAgent)
+        || Box::pin(crate::agent::subagent::jev_child_on_utility(&request)).await);
     let subagent_max_turns = resolve_subagent_max_turns(definition.max_turns, ctx.parent_max_turns);
     {
         let model_str = &effective_sampling_config.model;

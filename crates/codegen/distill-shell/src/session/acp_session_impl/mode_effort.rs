@@ -250,7 +250,7 @@ impl SessionActor {
                     return;
                 };
                 let answer = tokio::task::spawn_local(crate::jev::in_current_turn(
-                    crate::jev::ask_item(JevLever::B2MicroEffort, state, questions),
+                    crate::jev::ask_item(self.effort_ask_lever(), state, questions),
                 ));
                 self.jev_ledger.borrow_mut().turn_effort = TurnEffort::Pending {
                     turn,

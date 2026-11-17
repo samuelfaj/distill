@@ -339,7 +339,7 @@ async fn rank_search_hits(question: &str, hits: &mut Vec<SearchHit>) -> (&'stati
         apply_search_selection(hits, &choices);
         ("benchmark explicit include/exclude; lexical order preserved", false, None)
     }) { return result; }
-    let Some(client) = crate::jev::client_cached().filter(|client| client.credential_present()) else {
+    let Some(client) = crate::jev::client_for("stored_output_search").filter(|client| client.credential_present()) else {
         hits.truncate(SEARCH_RESULTS); return ("lexical fallback: Jev unavailable", false, None);
     };
     let observed = crate::jev::observed_client(client, "stored_output_search");

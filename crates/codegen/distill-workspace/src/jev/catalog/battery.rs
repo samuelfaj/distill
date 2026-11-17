@@ -7,11 +7,11 @@
 //! gets (B7). The tables below turn those answers into an effort level, a tier,
 //! a delegation hint or a child model. Before this battery the effort question
 //! asked the decision model to weigh the mode's policy prose and pick a level
-//! itself; on the labelled set in `scripts/benchmarks/jev-decisions` the
-//! battery scored 32/32 on Jev 1.14 and d1.2-ultra and 30/32 on d1.2, against
-//! 24/32, 31/32 and 22/32 for the old question, and it lets one answer serve
+//! itself; on the labelled steps in `scripts/benchmarks/jev-decisions` the
+//! battery scored 32/32 on Jev 1.14 and d1.2-ultra and 29/32 on d1.2, against
+//! 27/32, 31/32 and 21/32 for the old question, and it lets one answer serve
 //! both the effort and the tier of a round. The question texts are copied in
-//! `run.py`; keep them in sync.
+//! `run.py`; a test below fails when the two drift apart.
 
 use std::collections::BTreeMap;
 
@@ -43,10 +43,12 @@ pub enum StepKind {
     Diagnose,
     Design,
     Review,
+    /// A short reply whose work the state does not show.
+    Unstated,
 }
 
 impl StepKind {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Lookup,
         Self::Relay,
         Self::EditSpecified,
@@ -54,6 +56,7 @@ impl StepKind {
         Self::Diagnose,
         Self::Design,
         Self::Review,
+        Self::Unstated,
     ];
 
     pub const fn id(self) -> &'static str {
@@ -65,6 +68,7 @@ impl StepKind {
             Self::Diagnose => "diagnose",
             Self::Design => "design",
             Self::Review => "review",
+            Self::Unstated => "unstated",
         }
     }
 
@@ -73,7 +77,9 @@ impl StepKind {
             Self::Lookup => {
                 "Read, search, list or fetch something, or run a known command such as a build, a test or git, before any judgment about the result"
             }
-            Self::Relay => "Report, summarize or answer from results and facts already in hand",
+            Self::Relay => {
+                "Report, summarize or answer from results and facts already in hand, or acknowledge a message that asks for no work"
+            }
             Self::EditSpecified => {
                 "Make edits whose exact content is already decided, even across several files: a typo, a rename, a value, a step of a plan that states the change"
             }
@@ -89,13 +95,17 @@ impl StepKind {
             Self::Review => {
                 "Judge subtle correctness: concurrency, security, data loss, public contracts, a proof or exact arithmetic"
             }
+            Self::Unstated => {
+                "A short reply that confirms or continues work which neither the request nor `replying_to` describes, so its kind cannot be told"
+            }
         }
     }
 
     /// Kinds where an expensive mistake earns more thinking. Reading and
-    /// relaying do not get better with more effort.
+    /// relaying do not get better with more effort, and a step whose work is
+    /// unknown has no cost to judge.
     const fn bumpable(self) -> bool {
-        !matches!(self, Self::Lookup | Self::Relay)
+        !matches!(self, Self::Lookup | Self::Relay | Self::Unstated)
     }
 }
 
@@ -111,9 +121,11 @@ pub fn step_battery_questions() -> Result<BTreeMap<QuestionId, Question>, JevErr
         Question::choice(
             "What kind of step is the single model call described in `micro_action`? When `micro_action.step` is \
              `first_step`, that call reads the request and plans how to do all of it before any tool call: judge the \
-             request itself. Otherwise judge that one step, not the whole request: a hard request still has easy steps \
-             (reading a file, running a test) and an easy request can have a hard one. `what_it_must_do` is the model's \
-             own last plan; `last_calls` and `last_results` are what it just did.",
+             request itself. A request that is only a short reply (a confirmation, a choice, a word to continue) asks \
+             for the work that `replying_to` proposes, the end of the assistant's previous message: judge that work. \
+             Otherwise judge that one step, not the whole request: a hard request still has easy steps (reading a file, \
+             running a test) and an easy request can have a hard one. `what_it_must_do` is the model's own last plan; \
+             `last_calls` and `last_results` are what it just did.",
             criteria,
         )?,
     );
@@ -142,28 +154,33 @@ pub mod rank {
 }
 
 /// The effort a kind of step runs at in a mode. `None` means the cheapest
-/// level the model offers, whatever it is called.
+/// level the model offers, whatever it is called: on a menu with `none` or
+/// `minimal` that turns reasoning off, which only UltraSave asks for
+/// ("the lowest offered level for mechanical steps").
 ///
 /// | kind | UltraSave | Normal | UltraFast | UltraCode |
 /// |---|---|---|---|---|
-/// | lookup | cheapest | cheapest | cheapest | cheapest |
-/// | relay | low | low | low | low |
+/// | lookup | cheapest | low | low | low |
+/// | relay | cheapest | low | low | low |
 /// | edit_specified | low | low | low | low |
 /// | implement | low | medium | medium | high |
 /// | diagnose | medium | high | medium | high |
 /// | design | medium | high | medium | xhigh |
 /// | review | medium | high | medium | xhigh |
+/// | unstated | low | medium | low | high |
 ///
 /// This is the mode prose the old effort question carried, written down:
 /// UltraSave one level under Normal above relaying, UltraFast medium for
 /// anything that thinks, UltraCode one level over Normal for planning, design
-/// and review, and every mode cheap for mechanical steps.
+/// and review, and every mode low for mechanical steps. A short reply whose
+/// work the state does not show (`unstated`) runs at the level the mode uses
+/// when Jev gives no answer at all.
 pub const fn effort_target(mode: ExecutionMode, kind: StepKind) -> Option<u8> {
     use ExecutionMode::{Normal, Ultracode, Ultrafast, Ultrasave};
     use StepKind::*;
     match (kind, mode) {
-        (Lookup, _) => None,
-        (Relay | EditSpecified, _) => Some(rank::LOW),
+        (Lookup | Relay, Ultrasave) => None,
+        (Lookup | Relay | EditSpecified, _) => Some(rank::LOW),
         (Implement, Ultrasave) => Some(rank::LOW),
         (Implement, Normal | Ultrafast) => Some(rank::MEDIUM),
         (Implement, Ultracode) => Some(rank::HIGH),
@@ -171,6 +188,9 @@ pub const fn effort_target(mode: ExecutionMode, kind: StepKind) -> Option<u8> {
         (Diagnose | Design | Review, Normal) => Some(rank::HIGH),
         (Diagnose, Ultracode) => Some(rank::HIGH),
         (Design | Review, Ultracode) => Some(rank::XHIGH),
+        (Unstated, Ultrasave | Ultrafast) => Some(rank::LOW),
+        (Unstated, Normal) => Some(rank::MEDIUM),
+        (Unstated, Ultracode) => Some(rank::HIGH),
     }
 }
 
@@ -249,20 +269,14 @@ fn kind_at_quantile(mut mass: Vec<(StepKind, f64, u8)>, quantile: f64) -> Option
     mass.last().map(|(kind, _, target)| (*kind, *target))
 }
 
-/// Whether the costly bump applies: a confident "expensive" and most of the
-/// mass on kinds where thinking more helps.
-fn costly(answers: &JevAnswerSet, mass: &[(StepKind, f64)]) -> bool {
-    let total: f64 = mass.iter().map(|(_, p)| p).sum();
-    let bumpable: f64 = mass
-        .iter()
-        .filter(|(kind, _)| kind.bumpable())
-        .map(|(_, p)| p)
-        .sum();
-    let noul = match answers.answers.get(WRONG_STEP_COSTLY_QUESTION) {
-        Some(Answer::Noul { noul }) => *noul,
-        _ => return false,
-    };
-    total > 0.0 && noul >= COSTLY_FLOOR && bumpable / total >= 0.5
+/// Whether the costly bump applies to the picked `kind`: a confident
+/// "expensive", on a kind where thinking more helps.
+fn costly(answers: &JevAnswerSet, kind: StepKind) -> bool {
+    kind.bumpable()
+        && matches!(
+            answers.answers.get(WRONG_STEP_COSTLY_QUESTION),
+            Some(Answer::Noul { noul }) if *noul >= COSTLY_FLOOR
+        )
 }
 
 /// The effort for one call from the step battery. `offered` is the model's
@@ -281,7 +295,7 @@ pub fn compose_step_effort(
         .map(|(kind, p)| (*kind, *p, effort_target(mode, *kind).unwrap_or(cheapest)))
         .collect();
     let (kind, mut target) = kind_at_quantile(targeted, quantile)?;
-    let bumped = costly(answers, &mass) && target < costly_ceiling(mode);
+    let bumped = costly(answers, kind) && target < costly_ceiling(mode);
     if bumped {
         target = (target + 1).min(costly_ceiling(mode));
     }
@@ -304,14 +318,17 @@ pub mod tier {
 
 /// Which of the user's models a kind of step needs: mechanical steps go to
 /// the cheapest, code from clear requirements to the worker, and diagnosis,
-/// design and review stay on the main model. The same in UltraSave and
+/// design and review stay on the main model, as does a reply whose work is not shown. The same in UltraSave and
 /// UltraFast, the two modes that route tiers; the smaller model is also the
 /// faster one.
 pub const fn tier_target(kind: StepKind) -> u8 {
     match kind {
         StepKind::Lookup | StepKind::Relay | StepKind::EditSpecified => tier::UTILITY,
         StepKind::Implement => tier::WORKER,
-        StepKind::Diagnose | StepKind::Design | StepKind::Review => tier::MAIN,
+        // Unknown work keeps the session's model, as a missing answer does.
+        StepKind::Diagnose | StepKind::Design | StepKind::Review | StepKind::Unstated => {
+            tier::MAIN
+        }
     }
 }
 
@@ -330,7 +347,7 @@ pub fn compose_step_tier(
         .map(|(kind, p)| (*kind, *p, tier_target(*kind)))
         .collect();
     let (kind, mut target) = kind_at_quantile(targeted, quantile)?;
-    let bumped = costly(answers, &mass) && target < tier::MAIN;
+    let bumped = costly(answers, kind) && target < tier::MAIN;
     if bumped {
         target += 1;
     }
@@ -697,6 +714,36 @@ mod tests {
         );
     }
 
+    /// The bump follows the kind that was picked, not the rest of the answer:
+    /// UltraSave reads a split answer low, and a relay it lands on stays
+    /// cheap even when most of the mass and the cost flag point higher.
+    #[test]
+    fn a_costly_flag_does_not_lift_a_picked_mechanical_step() {
+        let split = battery(&[("relay", 0.45), ("diagnose", 0.55)], 0.8);
+        let save = compose_step_effort(&split, &claude_menu(), ExecutionMode::Ultrasave, 0.4).unwrap();
+        assert_eq!((save.kind, save.id.as_str(), save.costly), (StepKind::Relay, "low", false));
+        let normal = compose_step_effort(&split, &claude_menu(), ExecutionMode::Normal, 0.5).unwrap();
+        assert_eq!((normal.kind, normal.id.as_str()), (StepKind::Diagnose, "high"));
+    }
+
+    /// "yes" or "continue" says nothing about the work. The decision model
+    /// called such requests open design and they ran at high; `unstated`
+    /// gives them the level the mode uses when Jev is silent, and no bump.
+    #[test]
+    fn a_reply_that_shows_no_work_runs_at_the_modes_baseline() {
+        let unstated = [("unstated", 0.9), ("design", 0.1)];
+        assert_eq!(effort(&unstated, 0.9, ExecutionMode::Normal), "medium", "no costly bump");
+        assert_eq!(effort(&unstated, 0.1, ExecutionMode::Ultrasave), "low");
+        assert_eq!(effort(&unstated, 0.1, ExecutionMode::Ultrafast), "low");
+        assert_eq!(effort(&unstated, 0.1, ExecutionMode::Ultracode), "high");
+        let all = [tier::UTILITY, tier::WORKER, tier::MAIN];
+        assert_eq!(
+            compose_step_tier(&battery(&unstated, 0.1), &all, 0.5).unwrap().0,
+            tier::MAIN,
+            "unknown work keeps the session's model"
+        );
+    }
+
     /// A split answer lands between its readings, and the mode's quantile
     /// leans it: UltraSave reads lower, UltraCode higher.
     #[test]
@@ -711,8 +758,35 @@ mod tests {
         assert_eq!(pick(0.75), "high");
     }
 
+    /// Reading a file is not a reason to turn reasoning off: on a menu that
+    /// offers `none`, a lookup runs at low, as the modes' policy always said.
+    /// Only UltraSave takes the cheapest level for mechanical steps.
+    #[test]
+    fn only_ultrasave_takes_the_cheapest_level_for_mechanical_steps() {
+        let menu: Vec<OfferedLevel> = [
+            ("none", rank::NONE),
+            ("minimal", rank::MINIMAL),
+            ("low", rank::LOW),
+            ("medium", rank::MEDIUM),
+            ("high", rank::HIGH),
+        ]
+        .into_iter()
+        .map(|(id, rank)| OfferedLevel { id: id.to_owned(), rank })
+        .collect();
+        let pick = |kind: &str, mode| {
+            compose_step_effort(&battery(&[(kind, 1.0)], 0.1), &menu, mode, 0.5).unwrap().id
+        };
+        for mode in [ExecutionMode::Normal, ExecutionMode::Ultrafast, ExecutionMode::Ultracode] {
+            assert_eq!(pick("lookup", mode), "low", "{mode:?}");
+            assert_eq!(pick("relay", mode), "low", "{mode:?}");
+        }
+        assert_eq!(pick("lookup", ExecutionMode::Ultrasave), "none");
+        assert_eq!(pick("relay", ExecutionMode::Ultrasave), "none");
+        assert_eq!(pick("edit_specified", ExecutionMode::Ultrasave), "low", "an edit is a code change");
+    }
+
     /// The target is mapped onto the model's own menu: a model without `low`
-    /// runs a reading step at its cheapest level, not at an invented one.
+    /// runs a reading step at the nearest level it has, not at an invented one.
     #[test]
     fn the_target_maps_onto_the_offered_menu() {
         let menu = vec![
@@ -860,6 +934,39 @@ mod tests {
         );
         assert_eq!(child(&[("summary", 0.6), ("analysis", 0.4)]), Some(false));
         assert_eq!(child(&[]), None);
+    }
+
+    /// The scores quoted for this battery come from
+    /// `scripts/benchmarks/jev-decisions/run.py`, which keeps its own copy of
+    /// the wording. They only describe what ships while that copy is the
+    /// shipped text, word for word.
+    #[test]
+    fn the_benchmark_script_asks_the_shipped_wording() {
+        let script = include_str!("../../../../../../scripts/benchmarks/jev-decisions/run.py");
+        fn texts(value: &Json, out: &mut Vec<String>) {
+            match value {
+                Json::String(text) => out.push(text.clone()),
+                Json::Array(items) => items.iter().for_each(|item| texts(item, out)),
+                Json::Object(map) => map.values().for_each(|item| texts(item, out)),
+                _ => {}
+            }
+        }
+        let mut wording = Vec::new();
+        for questions in [
+            step_battery_questions().unwrap(),
+            work_shape_questions().unwrap(),
+            child_task_questions().unwrap(),
+        ] {
+            for question in questions.values() {
+                let question = serde_json::to_value(question).unwrap();
+                texts(&question["instructions"], &mut wording);
+                texts(&question["criteria"], &mut wording);
+            }
+        }
+        assert!(wording.len() > 20, "instructions and criteria were read: {}", wording.len());
+        for text in wording {
+            assert!(script.contains(&text), "run.py no longer asks: {text}");
+        }
     }
 
     #[test]

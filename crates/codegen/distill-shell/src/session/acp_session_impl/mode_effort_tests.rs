@@ -688,11 +688,10 @@ async fn c4_waits_the_rows_deadline() {
 #[serial_test::serial]
 fn a_pinned_ultrafast_turn_awaits_no_jev_call_before_its_first_request() {
     let (today_log, today_efforts) = run_ultrafast_turn(today());
-    // The effort question is the step battery's by default.
     assert!(
         today_log.iter().any(|ask| !ask.detached
             && ask.dispatched_before == 0
-            && ask.lever == "b2_step_battery"),
+            && ask.lever == "b2_micro_effort"),
         "{today_log:?}"
     );
     assert_eq!(today_efforts, ["medium", "medium"]);
@@ -706,7 +705,7 @@ fn a_pinned_ultrafast_turn_awaits_no_jev_call_before_its_first_request() {
     assert!(
         v2_log
             .iter()
-            .any(|ask| ask.detached && ask.lever == "b2_step_battery"),
+            .any(|ask| ask.detached && ask.lever == "b2_micro_effort"),
         "{v2_log:?}"
     );
     assert_eq!(v2_efforts, ["low", "medium"]);
@@ -770,7 +769,8 @@ fn run_ultrafast_turn(modes: Option<V2Modes>) -> (Vec<crate::jev::TestAsk>, Vec<
                 *actor.current_prompt_id.lock().unwrap() = Some("ultrafast-turn".into());
                 let _ = crate::jev::take_test_ask_log();
                 crate::jev::set_test_decision_answers(
-                    std::iter::once(Some(effort_answer(&[("medium", 1.0)])))
+                    // UltraFast runs code from clear requirements at medium.
+                    std::iter::once(Some(battery_answer(&[("implement", 1.0)], 0.1)))
                         .chain(std::iter::repeat_n(None, 63)),
                 );
                 tokio::time::timeout(

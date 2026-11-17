@@ -1,6 +1,6 @@
 {
  "schema_version": 1,
- "note": "Synthetic, hand-written states for the effort, delegation and child-model decisions. No user content. Labels are the author's judgment of the acceptable answers under the Normal mode policy on a menu of low, medium, high, xhigh, max.",
+ "note": "Synthetic, hand-written states for the effort, delegation and child-model decisions. No user content. Labels are the author's judgment of the acceptable answers under the Normal mode policy on a menu of low, medium, high, xhigh, max. Delegation labels name the advice of `compose_work_shape`: none, delegate, delegate:parallel, investigate, investigate:parallel, settle_then_delegate. The followup group holds short replies at a request's first step; `replying_to` is the end of the assistant message they answer, when the state carries it.",
  "effort": [
   {
    "id": "e01",
@@ -468,18 +468,18 @@
    "id": "d03",
    "label": [
     "delegate",
-    "parallel"
+    "delegate:parallel"
    ],
    "request": "Rename getUserName to get_user_name across the repo; it is used in 14 files"
   },
   {
    "id": "d04",
-   "label": "parallel",
+   "label": "delegate:parallel",
    "request": "Add input validation to the five API handlers listed in issue #42; each must reject an empty name with a 400"
   },
   {
    "id": "d05",
-   "label": "delegate",
+   "label": "investigate",
    "request": "Find out why the integration test flakes on CI and fix it"
   },
   {
@@ -499,7 +499,7 @@
   },
   {
    "id": "d09",
-   "label": "parallel",
+   "label": "delegate:parallel",
    "request": "Translate docs/a.md, docs/b.md and docs/c.md to Portuguese, one file each"
   },
   {
@@ -514,7 +514,10 @@
   },
   {
    "id": "d12",
-   "label": "delegate",
+   "label": [
+    "delegate",
+    "investigate"
+   ],
    "request": "Upgrade all dependencies to their latest versions and fix whatever breaks"
   }
  ],
@@ -558,6 +561,309 @@
    "id": "c08",
    "label": "worker",
    "task": "Trace how a request flows from the HTTP handler to the database layer, identify where the transaction boundary is, and note any place where an error could leave partial writes."
+  }
+ ],
+ "followup": [
+  {
+   "id": "f01",
+   "label": [
+    "low",
+    "medium"
+   ],
+   "request": "",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": []
+  },
+  {
+   "id": "f02",
+   "label": [
+    "low",
+    "medium"
+   ],
+   "request": "continue",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": []
+  },
+  {
+   "id": "f03",
+   "label": [
+    "low",
+    "medium"
+   ],
+   "request": "yes",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": []
+  },
+  {
+   "id": "f04",
+   "label": [
+    "low",
+    "medium"
+   ],
+   "request": "ok, go ahead",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": []
+  },
+  {
+   "id": "f05",
+   "label": [
+    "low",
+    "medium"
+   ],
+   "request": "sim, pode fazer",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": []
+  },
+  {
+   "id": "f06",
+   "label": [
+    "low",
+    "medium"
+   ],
+   "request": "try again",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": []
+  },
+  {
+   "id": "f07",
+   "label": [
+    "low"
+   ],
+   "request": "thanks!",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": []
+  },
+  {
+   "id": "f08",
+   "label": [
+    "low",
+    "medium"
+   ],
+   "request": "do the same for the other two files",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": []
+  },
+  {
+   "id": "f09",
+   "label": [
+    "medium",
+    "high"
+   ],
+   "request": "fix it",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": []
+  },
+  {
+   "id": "f10",
+   "label": [
+    "low"
+   ],
+   "request": "commit and push",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": []
+  },
+  {
+   "id": "f11",
+   "label": [
+    "low",
+    "medium"
+   ],
+   "request": "2",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": []
+  },
+  {
+   "id": "f12",
+   "label": [
+    "low",
+    "medium"
+   ],
+   "request": "looks good, ship it",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": []
+  },
+  {
+   "id": "f13",
+   "label": [
+    "low",
+    "medium"
+   ],
+   "request": "yes",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": [],
+   "replying_to": "I can rename getUserName to get_user_name in the 14 files that use it. Should I proceed?"
+  },
+  {
+   "id": "f14",
+   "label": [
+    "high"
+   ],
+   "request": "yes",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": [],
+   "replying_to": "The root cause is still unclear. I can dig into the lock ordering in the scheduler to find why it deadlocks. Want me to continue?"
+  },
+  {
+   "id": "f15",
+   "label": [
+    "medium",
+    "high"
+   ],
+   "request": "go with option 2",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": [],
+   "replying_to": "Two designs are possible: (1) a migration script run offline, (2) dual writes with a backfill job. Which do you prefer?"
+  },
+  {
+   "id": "f16",
+   "label": [
+    "low"
+   ],
+   "request": "ok",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": [],
+   "replying_to": "Done: the README typo is fixed and the tests pass. Anything else?"
+  },
+  {
+   "id": "f17",
+   "heldout": true,
+   "label": [
+    "medium",
+    "high"
+   ],
+   "request": "go ahead",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": [],
+   "replying_to": "I found three failing tests. I can run them one by one to see which change broke them. Shall I?"
+  },
+  {
+   "id": "f18",
+   "heldout": true,
+   "label": [
+    "low"
+   ],
+   "request": "y",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": [],
+   "replying_to": "I'll bump the version to 2.0.79 in Cargo.toml and tag the release. OK?"
+  },
+  {
+   "id": "f19",
+   "heldout": true,
+   "label": [
+    "medium",
+    "high"
+   ],
+   "request": "no, use the second approach",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": [],
+   "replying_to": "I could cache results in memory (simple) or add a Redis layer (survives restarts). I'd go with in-memory."
+  },
+  {
+   "id": "f20",
+   "heldout": true,
+   "label": [
+    "low",
+    "medium"
+   ],
+   "request": "continua",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": []
+  },
+  {
+   "id": "f21",
+   "heldout": true,
+   "label": [
+    "low"
+   ],
+   "request": "perfect, thank you",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": [],
+   "replying_to": "All 42 tests pass and the PR is open."
+  },
+  {
+   "id": "f22",
+   "heldout": true,
+   "label": [
+    "medium",
+    "high"
+   ],
+   "request": "do it",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": [],
+   "replying_to": "The migration would drop the legacy_users table after copying 2M rows. This cannot be undone. Proceed?"
+  },
+  {
+   "id": "f23",
+   "heldout": true,
+   "label": [
+    "low",
+    "medium"
+   ],
+   "request": "why?",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": [],
+   "replying_to": "I recommend not upgrading tokio yet."
+  },
+  {
+   "id": "f24",
+   "heldout": true,
+   "label": [
+    "low",
+    "medium"
+   ],
+   "request": "same for the worker crate",
+   "step": "first_step",
+   "plan": "",
+   "calls": [],
+   "results": [],
+   "replying_to": "Done: clippy is clean for the shell crate after fixing 12 lints."
   }
  ]
 }

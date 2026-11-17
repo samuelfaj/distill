@@ -576,24 +576,9 @@ fn work_shape_answers(shape: &[(&str, f64)], parallel: f64) -> distill_workspace
     }
 }
 
-/// Lets the background work-shape ask finish before a flush.
-async fn settle_work_shape(actor: &SessionActor) {
-    for _ in 0..100 {
-        let done = actor
-            .jev_ledger
-            .borrow()
-            .work_shape
-            .as_ref()
-            .is_none_or(|(_, answer)| answer.as_ref().is_none_or(|answer| answer.is_finished()));
-        if done {
-            return;
-        }
-        tokio::task::yield_now().await;
-    }
-}
-
-/// The work shape is asked on its own for every new request with a worker,
-/// even in UltraSave where the tool-family pass never runs, and its hint
+/// The work shape is asked when the request arrives, for every new request
+/// with a worker, even in UltraSave where the tool-family pass never runs.
+/// Its hint is in the conversation before the turn's first model request and
 /// says what to hand over. A plain one-call request gets none: a subagent
 /// would cost more than it saves.
 #[tokio::test(flavor = "current_thread")]
@@ -626,15 +611,10 @@ async fn the_work_shape_hint_names_what_to_hand_over_and_skips_short_work() {
             ] {
                 ask_about(&actor, request);
                 crate::jev::set_test_decision_answers([Some(work_shape_answers(shape, parallel))]);
-                actor
-                    .jev_filter_tool_definitions(optional_family_defs(), false)
-                    .await;
-                settle_work_shape(&actor).await;
+                actor.jev_start_work_shape(request);
+                // The first flush runs before the first model request: the
+                // answer is still on its way and the flush waits for it.
                 actor.jev_flush_delegation_hint().await;
-                // A later round of the same request asks nothing and adds nothing.
-                actor
-                    .jev_filter_tool_definitions(optional_family_defs(), false)
-                    .await;
                 actor.jev_flush_delegation_hint().await;
                 let hints = delegation_hints(&actor).await;
                 match hint {
@@ -658,28 +638,81 @@ async fn the_work_shape_hint_names_what_to_hand_over_and_skips_short_work() {
     .await;
 }
 
-/// No worker, a child session or B6 off: nobody to delegate to, so nothing
-/// is asked.
+/// The first request waits a bounded time for the hint and no longer: an
+/// answer that is late leaves the turn alone and joins at a later flush.
 #[tokio::test(flavor = "current_thread")]
-async fn the_work_shape_is_not_asked_without_a_worker_or_with_b6_off() {
+async fn a_late_work_shape_answer_does_not_hold_the_turn_and_joins_later() {
+    with_actor(|actor| async move {
+        crate::jev::with_session_scope("b6-work-shape-late", async {
+            crate::jev::set_test_flags(distill_workspace::jev::JevFlags::harness_default());
+            set_worker_model(&actor, Some("worker-model"));
+            ask_about(&actor, "rename the module in every file");
+            let (send, receive) = tokio::sync::oneshot::channel();
+            actor.jev_ledger.borrow_mut().work_shape = Some(super::jev_ledger::WorkShapeAsk {
+                turn: actor.current_turn_number.get(),
+                // Asked long enough ago that the wait is already spent.
+                started: std::time::Instant::now() - std::time::Duration::from_secs(5),
+                answer: Some(tokio::task::spawn_local(async move { receive.await.ok() })),
+            });
+            let before = std::time::Instant::now();
+            actor.jev_flush_delegation_hint().await;
+            assert!(before.elapsed() < std::time::Duration::from_millis(500), "no wait left");
+            assert!(delegation_hints(&actor).await.is_empty());
+            send.send(work_shape_answers(&[("specified_work", 0.9), ("single_action", 0.1)], 0.1))
+                .expect("the ask is still wanted");
+            actor.jev_flush_delegation_hint().await;
+            assert_eq!(delegation_hints(&actor).await.len(), 1);
+        })
+        .await;
+    })
+    .await;
+}
+
+/// Nobody to hand work to, nothing asked: no worker, B6 off, a pinned mode
+/// without subagents. Under Auto the mode is picked after the ask, so the
+/// ask goes out and a pick without subagents drops its answer.
+#[tokio::test(flavor = "current_thread")]
+async fn the_work_shape_is_asked_only_where_delegation_is_on_offer() {
+    use distill_tool_types::{ExecutionMode, V2Modes};
     with_actor(|actor| async move {
         crate::jev::with_session_scope("b6-work-shape-off", async {
-            ask_about(&actor, "rename the module in every file");
-            crate::jev::set_test_flags(distill_workspace::jev::JevFlags::harness_default());
-            set_worker_model(&actor, None);
-            crate::jev::set_test_decision_answers([None, None, None]);
-            actor.execution_mode.store(distill_tool_types::ExecutionMode::Ultrasave);
-            actor
-                .jev_filter_tool_definitions(optional_family_defs(), false)
-                .await;
-            crate::jev::set_test_flags(flags_with_b6(false));
+            super::mode_policy::set_v2_modes_for_tests(Some(
+                V2Modes::default().with(ExecutionMode::Ultrafast),
+            ));
+            let request = "rename the module in every file";
+            ask_about(&actor, request);
+            let on = distill_workspace::jev::JevFlags::harness_default();
+            let b6_off = distill_workspace::jev::JevFlags {
+                b6_delegation_hint: false,
+                ..on
+            };
+            for (flags, worker, mode) in [
+                (on, None, ExecutionMode::Normal),
+                (b6_off, Some("worker-model"), ExecutionMode::Normal),
+                (on, Some("worker-model"), ExecutionMode::Ultrafast),
+            ] {
+                crate::jev::set_test_flags(flags);
+                set_worker_model(&actor, worker);
+                actor.execution_mode.store(mode);
+                crate::jev::set_test_decision_answers([None]);
+                actor.jev_start_work_shape(request);
+                actor.jev_flush_delegation_hint().await;
+                assert!(
+                    crate::jev::take_test_asked_questions().is_empty(),
+                    "worker={worker:?} {mode:?}"
+                );
+            }
+            crate::jev::set_test_flags(on);
             set_worker_model(&actor, Some("worker-model"));
-            ask_about(&actor, "rename the other module too");
-            actor
-                .jev_filter_tool_definitions(optional_family_defs(), false)
-                .await;
-            settle_work_shape(&actor).await;
-            assert!(crate::jev::take_test_asked_questions().is_empty());
+            actor.execution_mode.store_auto(ExecutionMode::Ultrafast);
+            crate::jev::set_test_decision_answers([Some(work_shape_answers(
+                &[("specified_work", 0.9), ("single_action", 0.1)],
+                0.1,
+            ))]);
+            actor.jev_start_work_shape(request);
+            actor.jev_flush_delegation_hint().await;
+            assert!(delegation_hints(&actor).await.is_empty(), "Auto picked a mode without subagents");
+            super::mode_policy::set_v2_modes_for_tests(None);
         })
         .await;
     })

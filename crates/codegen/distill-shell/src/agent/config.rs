@@ -1512,7 +1512,7 @@ pub struct JevLadderConfig {
     /// B2: effort and tier from the step battery (default on; `false` restores the effort and
     /// tier `choice` questions).
     pub b2_step_battery: Option<bool>,
-    /// B6: the delegation hint from the work shape on every new request (default on).
+    /// B6: the delegation hint from the work shape, asked when a request arrives (default on).
     pub b6_work_shape: Option<bool>,
     /// B7: reading-only `explore` children run on the utility model (default on).
     pub b7_utility_children: Option<bool>,

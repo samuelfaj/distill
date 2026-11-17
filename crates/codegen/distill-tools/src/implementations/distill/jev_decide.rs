@@ -6,7 +6,7 @@ use crate::types::tool::{ToolKind, ToolNamespace};
 use crate::types::tool_io::ToolInput;
 use std::collections::BTreeMap;
 pub const JEV_DECIDE_TOOL_NAME: &str = "jev_decide";
-const DESCRIPTION: &str = r#"Consult Jev for evidence-backed decisions among caller-supplied choices or scores. Use it when a choice, ranking or score is uncertain; batch independent questions in one call and cite concise source identifiers instead of copying large payloads. Never retry a Jev consultation recursively. Supply nonempty questions keyed by stable IDs and either non-null state or source/image IDs. Each question is tagged: {"type":"noul","instructions":"...","criteria":{"true":"...","false":"..."}}; {"type":"choice","instructions":"...","criteria":{"label":"meaning"}}; or {"type":"score","instructions":"...","criteria":["low","high"]}. Criteria must define exact options/rubric and evaluation rules. `sources` and `images` are identifiers resolved by the runtime, not payloads; image use requires runtime image support. Jev advises only; it does not authorize actions or generate free-form choices. To pull a value out of stored outputs without reading them, add `fields` (with `sources`): {"type":"text","instructions":"..."} or {"type":"number","instructions":"..."} for one value, {"type":"list","instructions":"..."} for every matching passage, {"type":"estimate","instructions":"...","min":0,"max":30} for an estimate; text and number take an optional `null_threshold` (default 0.5). Each value comes back with the `S<n>:<line>` it was read from, and a value the sources do not hold is dropped. Read-only call may incur network cost."#;
+const DESCRIPTION: &str = r#"Consult Jev for evidence-backed decisions among caller-supplied choices or scores. Use it when a choice, ranking or score is uncertain; batch independent questions in one call and cite concise source identifiers instead of copying large payloads. Never retry a Jev consultation recursively. Supply nonempty questions keyed by stable IDs and either non-null state or source/image IDs. Each question is tagged: {"type":"noul","instructions":"...","criteria":{"true":"...","false":"..."}}; {"type":"choice","instructions":"...","criteria":{"label":"meaning"}}; or {"type":"score","instructions":"...","criteria":["low","high"]}. Criteria must define exact options/rubric and evaluation rules. `sources` and `images` are identifiers resolved by the runtime, not payloads; image use requires runtime image support. Jev advises only; it does not authorize actions or generate free-form choices. `fields` (with `sources`) instead finds values in stored outputs: each comes back with the `S<n>:<line>` it was read from; read that line before relying on the value. Read-only call may incur network cost."#;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct JevDecideInput {
@@ -18,11 +18,9 @@ pub struct JevDecideInput {
     /// score uses `{"type":"score","instructions":"Rate fit","criteria":["poor","good"]}`.
     #[serde(default)]
     pub questions: BTreeMap<String, serde_json::Value>,
-    /// Values to extract verbatim from `sources`, keyed by stable IDs:
-    /// `{"first_error":{"type":"text","instructions":"The first error location"}}`,
-    /// `{"failed":{"type":"number","instructions":"How many tests failed"}}`,
-    /// `{"causes":{"type":"list","instructions":"Lines that say why a test failed"}}`,
-    /// `{"rounds":{"type":"estimate","instructions":"...","min":0,"max":30}}`.
+    /// Values to find in `sources`, keyed by stable IDs. `type` is `text` or `number` (one value),
+    /// `list` (every matching passage) or `estimate` (needs `min` and `max`):
+    /// `{"first_error":{"type":"text","instructions":"The first error location"}}`.
     #[serde(default)]
     pub fields: BTreeMap<String, serde_json::Value>,
     /// Source IDs resolvable by runtime. Provide non-null `state` or at least one source/image ID.

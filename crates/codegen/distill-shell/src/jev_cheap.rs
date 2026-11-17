@@ -771,15 +771,10 @@ pub(crate) fn resolve_utility_lane_traced(
     (winner.map(|(_, lane)| lane), skipped)
 }
 
-/// [`resolve_utility_lane_traced`] that also names the candidate that won.
-fn resolve_utility_candidate(
+/// This session's utility candidates, in the order they are tried.
+fn session_utility_candidates(
     models_manager: &crate::agent::remote_config::ModelsManager,
-    excluded: &[&str],
-    resolve_catalog: &dyn Fn(&str) -> Option<distill_sampler::SamplerConfig>,
-) -> (
-    Option<(UtilityCandidate, CheapLane)>,
-    Vec<(UtilityCandidate, &'static str)>,
-) {
+) -> Vec<UtilityCandidate> {
     let local = crate::jev::local_config_cached();
     let summary_pin = models_manager
         .session_summary_model()
@@ -789,14 +784,42 @@ fn resolve_utility_candidate(
         | crate::config::PromptSuggestModelPin::Pinned(model) => Some(model),
         crate::config::PromptSuggestModelPin::Unpinned => None,
     };
-    let catalog = models_manager.models();
-    let mut skipped = Vec::new();
-    let candidates = utility_candidates(
+    utility_candidates(
         local.model.as_deref(),
         summary_pin.as_deref(),
         suggest_pin.as_deref(),
-    );
-    for candidate in candidates {
+    )
+}
+
+/// Whether a whole child round could run on the utility at all, without
+/// building a lane: the candidate tried first is a catalog entry. With an
+/// OpenRouter key, which every Jev decision needs, the first candidate is the
+/// one that wins, and the shipped OpenRouter chain is not a catalog entry
+/// (see [`utility_catalog_model`]). Lets a caller skip a decision whose only
+/// use is that route.
+pub(crate) fn utility_could_run_a_child(
+    models_manager: &crate::agent::remote_config::ModelsManager,
+) -> bool {
+    session_utility_candidates(models_manager)
+        .first()
+        .is_some_and(|candidate| {
+            crate::agent::config::find_model_by_id(&models_manager.models(), &candidate.spec)
+                .is_some()
+        })
+}
+
+/// [`resolve_utility_lane_traced`] that also names the candidate that won.
+fn resolve_utility_candidate(
+    models_manager: &crate::agent::remote_config::ModelsManager,
+    excluded: &[&str],
+    resolve_catalog: &dyn Fn(&str) -> Option<distill_sampler::SamplerConfig>,
+) -> (
+    Option<(UtilityCandidate, CheapLane)>,
+    Vec<(UtilityCandidate, &'static str)>,
+) {
+    let catalog = models_manager.models();
+    let mut skipped = Vec::new();
+    for candidate in session_utility_candidates(models_manager) {
         match candidate_lane(&candidate, models_manager, &catalog, excluded, resolve_catalog) {
             Ok(lane) => return (Some((candidate, lane)), skipped),
             Err(reason) => skipped.push((candidate, reason)),
@@ -2662,6 +2685,17 @@ mod tests {
             None,
             "a raw slug has no entry for a whole round, and the pin is not the utility"
         );
+        // The decision that would send a child there is not worth asking
+        // unless the utility is a catalog model: not for a raw slug, not for
+        // the shipped chain, only for an explicit catalog id.
+        assert!(!utility_could_run_a_child(&manager), "raw slug");
+        crate::jev::clear_test_local_config();
+        assert!(!utility_could_run_a_child(&manager), "shipped chain first");
+        crate::jev::set_test_local_config(crate::agent::config::JevLocalConfig {
+            model: Some("aux-model".to_owned()),
+            ..Default::default()
+        });
+        assert!(utility_could_run_a_child(&manager), "explicit catalog id");
         crate::jev::clear_test_local_config();
         crate::jev::clear_test_worker_model();
     }

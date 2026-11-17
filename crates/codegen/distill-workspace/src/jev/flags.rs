@@ -226,16 +226,17 @@ impl JevFlags {
             b8_criteria_v2: true,
             b8_up_only: true,
             // On by the owner's rule for new efficiency work; measured only on
-            // the labelled set in scripts/benchmarks/jev-decisions (32/32 on
-            // Jev 1.14 against 24/32 for the effort `choice`), never in a
-            // paired benchmark. `false` restores the effort `choice` and the
-            // tier `choice`.
+            // the labelled sets in scripts/benchmarks/jev-decisions (55 of 56
+            // states on Jev 1.14 against 45 for the effort `choice`), never in
+            // a paired benchmark. `false` restores the effort `choice` and
+            // the tier `choice`.
             b2_step_battery: true,
             // On, same evidence (12/12 on the labelled requests); `false`
             // restores the two-noul hint on the tool-family request.
             b6_work_shape: true,
             // On, same evidence (8/8 on labelled assignments); utility
-            // reports are not measured against the worker's yet.
+            // reports are not measured against the worker's yet. Asks only
+            // when the utility is a catalog model.
             b7_utility_children: true,
         }
     }

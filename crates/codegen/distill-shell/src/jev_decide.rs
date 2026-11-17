@@ -86,8 +86,8 @@ fn build_state(
 /// characters, to turn an answer's span back into `S<n>:<line>`.
 struct ExtractionText {
     text: String,
-    /// `(first character, source id, 1-based line)`, in order.
-    lines: Vec<(usize, String, usize)>,
+    /// `(first character, characters, source id, 1-based line)`, in order.
+    lines: Vec<(usize, usize, String, usize)>,
     coverage: Vec<SourceCoverage>,
 }
 
@@ -118,10 +118,11 @@ fn build_extraction_text(
         if text.len() + header.len() < budget {
             push(&mut text, &mut chars, &header);
             for (index, line) in all.iter().enumerate() {
-                if text.len() + line.len() + 1 > budget {
+                // The line, its newline and the blank line that ends the source.
+                if text.len() + line.len() + 2 > budget {
                     break;
                 }
-                lines.push((chars, id.clone(), index + 1));
+                lines.push((chars, line.chars().count(), id.clone(), index + 1));
                 push(&mut text, &mut chars, line);
                 push(&mut text, &mut chars, "\n");
                 sent_lines += 1;
@@ -140,41 +141,59 @@ fn build_extraction_text(
 }
 
 impl ExtractionText {
-    /// `S<n>:<line>` of the last source line starting at or before character
-    /// `at`; `None` before the first one (the context or the first header).
+    /// `S<n>:<line>` of the source line holding character `at`; `None` for
+    /// text that is not a source line (the context, a source header).
     fn locate(&self, at: usize) -> Option<String> {
-        let index = self.lines.partition_point(|(start, _, _)| *start <= at);
-        let (_, id, line) = self.lines.get(index.checked_sub(1)?)?;
-        Some(format!("{id}:{line}"))
+        let index = self.lines.partition_point(|(start, ..)| *start <= at);
+        let (start, len, id, line) = self.lines.get(index.checked_sub(1)?)?;
+        (at <= start + len).then(|| format!("{id}:{line}"))
     }
 
-    /// One field's answer as the tool returns it: values with where they were read.
+    /// One field's answer as the tool returns it: each value with the source
+    /// line it was read from. The client already dropped values the text does
+    /// not hold; a value read from the caller's own context or from a source
+    /// header is not from a source either, so it is dropped here and counted
+    /// with them.
     fn render(&self, extracted: &distill_workspace::jev::extractions::Extracted) -> serde_json::Value {
-        use distill_workspace::jev::extractions::{Extracted, Passage};
-        let passage = |passage: &Passage| {
-            serde_json::json!({"text": passage.text, "at": self.locate(passage.start), "confidence": passage.confidence})
-        };
+        use distill_workspace::jev::extractions::Extracted;
         match extracted {
-            Extracted::Text { value, p_null, dropped } => serde_json::json!({
-                "type": "text",
-                "value": value.as_ref().map(|p| p.text.clone()),
-                "at": value.as_ref().and_then(|p| self.locate(p.start)),
-                "p_null": p_null,
-                "dropped_unverified": dropped,
-            }),
-            Extracted::Number { value, passage: found, p_null, dropped } => serde_json::json!({
-                "type": "number",
-                "value": value,
-                "at": found.as_ref().and_then(|p| self.locate(p.start)),
-                "p_null": p_null,
-                "dropped_unverified": dropped,
-            }),
-            Extracted::TextList { items, p_null, dropped } => serde_json::json!({
-                "type": "list",
-                "items": items.iter().map(passage).collect::<Vec<_>>(),
-                "p_null": p_null,
-                "dropped_unverified": dropped,
-            }),
+            Extracted::Text { value, p_null, dropped } => {
+                let found = value
+                    .as_ref()
+                    .and_then(|p| Some((p.text.clone(), self.locate(p.start)?)));
+                serde_json::json!({
+                    "type": "text",
+                    "value": found.as_ref().map(|(text, _)| text),
+                    "at": found.as_ref().map(|(_, at)| at),
+                    "p_null": p_null,
+                    "dropped_unverified": *dropped || (value.is_some() && found.is_none()),
+                })
+            }
+            Extracted::Number { value, passage, p_null, dropped } => {
+                let at = passage.as_ref().and_then(|p| self.locate(p.start));
+                serde_json::json!({
+                    "type": "number",
+                    "value": value.filter(|_| at.is_some()),
+                    "at": at,
+                    "p_null": p_null,
+                    "dropped_unverified": *dropped || (value.is_some() && at.is_none()),
+                })
+            }
+            Extracted::TextList { items, p_null, dropped } => {
+                let found: Vec<serde_json::Value> = items
+                    .iter()
+                    .filter_map(|p| {
+                        let at = self.locate(p.start)?;
+                        Some(serde_json::json!({"text": p.text, "at": at, "confidence": p.confidence}))
+                    })
+                    .collect();
+                serde_json::json!({
+                    "type": "list",
+                    "dropped_unverified": dropped + (items.len() - found.len()),
+                    "items": found,
+                    "p_null": p_null,
+                })
+            }
             Extracted::Estimate { value, median, p10, p90 } => serde_json::json!({
                 "type": "estimate", "value": value, "median": median, "p10": p10, "p90": p90,
             }),
@@ -412,7 +431,51 @@ mod tests {
         };
         assert_eq!(built.locate(at("José")).as_deref(), Some("S1:2"));
         assert_eq!(built.locate(at("z\n")).as_deref(), Some("S2:3"));
+        assert_eq!(built.locate(at("=== S2")), None, "a header is not a source line");
+        assert_eq!(built.locate(at("find the failure")), None, "nor is the context");
         assert!(built.coverage.iter().all(|entry| entry.complete));
+    }
+
+    /// "From the sources" means from a source line: a value the model copied
+    /// from the caller's context or from a header passes the client's span
+    /// check, and is still not evidence, so the tool drops it.
+    #[test]
+    fn a_value_read_outside_the_source_lines_is_dropped() {
+        use distill_workspace::jev::extractions::{Extracted, Passage};
+        let sources = vec![("S1".to_owned(), "/store/a.txt".to_owned(), "error: disk full\n".to_owned())];
+        let built = build_extraction_text(Some(&serde_json::json!("look for req-73")), &sources);
+        let passage = |needle: &str| {
+            let byte = built.text.find(needle).expect("needle");
+            let start = built.text[..byte].chars().count();
+            Passage { text: needle.to_owned(), start, end: start + needle.chars().count(), confidence: None }
+        };
+        let from_context = built.render(&Extracted::Text { value: Some(passage("req-73")), p_null: None, dropped: false });
+        assert_eq!(from_context["value"], serde_json::Value::Null);
+        assert_eq!(from_context["dropped_unverified"], true);
+        let from_source = built.render(&Extracted::Text { value: Some(passage("disk full")), p_null: None, dropped: false });
+        assert_eq!(from_source["value"], "disk full");
+        assert_eq!(from_source["at"], "S1:1");
+        let list = built.render(&Extracted::TextList {
+            items: vec![passage("/store/a.txt"), passage("error: disk full")],
+            p_null: None,
+            dropped: 1,
+        });
+        assert_eq!(list["items"].as_array().map(Vec::len), Some(1));
+        assert_eq!(list["dropped_unverified"], 2);
+    }
+
+    /// The text never exceeds the extraction ceiling, so a source cut at the
+    /// budget is reported incomplete instead of failing the whole call.
+    #[test]
+    fn a_source_cut_at_the_budget_stays_under_the_ceiling() {
+        let budget = distill_workspace::jev::extractions::MAX_EXTRACTION_STATE_BYTES;
+        let header = "=== S1 (/store/big.txt) ===\n".len();
+        // The first line ends exactly where the old bound let the closing newline overflow.
+        let first = "a".repeat(budget - header - 1);
+        let sources = vec![("S1".to_owned(), "/store/big.txt".to_owned(), format!("{first}\nrest\n"))];
+        let built = build_extraction_text(None, &sources);
+        assert!(built.text.len() <= budget, "{} > {budget}", built.text.len());
+        assert!(!built.coverage[0].complete);
     }
 
     #[test]

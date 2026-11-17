@@ -88,14 +88,20 @@ it cannot do the task is not retried yet; its report reaches the main model as
 it is.
 
 Without `e_cheap_agent`, B7 decides per child (`[jev.ladder]
-b7_utility_children`, on by default): a fresh `explore` child that meets the
-same conditions asks one question about its assignment on `liquid/d1.2`, and
-runs on the utility model only when at least 75% of the answer says plain
-reading (find, list, quote or summarize). An assignment that explains a cause,
-traces behaviour, compares options or judges a risk stays on its own model,
-and so does a child when Jev gives no answer. The fallback, the trip after a
-failed utility child and the conditions are the ones above. Utility reports
-have not been compared with the worker's.
+b7_utility_children`, on by default). It applies only when the utility is a
+catalog entry, which means `[jev.local] model` names one: the shipped
+OpenRouter chain is not, and then nothing is asked and every child keeps its
+model. Where it applies, a fresh `explore` child that meets the conditions
+above asks one question about its assignment on `liquid/d1.2`:
+
+- It runs on the utility model only when at least 75% of the answer says
+  plain reading (find, list, quote or summarize).
+- An assignment that explains a cause, traces behaviour, compares options or
+  judges a risk stays on its own model. So does a child when Jev gives no
+  answer.
+- The fallback and the trip after a failed utility child are the ones above.
+
+Utility reports have not been compared with the worker's.
 
 A delegated worker cannot delegate further (the subagent depth limit is one). Its
 final message is the report the main model receives: the outcome, then the
@@ -119,41 +125,71 @@ for every call from that model's own menu:
 Explicit subagent model and effort policies remain pinned.
 
 Jev re-picks effort on every main model call from that model's supported menu.
-By default it does so through the step battery (`[jev.ladder] b2_step_battery`):
-Jev answers two factual questions about the call, what kind of step it is
-(`lookup`, `relay`, `edit_specified`, `implement`, `diagnose`, `design`,
-`review`) and whether a wrong step would be expensive, and a table in
-`catalog/battery.rs` turns the answer into a level:
+By default it does so through the step battery (`[jev.ladder] b2_step_battery`).
+Jev answers two factual questions about the call: what kind of step it is, and
+whether a wrong step would be expensive. A table in `catalog/battery.rs` turns
+the answer into a level:
 
 | Step | UltraSave | Normal | UltraFast | UltraCode |
 |---|---|---|---|---|
-| lookup | cheapest | cheapest | cheapest | cheapest |
-| relay, edit_specified | low | low | low | low |
-| implement | low | medium | medium | high |
-| diagnose | medium | high | medium | high |
-| design, review | medium | high | medium | xhigh |
+| `lookup`, `relay` | cheapest | low | low | low |
+| `edit_specified` | low | low | low | low |
+| `implement` | low | medium | medium | high |
+| `diagnose` | medium | high | medium | high |
+| `design`, `review` | medium | high | medium | xhigh |
+| `unstated` | low | medium | low | high |
 
-On the first step of a request the call plans the whole request, so the
-request itself is judged there. An expensive step gets one level more, up to
-high (xhigh in UltraCode). A split answer is read cheapest first at the mode
-row's quantile, and the target maps to the nearest level the model offers.
-The question names no model and no policy, so the tier pass of the same
-round (UltraSave) reuses the answer from the decision memo instead of asking
-again: lookups, relays and decided edits go to the utility (else the worker),
-code from clear requirements to the worker, and diagnosis, design and review
-stay on the main model, with an expensive step one tier up. A tier pick that
-would move a turn to a cheaper model mid-turn on a prompt of 16,384 tokens or
-more keeps the previous model (`tier:kept_cached_prefix`). The request-wide
-lowering pass (`b2_model_tier`) does not run under the battery. On the
-labelled set in `scripts/benchmarks/jev-decisions` the battery scored 32/32 on
-Jev 1.14 against 24/32 for the effort `choice`, whose misses were all too low
-(see [d1.2 as a decision model](d1.2-decision-results.md)); it has not been
-through a paired benchmark. `b2_step_battery = false` restores the earlier
-question: one `choice` over the menu, the cheapest level that holds at least
-half the probability mass, an execution-mode policy in prose (UltraSave leans
-lower, Normal is balanced, UltraFast is fastest, UltraCode leans higher) and a
-short provider note on how that provider's levels behave. When Jev gives
-no usable answer, the call uses a mode baseline on the model's menu: UltraSave
+- **Cheapest** is the lowest level the model offers. On a menu with `none` or
+  `minimal` that turns reasoning off, which only UltraSave asks for.
+- **First step.** On a request's first step the call plans the whole request,
+  so the request is judged, not the first tool call. The state then carries
+  `replying_to`, the end of the assistant message the request answers: a
+  short reply ("yes", "continue") is judged by the work that message proposes.
+- **`unstated`** is a short reply whose work neither the request nor
+  `replying_to` shows. It runs at the level the mode uses when Jev gives no
+  answer.
+- **Expensive step.** When the picked kind is an edit, an implementation, a
+  diagnosis, a design or a review and a wrong step is expensive with
+  probability 0.6 or more, the level goes up by one, up to high (xhigh in
+  UltraCode).
+- **Split answers** are read cheapest first at the mode row's quantile, and
+  the target maps to the nearest level the model offers.
+
+The question names no model and no policy, so UltraSave's tier pass reuses the
+same answer from the decision memo instead of asking again:
+
+| Step | Tier |
+|---|---|
+| `lookup`, `relay`, `edit_specified` | utility, else worker |
+| `implement` | worker |
+| `diagnose`, `design`, `review`, `unstated` | main |
+
+An expensive step moves one tier up. A tier pick that would move a turn to a
+cheaper model mid-turn on a prompt of 16,384 tokens or more keeps the previous
+model: `tier:refused_midturn` with a live escalation trigger,
+`tier:kept_cached_prefix` without one.
+
+Both decisions are asked and recorded under their own levers
+(`b2_micro_effort`, `b2_execution_tier`), as before: usage rows, decision
+events and missing answers keep those names. `b2_step_battery` is the switch
+and the `[jev.models]` key. The request-wide lowering pass (`b2_model_tier`)
+does not run where the battery asks; a model that offers fewer than two levels
+gets no effort question and keeps that pass.
+
+On the labelled set in `scripts/benchmarks/jev-decisions` the battery scored
+32/32 on Jev 1.14 against 27/32 for the effort `choice`, and 23/24 against
+18/24 on short replies (see [d1.2 as a decision model](d1.2-decision-results.md)).
+It has not been through a paired benchmark. On a backend whose cache is keyed
+by effort, a turn on a prompt of 16,384 tokens or more keeps its first round's
+level, which is now the request's level, not its first tool call's.
+
+`b2_step_battery = false` restores the earlier question: one `choice` over the
+menu, the cheapest level that holds at least half the probability mass, an
+execution-mode policy in prose (UltraSave leans lower, Normal is balanced,
+UltraFast is fastest, UltraCode leans higher) and a short provider note on how
+that provider's levels behave.
+
+When Jev gives no usable answer, the call uses a mode baseline on the model's menu: UltraSave
 and UltraFast use low, Normal uses medium, and UltraCode uses high, moving to
 the nearest offered level. It never raises a lower pinned effort, and it lowers a higher one such as max.
 A redo can raise effort when the previous attempt lacked reasoning. A fixed
@@ -430,7 +466,7 @@ These levers are on by default:
 
 | Lever | Decision | Effect |
 |---|---|---|
-| `b6_delegation_hint` | What shape of work the request needs (`b6_work_shape`, on `liquid/d1.2`): a direct answer, one or two calls, specified work, an investigation or open design, and whether parts are independent | A delegation hint naming what to hand over, only when a worker model is configured; asked in the background on every new request, in every mode that allows subagents; `b6_work_shape = false` restores the two `noul`s on the tool-family request |
+| `b6_delegation_hint` | What shape of work the request needs (`b6_work_shape`, on `liquid/d1.2`): a direct answer, one or two calls, specified work, an investigation or open design, and whether parts are independent | A delegation hint naming what to hand over, only when a worker model is configured. Asked in the background when the request arrives, in every mode that allows subagents; the turn's first model request waits for the answer up to 1.2 s from the ask, and a later answer joins before the next request. `b6_work_shape = false` restores the two `noul`s on the tool-family request |
 | `b2_model_tier` | Whether a call can run on a cheaper tier | Downgrades only, and only in automatic effort mode |
 | `c1_premature_stop` / `c3_completion_check` | Whether the main turn is ending with requested work or proof missing | One advisory reminder per user turn, then the turn ends normally |
 
@@ -639,14 +675,22 @@ source text); a source that does not fit is reported as incomplete, never as
 fully read. Secret-bearing sources are refused. Jev advises on the choices
 the caller supplies; it does not generate text or approve anything.
 
-`fields` (with `sources`) extracts values instead of choosing among them, on
+`fields` (with `sources`) finds values instead of choosing among them, on
 OpenRouter's Extractions route with a `liquid/d1.2` model: `text` and
 `number` for one value, `list` for every matching passage, `estimate` for a
-number with p10 and p90. The sources go out unnumbered, so a value is a
-verbatim copy; each answer comes back with the `S<n>:<line>` it was read
-from, and a value whose span does not read it back from the sources is
-dropped and counted (`dropped_unverified`). Questions and fields can share a
-call; the fields' answer is under `extraction`.
+number with p10 and p90. Questions and fields can share a call; the fields'
+answer is under `extraction`.
+
+- The sources go out unnumbered, so a value is a verbatim copy, and each
+  answer comes back with the `S<n>:<line>` it was read from.
+- A value is dropped and counted (`dropped_unverified`) when its span does
+  not read it back, or when it was read from the caller's `state` or a source
+  header instead of a source line.
+- The check proves a value is in the sources, not that it is the right one.
+  On 27 fields over eight synthetic outputs d1.2 read 21 right: it kept a
+  stray colon or quote, returned nothing for a number glued to its unit
+  (`30s`), and once returned a present but wrong value. The tool description
+  tells the model to read the cited line before relying on a value.
 
 Images are refused for now: on 2026-10-15 OpenRouter's Decisions endpoint
 accepted `assets` but answered the same with and without the image, so a
@@ -685,13 +729,24 @@ because they bill the whole state once per question. Any other `provider`,
 `base_url` or `api_key_env` is rejected at startup and Jev stays off, rather
 than sending decisions elsewhere; redirects are not followed.
 
-`[jev.models]` sets the model per lever. The shipped defaults put B6's work
-shape, B7's utility children and the `ask_stored_output` selector
-(`stored_output_search`) on `liquid/d1.2`, and `jev_decide` fields
-(`jev_decide_fields`) on `liquid/d1.2-ultra`; every other lever, the step
-battery included, stays on `[jev] model`. A batch of packs asks the model of
-its first active pack. [d1.2 as a decision model](d1.2-decision-results.md)
-has the measurements behind each choice.
+`[jev.models]` sets the model per lever. The shipped defaults put four
+decisions on `liquid/d1.2`: B6's work shape (`b6_work_shape`), B7's utility
+children (`b7_utility_children`), the `ask_stored_output` selector
+(`stored_output_search`) and `jev_decide` fields (`jev_decide_fields`). Every
+other lever, the step battery included, stays on `[jev] model`.
+[d1.2 as a decision model](d1.2-decision-results.md) has the measurements
+behind each choice.
+
+- **Data.** Those four decisions send their state to Liquid through
+  OpenRouter instead of TypeSafe: the request text, the candidate chunks of a
+  stored output, a child's assignment, or the stored outputs named in
+  `sources`.
+- **An explicit `[jev] model`** does not move them. Name each key under
+  `[jev.models]` to put it back on Jev (`jev_decide_fields` needs a d1.2
+  model).
+- **No fallback.** When d1.2 gives no answer the decision is skipped, as for
+  any lever: lexical selection, no hint, the child on its own model.
+- **Batches.** A batch of packs asks the model of its first active pack.
 
 ```toml
 [jev.models]

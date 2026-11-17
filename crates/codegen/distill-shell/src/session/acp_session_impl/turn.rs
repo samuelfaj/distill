@@ -1258,6 +1258,8 @@ impl SessionActor {
                     super::super::PromptOrigin::SchedulerFired
                 )
             {
+                // In the background, so it overlaps the mode pick below.
+                self.jev_start_work_shape(&user_message);
                 self.jev_auto_pick_mode(&user_message).await;
             }
             self.inject_execution_mode_reminder_at_turn_start().await;

@@ -44,8 +44,12 @@ const INVESTIGATION_HINT: &str = "<delegation_hint>This request needs something 
 /// B6 (work shape): independent lines of investigation go out together.
 const PARALLEL_INVESTIGATION_HINT: &str = "<delegation_hint>This request needs several independent things found out: give each to its own subagent with the exact question and the evidence to bring back, launched together in one message, then decide from their reports.</delegation_hint>";
 
-/// B6 (work shape): open decisions stay with the main model.
-const SETTLE_THEN_DELEGATE_HINT: &str = "<delegation_hint>This request leaves decisions open: settle them yourself first, then hand the building to a subagent with a precise spec and review what comes back. Settle only what the request leaves open: every requirement it states goes into the spec in its words, and no decision of yours may relax one.</delegation_hint>";
+/// B6 (work shape): open decisions stay with the main model, and so does the
+/// part that carries them. In the Paris, 1888 runs of 2026-11-18, once earlier
+/// rounds kept their reasoning, the main model building the page itself
+/// (UltraFast) scored 27 of 32 for about $1, while handing it to a worker
+/// scored 21 to 26 for $2 to $17.
+const SETTLE_THEN_DELEGATE_HINT: &str = "<delegation_hint>This request leaves decisions open. Settle them yourself and build the part that carries them yourself, while your reasoning about them is in context: a worker would have to rediscover them from a spec. Hand a subagent only parts that are already specified (a separate piece with a clear interface, mechanical edits, a long check to run), with a precise spec, and review what comes back. Settle only what the request leaves open: every requirement it states stays, and no decision of yours may relax one.</delegation_hint>";
 
 /// How long the turn's first model request waits, counted from the ask, for
 /// a work-shape answer still on its way. On 2026-11-17 `liquid/d1.2`

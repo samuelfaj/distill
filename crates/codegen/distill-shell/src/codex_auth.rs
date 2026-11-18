@@ -1527,11 +1527,11 @@ pub(crate) fn image_api_key_provider(
 ///
 /// The backend lists a model only to clients at or above the version that
 /// introduced it, so a stale fallback hides current models from every install
-/// without a `codex` on PATH (a Linux container, a fresh machine): 0.156.0 was
-/// not offered gpt-6.1-sol, which 0.162.1 is. Raise it with the Codex CLI.
+/// without a `codex` on PATH (a Linux container, a fresh machine). Keep this
+/// aligned with the current official Codex CLI release.
 pub const CODEX_CLIENT_VERSION_ENV: &str = "DISTILL_CODEX_CLIENT_VERSION";
 pub const LEGACY_CODEX_CLIENT_VERSION_ENV: &str = "REMOTE_CODE_CODEX_CLIENT_VERSION";
-pub const DEFAULT_CODEX_CLIENT_VERSION: &str = "0.162.1";
+pub const DEFAULT_CODEX_CLIENT_VERSION: &str = "0.170.0";
 static INSTALLED_CODEX_VERSION: OnceLock<Option<String>> = OnceLock::new();
 
 fn installed_codex_version() -> Option<String> {
@@ -1553,6 +1553,16 @@ fn parse_codex_cli_version(output: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+fn minimum_codex_client_version(installed: Option<String>) -> String {
+    let default = semver::Version::parse(DEFAULT_CODEX_CLIENT_VERSION).unwrap();
+    installed
+        .filter(|version| {
+            semver::Version::parse(version)
+                .is_ok_and(|version| version >= default)
+        })
+        .unwrap_or_else(|| DEFAULT_CODEX_CLIENT_VERSION.to_owned())
+}
+
 pub fn codex_client_version() -> String {
     [CODEX_CLIENT_VERSION_ENV, LEGACY_CODEX_CLIENT_VERSION_ENV]
         .into_iter()
@@ -1561,12 +1571,13 @@ pub fn codex_client_version() -> String {
                 .ok()
                 .filter(|value| !value.trim().is_empty())
         })
-        .or_else(|| {
-            INSTALLED_CODEX_VERSION
-                .get_or_init(installed_codex_version)
-                .clone()
+        .unwrap_or_else(|| {
+            minimum_codex_client_version(
+                INSTALLED_CODEX_VERSION
+                    .get_or_init(installed_codex_version)
+                    .clone(),
+            )
         })
-        .unwrap_or_else(|| DEFAULT_CODEX_CLIENT_VERSION.to_owned())
 }
 
 /// Whether a base URL points at the Codex backend.
@@ -1662,6 +1673,19 @@ mod tests {
             Some("0.156.0")
         );
         assert_eq!(parse_codex_cli_version("unexpected output"), None);
+    }
+
+    #[test]
+    fn installed_codex_version_never_drops_below_default() {
+        assert_eq!(
+            minimum_codex_client_version(Some("0.169.0".to_owned())),
+            DEFAULT_CODEX_CLIENT_VERSION
+        );
+        assert_eq!(
+            minimum_codex_client_version(Some("0.171.0".to_owned())),
+            "0.171.0"
+        );
+        assert_eq!(minimum_codex_client_version(None), DEFAULT_CODEX_CLIENT_VERSION);
     }
 
     #[test]

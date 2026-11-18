@@ -337,6 +337,21 @@ mod tests {
     }
 
     #[test]
+    fn account_catalog_preserves_new_codex_model_ids() {
+        let response = serde_json::from_value(serde_json::json!({"models": [
+            {"slug":"gpt-6.2-sol", "visibility":"list"},
+            {"slug":"gpt-6.2-astra", "visibility":"list"}
+        ]}))
+        .unwrap();
+        let models = convert_models(response, codex_auth::CODEX_INFERENCE_BASE_URL);
+
+        assert!(models.contains_key("chatgpt/gpt-6.2-sol"));
+        assert!(models.contains_key("chatgpt/gpt-6.2-astra"));
+        assert_eq!(models["chatgpt/gpt-6.2-sol"].info.model, "gpt-6.2-sol");
+        assert_eq!(models["chatgpt/gpt-6.2-astra"].info.model, "gpt-6.2-astra");
+    }
+
+    #[test]
     fn account_catalog_uses_supported_maximum_and_codex_compaction_margin() {
         let response = serde_json::from_value(serde_json::json!({"models": [
             {"slug":"large", "visibility":"list", "context_window":272000,

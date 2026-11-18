@@ -112,8 +112,12 @@ impl HandsOnRun {
     }
 }
 
-/// Sent after rounds that each reasoned at length and then ran a small check.
-const PLANNING_CHURN_REMINDER: &str = "<planning_hint>Your last rounds each reasoned at length and then ran only a small check. What you reasoned out is still in your context, so act on it now: write the file or make the change you have drafted in one step (one command or edit for a large file), then run it and fix what the output shows. Settle API and detail questions by running the code instead of drafting the whole solution again before each lookup.</planning_hint>";
+/// Sent when rounds that each reasoned at length ran only small checks and
+/// nothing is written yet. It asks for the work to go into files, not for it
+/// to go in at once: in the Paris, 1888 runs of 2026-11-17 a first wording
+/// ("in one step") made every worker write the page in one command, and the
+/// blind judge scored those pages below ones built and refined part by part.
+const PLANNING_CHURN_REMINDER: &str = "<planning_hint>Your last rounds each reasoned at length and then ran only a small check, and nothing is written yet. Put what you have worked out into files now: write the parts you have settled, then each further part as soon as you settle it, and refine from what running them shows. Settle API and detail questions by running code or reading the source briefly instead of drafting the whole solution again before each lookup.</planning_hint>";
 
 /// Output tokens (mostly reasoning) that make a round a long one: in the
 /// Paris, 1888 runs of 2026-11-17 such rounds took 6 to 10 minutes each and
@@ -127,19 +131,23 @@ const PLANNING_CHURN_ACTION_BYTES: usize = 3_000;
 /// Long rounds that end in a small check, in a row, before the reminder.
 const PLANNING_CHURN_ROUNDS: u32 = 2;
 
-/// Long rounds that ended in a small check since the work last moved. In
-/// those runs 121 of 162 long rounds drafted the whole solution in their
-/// reasoning and then ran one small command (an API lookup, a grep), and
-/// the next round drafted it again. A round that writes the work or
-/// delegates it starts a new count; short rounds neither count nor reset.
+/// Long rounds of a turn that ended in a small check before anything was
+/// written. In those runs 121 of 162 long rounds drafted the whole solution
+/// in their reasoning and then ran one small command (an API lookup, a
+/// grep), and the next round drafted it again. Once a round writes the work
+/// or delegates it, the turn is past planning: long rounds that then patch
+/// and refine are the work, so the count stops. Short rounds neither count
+/// nor reset.
 #[derive(Default)]
 pub(super) struct PlanningChurnRun {
     rounds: u32,
+    wrote: bool,
 }
 
 impl PlanningChurnRun {
     /// Records one tool round. True on every round that completes another
-    /// [`PLANNING_CHURN_ROUNDS`] long rounds ending in a small check.
+    /// [`PLANNING_CHURN_ROUNDS`] long rounds ending in a small check, until
+    /// the turn first writes or delegates.
     pub(super) fn observe(
         &mut self,
         output_tokens: Option<u32>,
@@ -147,7 +155,9 @@ impl PlanningChurnRun {
         kinds: &[Option<ToolKind>],
     ) -> bool {
         if argument_bytes >= PLANNING_CHURN_ACTION_BYTES || kinds.contains(&Some(ToolKind::Task)) {
-            self.rounds = 0;
+            self.wrote = true;
+        }
+        if self.wrote {
             return false;
         }
         if output_tokens.is_none_or(|tokens| tokens < PLANNING_CHURN_OUTPUT_TOKENS) {
@@ -772,12 +782,13 @@ mod tests {
     }
 
     /// The reminder is for a model that drafts the whole solution in its
-    /// reasoning and then only runs a small check, twice in a row. A round
-    /// that writes the work or delegates it ends the stretch; short rounds
-    /// (a quick look, a wait) do not interrupt it, and a long round that
-    /// writes the page is the behaviour wanted, not churn.
+    /// reasoning and then only runs a small check, twice in a row, before it
+    /// has written anything. Short rounds (a quick look, a wait) do not
+    /// interrupt the stretch. Once the work is written or delegated, long
+    /// rounds that patch it are refinement, which made the best pages of the
+    /// Paris runs, so they are left alone for the rest of the turn.
     #[test]
-    fn planning_churn_reminds_after_two_long_rounds_that_only_checked() {
+    fn planning_churn_reminds_only_before_the_work_is_written() {
         let shell = [Some(ToolKind::Execute)];
         let delegate = [Some(ToolKind::Task)];
         let mut run = PlanningChurnRun::default();
@@ -789,11 +800,16 @@ mod tests {
         assert!(!run.observe(Some(41_000), 180, &shell));
         assert!(run.observe(Some(36_000), 90, &shell), "repeats every second such round");
 
-        assert!(!run.observe(Some(45_000), 64_000, &shell), "writing the page resets");
-        assert!(!run.observe(Some(39_000), 200, &shell));
-        assert!(!run.observe(Some(30_000), 400, &delegate), "a delegation resets");
-        assert!(!run.observe(Some(39_000), 200, &shell));
-        assert!(run.observe(Some(39_000), 200, &shell));
+        assert!(!run.observe(Some(45_000), 12_000, &shell), "writing a first part");
+        for _ in 0..4 {
+            assert!(!run.observe(Some(39_000), 900, &shell), "patching after a write is the work");
+        }
+
+        let mut delegating = PlanningChurnRun::default();
+        assert!(!delegating.observe(Some(60_000), 400, &shell));
+        assert!(!delegating.observe(Some(30_000), 400, &delegate), "a delegation hands the work on");
+        assert!(!delegating.observe(Some(39_000), 200, &shell));
+        assert!(!delegating.observe(Some(39_000), 200, &shell));
     }
 
     /// A utility lane on a mock endpoint that answers `answers` in order.

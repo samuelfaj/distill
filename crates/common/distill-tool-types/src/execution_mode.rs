@@ -460,6 +460,11 @@ impl ModePolicy {
             ExecutionMode::Ultrafast => {
                 runtime.effort.cadence = EffortCadence::PerTurn;
                 runtime.effort.ceiling = Some(EffortLevel::Medium);
+                // The turn's first round does not wait for the decision, so it
+                // runs at this level, and with earlier reasoning kept that round
+                // often designs and writes the whole result: in the Paris, 1888
+                // runs every UltraFast page was planned in a first round at low.
+                runtime.effort.when_silent = SilentEffort::Level(EffortLevel::Medium);
                 runtime.jev.await_turn_start = false;
                 runtime.jev.diff_risk_deadline_ms = 800;
                 runtime.utility_selection = false;

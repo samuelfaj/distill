@@ -638,6 +638,40 @@ async fn the_work_shape_hint_names_what_to_hand_over_and_skips_short_work() {
     .await;
 }
 
+/// A session that cannot delegate (UltraFast) still gets the work-shape
+/// answer: open design brings the element-by-element check, which lifted the
+/// Paris, 1888 pages, and nothing else does, since there is no one to hand
+/// work to.
+#[tokio::test(flavor = "current_thread")]
+async fn a_session_that_cannot_delegate_gets_only_the_open_design_check() {
+    with_actor(|actor| async move {
+        crate::jev::with_session_scope("b6-work-shape-solo", async {
+            crate::jev::set_test_flags(distill_workspace::jev::JevFlags::harness_default());
+            set_worker_model(&actor, Some("worker-model"));
+            actor.execution_mode.store(distill_tool_types::ExecutionMode::Ultrafast);
+            for (request, shape, adds_check) in [
+                ("design and build a voxel diorama page", &[("open_design", 0.7), ("specified_work", 0.3)][..], true),
+                ("rename getUserName in all 14 files", &[("specified_work", 0.8), ("single_action", 0.2)][..], false),
+            ] {
+                ask_about(&actor, request);
+                crate::jev::set_test_decision_answers([Some(work_shape_answers(shape, 0.1))]);
+                actor.jev_start_work_shape(request);
+                actor.jev_flush_delegation_hint().await;
+                let conversation = actor.chat_state_handle.get_conversation().await;
+                let checks = conversation
+                    .iter()
+                    .map(ConversationItem::text_content)
+                    .filter(|text| text.contains("<planning_hint>This request leaves decisions open"))
+                    .count();
+                assert_eq!(checks, usize::from(adds_check), "{request}");
+                assert!(delegation_hints(&actor).await.is_empty(), "{request}: no one to delegate to");
+            }
+        })
+        .await;
+    })
+    .await;
+}
+
 /// The first request waits a bounded time for the hint and no longer: an
 /// answer that is late leaves the turn alone and joins at a later flush.
 #[tokio::test(flavor = "current_thread")]
@@ -668,11 +702,12 @@ async fn a_late_work_shape_answer_does_not_hold_the_turn_and_joins_later() {
     .await;
 }
 
-/// Nobody to hand work to, nothing asked: no worker, B6 off, a pinned mode
-/// without subagents. Under Auto the mode is picked after the ask, so the
-/// ask goes out and a pick without subagents drops its answer.
+/// B6 off asks nothing. A session with nobody to hand work to (no worker, a
+/// pinned mode without subagents) is asked too, for the open-design check,
+/// and gets no delegation hint. Under Auto the mode is picked after the ask,
+/// and a pick without subagents drops a delegation answer.
 #[tokio::test(flavor = "current_thread")]
-async fn the_work_shape_is_asked_only_where_delegation_is_on_offer() {
+async fn the_work_shape_is_asked_wherever_b6_is_on_and_delegation_needs_someone_to_take_it() {
     use distill_tool_types::{ExecutionMode, V2Modes};
     with_actor(|actor| async move {
         crate::jev::with_session_scope("b6-work-shape-off", async {
@@ -686,21 +721,27 @@ async fn the_work_shape_is_asked_only_where_delegation_is_on_offer() {
                 b6_delegation_hint: false,
                 ..on
             };
-            for (flags, worker, mode) in [
-                (on, None, ExecutionMode::Normal),
-                (b6_off, Some("worker-model"), ExecutionMode::Normal),
-                (on, Some("worker-model"), ExecutionMode::Ultrafast),
+            for (flags, worker, mode, asked) in [
+                (on, None, ExecutionMode::Normal, true),
+                (b6_off, Some("worker-model"), ExecutionMode::Normal, false),
+                (on, Some("worker-model"), ExecutionMode::Ultrafast, true),
             ] {
                 crate::jev::set_test_flags(flags);
                 set_worker_model(&actor, worker);
                 actor.execution_mode.store(mode);
-                crate::jev::set_test_decision_answers([None]);
+                crate::jev::set_test_decision_answers([Some(work_shape_answers(
+                    &[("specified_work", 0.9), ("single_action", 0.1)],
+                    0.1,
+                ))]);
                 actor.jev_start_work_shape(request);
                 actor.jev_flush_delegation_hint().await;
-                assert!(
-                    crate::jev::take_test_asked_questions().is_empty(),
+                assert_eq!(
+                    !crate::jev::take_test_asked_questions().is_empty(),
+                    asked,
                     "worker={worker:?} {mode:?}"
                 );
+                assert!(delegation_hints(&actor).await.is_empty(), "worker={worker:?} {mode:?}");
+                crate::jev::clear_test_decision_answers();
             }
             crate::jev::set_test_flags(on);
             set_worker_model(&actor, Some("worker-model"));

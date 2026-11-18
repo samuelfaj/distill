@@ -87,6 +87,10 @@ pub(crate) struct JevTurnLedger {
     /// B6 (work shape): the ask of the latest request, started when the
     /// request arrives so it overlaps the turn's other preparation.
     pub(crate) work_shape: Option<WorkShapeAsk>,
+    /// The turn whose work-shape advice was open design: the main model builds
+    /// the part that carries the decisions itself, so the hands-on reminder
+    /// holds for that turn.
+    pub(crate) open_design_turn: Option<u64>,
     pub(crate) last_execution: Option<(String, Option<distill_sampling_types::ReasoningEffort>)>,
     /// The session's optional tool families. Session-scoped: draining the turn
     /// keeps it, so the tools array only grows when a later request needs

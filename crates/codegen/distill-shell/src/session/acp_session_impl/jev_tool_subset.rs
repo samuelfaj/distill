@@ -51,6 +51,11 @@ const PARALLEL_INVESTIGATION_HINT: &str = "<delegation_hint>This request needs s
 /// scored 21 to 26 for $2 to $17.
 const SETTLE_THEN_DELEGATE_HINT: &str = "<delegation_hint>This request leaves decisions open. Settle them yourself and build the part that carries them yourself, while your reasoning about them is in context: a worker would have to rediscover them from a spec. Hand a subagent only parts that are already specified (a separate piece with a clear interface, mechanical edits, a long check to run), with a precise spec, and review what comes back. Settle only what the request leaves open: every requirement it states stays, and no decision of yours may relax one. Before you report, go through every element the request names, one by one, and check it against what you built (present, visible, behaving as asked); fix what falls short.</delegation_hint>";
 
+/// B6 (work shape) where the session cannot delegate (UltraFast, no worker
+/// model): open design keeps only the element-by-element check, which on its
+/// own lifted the Paris, 1888 pages built with it.
+const OPEN_DESIGN_SOLO_HINT: &str = "<planning_hint>This request leaves decisions open: settle them yourself and build it. Every requirement it states stays, and no decision of yours may relax one. Before you report, go through every element the request names, one by one, and check it against what you built (present, visible, behaving as asked); fix what falls short.</planning_hint>";
+
 /// How long the turn's first model request waits, counted from the ask, for
 /// a work-shape answer still on its way. On 2026-11-17 `liquid/d1.2`
 /// answered this question in a median of 0.69 s (p90 0.82 s; one of 12 took
@@ -505,12 +510,11 @@ impl SessionActor {
     /// subagents. Unlike the pair it replaces, it does not need an optional
     /// tool family to be pending, and it runs in UltraSave too.
     pub(super) fn jev_start_work_shape(&self, request: &str) {
+        // Asked whether or not the session can delegate: the flush picks the
+        // delegating hint or, for open design, the solo one.
         let delegates = crate::jev::lever_active(JevLever::B6WorkShape)
             && !self.startup_hints.is_subagent
-            && self.agent.borrow().prompt_context().worker_model.is_some()
-            && !self.plan_mode.lock().is_active()
-            // Under Auto the mode is picked after this; the flush checks it.
-            && (self.execution_mode.is_auto() || self.mode_allows_subagents());
+            && !self.plan_mode.lock().is_active();
         let Ok(questions) = distill_workspace::jev::catalog::battery::work_shape_questions() else {
             return;
         };
@@ -566,7 +570,7 @@ impl SessionActor {
             .work_shape
             .as_ref()
             .is_none_or(|ask| ask.turn != turn);
-        if stale || !self.mode_allows_subagents() {
+        if stale {
             answer.abort();
             return None;
         }
@@ -581,7 +585,18 @@ impl SessionActor {
         };
         let answers = answers.ok().flatten()?;
         let advice = distill_workspace::jev::catalog::battery::compose_work_shape(&answers);
-        let hint = advice.and_then(work_shape_hint);
+        let open_design =
+            advice == Some(distill_workspace::jev::catalog::battery::DelegationAdvice::SettleThenDelegate);
+        let solo = !self.mode_allows_subagents()
+            || self.agent.borrow().prompt_context().worker_model.is_none();
+        let hint = if solo {
+            open_design.then_some(OPEN_DESIGN_SOLO_HINT)
+        } else {
+            advice.and_then(work_shape_hint)
+        };
+        if hint.is_some() && open_design {
+            self.jev_ledger.borrow_mut().open_design_turn = Some(turn);
+        }
         crate::jev::record_item(
             JevLever::B6DelegationHint,
             advice.map_or("defer", |advice| advice.label()),
@@ -621,6 +636,12 @@ impl SessionActor {
             && !self.plan_mode.lock().is_active()
             && crate::jev::lever_active(JevLever::B6DelegationHint);
         if !delegates {
+            return;
+        }
+        // Open design asked the main model to build the part that carries the
+        // decisions itself; pushing it to hand that over mid-build split the
+        // Paris, 1888 page across 7 to 11 UltraCode workers ($18 to $27 a run).
+        if self.jev_ledger.borrow().open_design_turn == Some(self.current_turn_number.get()) {
             return;
         }
         crate::jev::record_item(

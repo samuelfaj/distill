@@ -2861,6 +2861,10 @@ impl SamplingClient {
             extended_ttl: direct && !EXTENDED_CACHE_TTL_REFUSED.load(Ordering::Relaxed),
             system_messages: direct && !SYSTEM_MESSAGES_REFUSED.load(Ordering::Relaxed),
             deferred_tools: direct && !DEFERRED_TOOLS_REFUSED.load(Ordering::Relaxed),
+            // Off: the marker drops the reasoning of earlier rounds (see the field), which costs more than
+            // the cache rewrite of a top-level effort change; the effort routing keeps a turn's effort on a
+            // large prompt.
+            per_message_effort: false,
         }
     }
 
@@ -5453,6 +5457,7 @@ mod cache_ttl_tests {
                 extended_ttl: true,
                 system_messages: true,
                 deferred_tools: true,
+                per_message_effort: false,
             }
         );
         assert!(
@@ -5478,6 +5483,7 @@ mod cache_ttl_tests {
                 extended_ttl: false,
                 system_messages: true,
                 deferred_tools: true,
+                per_message_effort: false,
             }
         );
     }

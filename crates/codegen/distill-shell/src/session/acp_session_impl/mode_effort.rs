@@ -14,7 +14,7 @@ use distill_workspace::jev::catalog::routing;
 use distill_workspace::jev::flags::JevLever;
 
 use super::jev_ledger::{EFFORT_SWITCH_FREE_PROMPT_TOKENS, TurnRoute};
-use super::jev_routing::{effort_keys_cached_prefix, effort_level_value};
+use super::jev_routing::effort_level_value;
 use super::*;
 
 /// Tools whose only job is to wait on or poll background work: the blocking
@@ -250,7 +250,12 @@ impl SessionActor {
                     return;
                 };
                 let answer = tokio::task::spawn_local(crate::jev::in_current_turn(
-                    crate::jev::ask_item(JevLever::B2MicroEffort, state, questions),
+                    crate::jev::ask_item_as(
+                        JevLever::B2MicroEffort,
+                        self.effort_questions_lever(),
+                        state,
+                        questions,
+                    ),
                 ));
                 self.jev_ledger.borrow_mut().turn_effort = TurnEffort::Pending {
                     turn,
@@ -293,12 +298,11 @@ impl SessionActor {
         let Some(answers) = finished_answer(answer) else {
             return;
         };
-        let free = !effort_keys_cached_prefix(&cfg.api_backend, &cfg.model)
-            || self
-                .jev_ledger
-                .borrow()
-                .last_main_prompt_tokens()
-                .is_none_or(|tokens| tokens < EFFORT_SWITCH_FREE_PROMPT_TOKENS);
+        let free = self
+            .jev_ledger
+            .borrow()
+            .last_main_prompt_tokens()
+            .is_none_or(|tokens| tokens < EFFORT_SWITCH_FREE_PROMPT_TOKENS);
         if !free {
             crate::jev::record_item(
                 JevLever::B2MicroEffort,
@@ -339,15 +343,15 @@ impl SessionActor {
     /// The row's ceiling, and its floor on the round after a failed tool or
     /// a failed recorded check, on this round's effort. Runs after the
     /// decisions and the redo floor and before the escalation ratchet's
-    /// floor, so a climb is never capped. Where the cache is keyed by effort
+    /// floor, so a climb is never capped. The cache is keyed by effort, so
     /// they act only on a round that sets the turn's route (`kept` is
-    /// false), so they never force an uncached re-read mid-turn. An explicit
+    /// false) and never force an uncached re-read mid-turn. An explicit
     /// effort turns them off.
     pub(super) fn apply_mode_effort_bounds(&self, cfg: &mut SamplingConfig, kept: bool) {
         if !self
             .jev_effort_auto
             .load(std::sync::atomic::Ordering::Relaxed)
-            || (kept && effort_keys_cached_prefix(&cfg.api_backend, &cfg.model))
+            || kept
         {
             return;
         }

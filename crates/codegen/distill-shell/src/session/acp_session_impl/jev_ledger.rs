@@ -36,6 +36,18 @@ impl std::fmt::Debug for DeferredModelSwitch {
     }
 }
 
+/// B6 (work shape): one background ask about a request.
+#[derive(Debug)]
+pub(crate) struct WorkShapeAsk {
+    /// The turn the request opened.
+    pub(crate) turn: u64,
+    /// When the ask went out: the wait before the turn's first request is
+    /// counted from here.
+    pub(crate) started: std::time::Instant,
+    /// The answer on its way; `None` once a flush took it.
+    pub(crate) answer: Option<tokio::task::JoinHandle<Option<distill_workspace::jev::JevAnswerSet>>>,
+}
+
 /// The turn's model/effort split. Cheap by construction: one row per pair the
 /// turn actually used, so a normal turn holds two or three.
 #[derive(Debug, Default)]
@@ -72,6 +84,13 @@ pub(crate) struct JevTurnLedger {
     /// B6: the human request whose delegation hint waits for the next model
     /// request, and the hint's text.
     pub(crate) delegation_hint: Option<(String, &'static str)>,
+    /// B6 (work shape): the ask of the latest request, started when the
+    /// request arrives so it overlaps the turn's other preparation.
+    pub(crate) work_shape: Option<WorkShapeAsk>,
+    /// The turn whose work-shape advice was open design: the main model builds
+    /// the part that carries the decisions itself, so the hands-on reminder
+    /// holds for that turn.
+    pub(crate) open_design_turn: Option<u64>,
     pub(crate) last_execution: Option<(String, Option<distill_sampling_types::ReasoningEffort>)>,
     /// The session's optional tool families. Session-scoped: draining the turn
     /// keeps it, so the tools array only grows when a later request needs
@@ -684,6 +703,9 @@ impl JevTurnLedger {
         self.last_answered_effort = None;
         self.round_route_kept = false;
         self.failures_at_last_response = 0;
+        if let Some(answer) = self.work_shape.take().and_then(|ask| ask.answer) {
+            answer.abort();
+        }
         if let Some((_, hint)) = self.late_skill_hint.take() {
             hint.abort();
         }

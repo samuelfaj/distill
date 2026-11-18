@@ -57,13 +57,26 @@ b8_review_hygiene     = true # Auto mid-turn review on a large prompt: no return
 f1_followup_label     = true # a message within 10 minutes of the last turn's end also asks whether it reports that result as wrong or incomplete; only the label is recorded, nothing acts on it
 b8_criteria_v2        = true # Auto: the mode question judges the whole request; each mode says what it is for, what it is not for, with example requests; false restores the first question; not yet through replay, shadow or a benchmark
 b8_up_only            = true # Auto: inside a request the mode only moves up (a review needs 0.25 over the current mode, or the escalation ratchet); a leaner pick waits for the next request; false restores the review that moves either way; not yet through replay, shadow or a benchmark
-b6_delegation_hint    = true  # B6: with a worker model, the turn-start request also asks whether the request takes more than one call and whether it has independent parts; every answer is logged, and true adds one <delegation_hint> line before the turn's next model request when the work is multi-step, and one more for every 8 rounds the main model then works hands-on without delegating
+b6_delegation_hint    = true  # B6: with a worker model, a delegation hint before the turn's next model request when the work is multi-step, and one more for every 8 rounds the main model then works hands-on without delegating
+b6_work_shape         = true  # B6 asks the work shape (direct answer, one or two calls, specified work, investigation, open design) in the background when a request arrives, and the hint says what to hand over; the first model request waits for it up to 1.2 s; false restores the two questions on the tool-family request
+b2_step_battery       = true  # auto effort and UltraSave's tier come from the kind of step (lookup ... review) and a table per mode, one question per round; false restores the effort choice
+b7_utility_children   = true  # a fresh explore child whose assignment is plain reading runs on the utility model, falling back to its own model on any failed request; only when [jev.local] model is a catalog entry
+e_planning_churn      = true  # before anything is written, two rounds that each reasoned at length (20k+ output tokens) and then ran only a small check bring a reminder to put the settled parts into files and refine from running them; after the first write or delegation it stays quiet; no decision call
 
 # Off until their own gate passes (the plan's standing rule):
 b2_model_tier         = false # money lever: only ever downgrades a routine turn
 c6_injection_screen   = false # cost per tool output not measured yet
 d2_big_output_retention = false # D2: asked at ingest, before the model read the output; it never dropped one
 d6_warm_batches       = false # D6 also on a warm cache, in batches that should pay for the break; unmeasured
+
+# The decision model per lever; these are the shipped choices
+# (docs/d1.2-decision-results.md). They send their state to Liquid through
+# OpenRouter; every other lever uses [jev] model, which does not move these:
+# [jev.models]
+# b6_work_shape        = "liquid/d1.2"
+# b7_utility_children  = "liquid/d1.2"
+# stored_output_search = "liquid/d1.2"   # ask_stored_output evidence selection
+# jev_decide_fields    = "liquid/d1.2"   # jev_decide extraction (d1.2 only)
 
 # Optional, with the defaults shown
 # base_url      = "https://api.typesafe.ai"
@@ -131,6 +144,26 @@ What the decision sees for each call:
 | `phase` | `start_of_turn` (the user's request) or `mid_turn_after_tools` (continuing after tool results) |
 | `recent_steps` | the last few tool calls and results, as short labels (no bodies) |
 | `turn_items` / `request` | how far the turn has progressed, and the user's request (bounded) |
+
+By default (`[jev.ladder] b2_step_battery`) Jev is not asked for a level at all.
+It answers what kind of step the call is (`lookup`, `relay`, `edit_specified`,
+`implement`, `diagnose`, `design`, `review`, or `unstated` for a short reply
+that shows no work) and whether a wrong step would be expensive. A table per
+mode sets the level:
+
+* reading, relaying and edits whose content is decided run at low (the
+  cheapest level the model offers in UltraSave);
+* code from clear requirements runs at medium in Normal;
+* diagnosis, design and review run at high in Normal, medium in UltraSave and
+  UltraFast, and xhigh for design and review in UltraCode;
+* an expensive step gets one level more, up to high;
+* on a request's first step the request itself is judged, and a short reply
+  ("yes", "continue") is judged by the end of the assistant message it
+  answers.
+
+The full table is in `docs/jev-routing.md` in the repository. With the battery
+off, the fields above go to a `choice` over the menu and the rules below apply
+to it.
 
 Rules that hold in auto mode:
 

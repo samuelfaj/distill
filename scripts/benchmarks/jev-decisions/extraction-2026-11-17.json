@@ -1,0 +1,1058 @@
+{
+ "schema_version": 1,
+ "endpoint": "https://openrouter.ai/api/alpha/extractions",
+ "models": [
+  "liquid/d1.2",
+  "liquid/d1.2-ultra"
+ ],
+ "run_at": "2026-11-17T21:05:09Z",
+ "summary": {
+  "liquid/d1.2": {
+   "fields": 27,
+   "correct": 21,
+   "cost": 5.18e-05,
+   "errors": 0,
+   "latency_median_ms": 688,
+   "latency_max_ms": 785
+  },
+  "liquid/d1.2-ultra": {
+   "fields": 27,
+   "correct": 21,
+   "cost": 0.0001087,
+   "errors": 0,
+   "latency_median_ms": 762,
+   "latency_max_ms": 849
+  }
+ },
+ "rows": [
+  {
+   "model": "liquid/d1.2",
+   "case": "x1-cargo-test",
+   "field": "first_panic",
+   "expected": "src/parser.rs:212:9",
+   "ok": true,
+   "answer": {
+    "type": "text",
+    "value": "src/parser.rs:212:9",
+    "guess": "src/parser.rs:212:9",
+    "span": [
+     304,
+     323
+    ],
+    "p_null": 0.000335742792209
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2",
+   "case": "x1-cargo-test",
+   "field": "failed",
+   "expected": 2,
+   "ok": true,
+   "answer": {
+    "type": "number",
+    "value": 2,
+    "guess": 2,
+    "span": [
+     603,
+     604
+    ],
+    "p_null": 0.0140925559067
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2",
+   "case": "x1-cargo-test",
+   "field": "deploy_url",
+   "expected": null,
+   "ok": true,
+   "answer": {
+    "type": "text",
+    "value": null,
+    "p_null": 0.973434979884
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2",
+   "case": "x1-cargo-test",
+   "field": "causes",
+   "expected": [
+    "src/parser.rs:212:9",
+    "src/cache.rs:88:5",
+    "hot entry was evicted after 3 inserts"
+   ],
+   "ok": true,
+   "answer": {
+    "type": "list",
+    "value": [
+     "src/parser.rs:212:9",
+     "src/cache.rs:88:5:\nhot entry was evicted after 3 inserts"
+    ],
+    "spans": [
+     [
+      304,
+      323
+     ],
+     [
+      514,
+      570
+     ]
+    ],
+    "confidences": [
+     0.9914107855968317,
+     0.9557057047909512
+    ],
+    "p_null": 0.00858921440317
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2",
+   "case": "x2-pytest",
+   "field": "failed",
+   "expected": 3,
+   "ok": true,
+   "answer": {
+    "type": "number",
+    "value": 3,
+    "guess": 3,
+    "span": [
+     949,
+     950
+    ],
+    "p_null": 0.112402749729
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2",
+   "case": "x2-pytest",
+   "field": "passed",
+   "expected": 41,
+   "ok": true,
+   "answer": {
+    "type": "number",
+    "value": 41,
+    "guess": 41,
+    "span": [
+     959,
+     961
+    ],
+    "p_null": 0
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2",
+   "case": "x2-pytest",
+   "field": "key_error_test",
+   "expected": "tests/test_views.py::test_profile",
+   "ok": true,
+   "answer": {
+    "type": "text",
+    "value": "tests/test_views.py::test_profile",
+    "guess": "tests/test_views.py::test_profile",
+    "span": [
+     808,
+     841
+    ],
+    "p_null": 0.00908999318941
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2",
+   "case": "x2-pytest",
+   "field": "failed_tests",
+   "expected": [
+    "tests/test_api.py::test_login",
+    "tests/test_views.py::test_profile",
+    "tests/test_views.py::test_logout"
+   ],
+   "ok": false,
+   "answer": {
+    "type": "list",
+    "value": [
+     "tests/test_api.py::test_login",
+     "tests/test_views.py::test_profile",
+     "test_logout"
+    ],
+    "spans": [
+     [
+      751,
+      780
+     ],
+     [
+      808,
+      841
+     ],
+     [
+      891,
+      902
+     ]
+    ],
+    "confidences": [
+     0.9968553459119497,
+     0.9791873323573463,
+     0.9464810186318942
+    ],
+    "p_null": 0.00314465408805
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2",
+   "case": "x3-tsc",
+   "field": "first_code",
+   "expected": "TS2322",
+   "ok": true,
+   "answer": {
+    "type": "text",
+    "value": "TS2322",
+    "guess": "TS2322",
+    "span": [
+     64,
+     70
+    ],
+    "p_null": 0.000529937672261
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2",
+   "case": "x3-tsc",
+   "field": "second_file",
+   "expected": "src/hooks/useCart.ts",
+   "ok": true,
+   "answer": {
+    "type": "text",
+    "value": "src/hooks/useCart.ts",
+    "guess": "src/hooks/useCart.ts",
+    "span": [
+     122,
+     142
+    ],
+    "p_null": 0.00529974761054
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2",
+   "case": "x3-tsc",
+   "field": "errors",
+   "expected": 2,
+   "ok": true,
+   "answer": {
+    "type": "number",
+    "value": 2,
+    "guess": 2,
+    "span": [
+     220,
+     221
+    ],
+    "p_null": 0.0198849840117
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2",
+   "case": "x3-tsc",
+   "field": "warnings",
+   "expected": null,
+   "ok": true,
+   "answer": {
+    "type": "number",
+    "value": null,
+    "p_null": 0.944373712197
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2",
+   "case": "x4-git-log",
+   "field": "bump_commit",
+   "expected": "3b6f48cb",
+   "ok": true,
+   "answer": {
+    "type": "text",
+    "value": "3b6f48cb",
+    "guess": "3b6f48cb",
+    "span": [
+     209,
+     217
+    ],
+    "p_null": 0.00276598403111
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2",
+   "case": "x4-git-log",
+   "field": "pr_of_code_mode",
+   "expected": 69,
+   "ok": false,
+   "answer": {
+    "type": "number",
+    "value": null,
+    "span": [
+     323,
+     327
+    ],
+    "p_null": 0
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2",
+   "case": "x4-git-log",
+   "field": "revert_commit",
+   "expected": null,
+   "ok": true,
+   "answer": {
+    "type": "text",
+    "value": null,
+    "p_null": 0.988416826468
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2",
+   "case": "x5-json",
+   "field": "status",
+   "expected": "degraded",
+   "ok": true,
+   "answer": {
+    "type": "text",
+    "value": "degraded",
+    "guess": "degraded",
+    "span": [
+     11,
+     19
+    ],
+    "p_null": 0.000489125980321
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2",
+   "case": "x5-json",
+   "field": "db_latency",
+   "expected": 812,
+   "ok": true,
+   "answer": {
+    "type": "number",
+    "value": 812,
+    "guess": 812,
+    "span": [
+     136,
+     139
+    ],
+    "p_null": 0
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2",
+   "case": "x5-json",
+   "field": "failing",
+   "expected": [
+    "db"
+   ],
+   "ok": true,
+   "answer": {
+    "type": "list",
+    "value": [
+     "db"
+    ],
+    "spans": [
+     [
+      119,
+      121
+     ]
+    ],
+    "confidences": [
+     0.9968553459119497
+    ],
+    "p_null": 0.00314465408805
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2",
+   "case": "x6-traceback",
+   "field": "exception",
+   "expected": "KeyError",
+   "ok": true,
+   "answer": {
+    "type": "text",
+    "value": "KeyError",
+    "guess": "KeyError",
+    "span": [
+     180,
+     188
+    ],
+    "p_null": 0.00741241463053
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2",
+   "case": "x6-traceback",
+   "field": "line",
+   "expected": 88,
+   "ok": true,
+   "answer": {
+    "type": "number",
+    "value": 88,
+    "guess": 88,
+    "span": [
+     128,
+     130
+    ],
+    "p_null": 0.146476332556
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2",
+   "case": "x6-traceback",
+   "field": "missing_key",
+   "expected": "u_5512",
+   "ok": false,
+   "answer": {
+    "type": "text",
+    "value": "'u_5512",
+    "guess": "'u_5512",
+    "span": [
+     190,
+     197
+    ],
+    "p_null": 0.0266835128471
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2",
+   "case": "x7-docker",
+   "field": "tag",
+   "expected": "docker.io/library/app:1.4.2",
+   "ok": true,
+   "answer": {
+    "type": "text",
+    "value": "docker.io/library/app:1.4.2",
+    "guess": "docker.io/library/app:1.4.2",
+    "span": [
+     188,
+     215
+    ],
+    "p_null": 0.00670160018604
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2",
+   "case": "x7-docker",
+   "field": "npm_ci_seconds",
+   "expected": 31.2,
+   "ok": false,
+   "answer": {
+    "type": "number",
+    "value": null,
+    "span": [
+     28,
+     33
+    ],
+    "p_null": 0
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2",
+   "case": "x7-docker",
+   "field": "push_digest",
+   "expected": null,
+   "ok": false,
+   "answer": {
+    "type": "text",
+    "value": "9f2c1e0b7d44",
+    "guess": "9f2c1e0b7d44",
+    "span": [
+     156,
+     168
+    ],
+    "p_null": 0.324366647137
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2",
+   "case": "x8-unicode",
+   "field": "failed_region",
+   "expected": "São Paulo-3",
+   "ok": true,
+   "answer": {
+    "type": "text",
+    "value": "São Paulo-3",
+    "guess": "São Paulo-3",
+    "span": [
+     120,
+     131
+    ],
+    "p_null": 0.000784580911994
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2",
+   "case": "x8-unicode",
+   "field": "timeout",
+   "expected": 30,
+   "ok": false,
+   "answer": {
+    "type": "number",
+    "value": null,
+    "span": [
+     141,
+     144
+    ],
+    "p_null": 0
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2",
+   "case": "x8-unicode",
+   "field": "recovered_region",
+   "expected": "São Paulo-1",
+   "ok": true,
+   "answer": {
+    "type": "text",
+    "value": "São Paulo-1",
+    "guess": "São Paulo-1",
+    "span": [
+     206,
+     217
+    ],
+    "p_null": 0
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2-ultra",
+   "case": "x1-cargo-test",
+   "field": "first_panic",
+   "expected": "src/parser.rs:212:9",
+   "ok": false,
+   "answer": {
+    "type": "text",
+    "value": "src/parser.rs:212:9:",
+    "guess": "src/parser.rs:212:9:",
+    "span": [
+     304,
+     324
+    ],
+    "p_null": 0
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2-ultra",
+   "case": "x1-cargo-test",
+   "field": "failed",
+   "expected": 2,
+   "ok": true,
+   "answer": {
+    "type": "number",
+    "value": 2,
+    "guess": 2,
+    "span": [
+     603,
+     604
+    ],
+    "p_null": 0
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2-ultra",
+   "case": "x1-cargo-test",
+   "field": "deploy_url",
+   "expected": null,
+   "ok": true,
+   "answer": {
+    "type": "text",
+    "value": null,
+    "p_null": 0.99413461792
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2-ultra",
+   "case": "x1-cargo-test",
+   "field": "causes",
+   "expected": [
+    "src/parser.rs:212:9",
+    "src/cache.rs:88:5",
+    "hot entry was evicted after 3 inserts"
+   ],
+   "ok": true,
+   "answer": {
+    "type": "list",
+    "value": [
+     "thread 'parser::tests::rejects_bad_header' panicked at src/parser.rs:212:9:",
+     "assertion `left == right` failed",
+     "src/cache.rs:88:5:\nhot entry was evicted after 3 inserts"
+    ],
+    "spans": [
+     [
+      249,
+      324
+     ],
+     [
+      325,
+      357
+     ],
+     [
+      514,
+      570
+     ]
+    ],
+    "confidences": [
+     0.9941471744180622,
+     0.8135722462160769,
+     0.6409421504483097
+    ],
+    "p_null": 0.00585282558194
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2-ultra",
+   "case": "x2-pytest",
+   "field": "failed",
+   "expected": 3,
+   "ok": true,
+   "answer": {
+    "type": "number",
+    "value": 3,
+    "guess": 3,
+    "span": [
+     949,
+     950
+    ],
+    "p_null": 0
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2-ultra",
+   "case": "x2-pytest",
+   "field": "passed",
+   "expected": 41,
+   "ok": true,
+   "answer": {
+    "type": "number",
+    "value": 41,
+    "guess": 41,
+    "span": [
+     959,
+     961
+    ],
+    "p_null": 0
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2-ultra",
+   "case": "x2-pytest",
+   "field": "key_error_test",
+   "expected": "tests/test_views.py::test_profile",
+   "ok": true,
+   "answer": {
+    "type": "text",
+    "value": "tests/test_views.py::test_profile",
+    "guess": "tests/test_views.py::test_profile",
+    "span": [
+     808,
+     841
+    ],
+    "p_null": 0.00568517983958
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2-ultra",
+   "case": "x2-pytest",
+   "field": "failed_tests",
+   "expected": [
+    "tests/test_api.py::test_login",
+    "tests/test_views.py::test_profile",
+    "tests/test_views.py::test_logout"
+   ],
+   "ok": true,
+   "answer": {
+    "type": "list",
+    "value": [
+     "tests/test_api.py::test_login",
+     "tests/test_views.py::test_profile",
+     "tests/test_views.py::test_logout"
+    ],
+    "spans": [
+     [
+      751,
+      780
+     ],
+     [
+      808,
+      841
+     ],
+     [
+      870,
+      902
+     ]
+    ],
+    "confidences": [
+     0.9768598917714102,
+     0.8463452546317614,
+     0.6254653171810429
+    ],
+    "p_null": 0.0231401082286
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2-ultra",
+   "case": "x3-tsc",
+   "field": "first_code",
+   "expected": "TS2322",
+   "ok": true,
+   "answer": {
+    "type": "text",
+    "value": "TS2322",
+    "guess": "TS2322",
+    "span": [
+     64,
+     70
+    ],
+    "p_null": 0.00246487116292
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2-ultra",
+   "case": "x3-tsc",
+   "field": "second_file",
+   "expected": "src/hooks/useCart.ts",
+   "ok": true,
+   "answer": {
+    "type": "text",
+    "value": "src/hooks/useCart.ts",
+    "guess": "src/hooks/useCart.ts",
+    "span": [
+     122,
+     142
+    ],
+    "p_null": 0.00147476718415
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2-ultra",
+   "case": "x3-tsc",
+   "field": "errors",
+   "expected": 2,
+   "ok": true,
+   "answer": {
+    "type": "number",
+    "value": 2,
+    "guess": 2,
+    "span": [
+     220,
+     221
+    ],
+    "p_null": 0
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2-ultra",
+   "case": "x3-tsc",
+   "field": "warnings",
+   "expected": null,
+   "ok": true,
+   "answer": {
+    "type": "number",
+    "value": null,
+    "p_null": 0.994251644802
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2-ultra",
+   "case": "x4-git-log",
+   "field": "bump_commit",
+   "expected": "3b6f48cb",
+   "ok": true,
+   "answer": {
+    "type": "text",
+    "value": "3b6f48cb",
+    "guess": "3b6f48cb",
+    "span": [
+     209,
+     217
+    ],
+    "p_null": 0
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2-ultra",
+   "case": "x4-git-log",
+   "field": "pr_of_code_mode",
+   "expected": 69,
+   "ok": false,
+   "answer": {
+    "type": "number",
+    "value": null,
+    "span": [
+     323,
+     327
+    ],
+    "p_null": 0
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2-ultra",
+   "case": "x4-git-log",
+   "field": "revert_commit",
+   "expected": null,
+   "ok": true,
+   "answer": {
+    "type": "text",
+    "value": null,
+    "p_null": 0.995650135536
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2-ultra",
+   "case": "x5-json",
+   "field": "status",
+   "expected": "degraded",
+   "ok": true,
+   "answer": {
+    "type": "text",
+    "value": "degraded",
+    "guess": "degraded",
+    "span": [
+     11,
+     19
+    ],
+    "p_null": 0.0136697139518
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2-ultra",
+   "case": "x5-json",
+   "field": "db_latency",
+   "expected": 812,
+   "ok": true,
+   "answer": {
+    "type": "number",
+    "value": 812,
+    "guess": 812,
+    "span": [
+     136,
+     139
+    ],
+    "p_null": 0.00254324672008
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2-ultra",
+   "case": "x5-json",
+   "field": "failing",
+   "expected": [
+    "db"
+   ],
+   "ok": true,
+   "answer": {
+    "type": "list",
+    "value": [
+     "db"
+    ],
+    "spans": [
+     [
+      119,
+      121
+     ]
+    ],
+    "confidences": [
+     0.9968652037617555
+    ],
+    "p_null": 0.00313479623824
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2-ultra",
+   "case": "x6-traceback",
+   "field": "exception",
+   "expected": "KeyError",
+   "ok": false,
+   "answer": {
+    "type": "text",
+    "value": "KeyError: 'u_5512",
+    "guess": "KeyError: 'u_5512",
+    "span": [
+     180,
+     197
+    ],
+    "p_null": 0.0249816666491
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2-ultra",
+   "case": "x6-traceback",
+   "field": "line",
+   "expected": 88,
+   "ok": true,
+   "answer": {
+    "type": "number",
+    "value": 88,
+    "guess": 88,
+    "span": [
+     128,
+     130
+    ],
+    "p_null": 0
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2-ultra",
+   "case": "x6-traceback",
+   "field": "missing_key",
+   "expected": "u_5512",
+   "ok": false,
+   "answer": {
+    "type": "text",
+    "value": "'u_5512",
+    "guess": "'u_5512",
+    "span": [
+     190,
+     197
+    ],
+    "p_null": 0.0254239907118
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2-ultra",
+   "case": "x7-docker",
+   "field": "tag",
+   "expected": "docker.io/library/app:1.4.2",
+   "ok": true,
+   "answer": {
+    "type": "text",
+    "value": "docker.io/library/app:1.4.2",
+    "guess": "docker.io/library/app:1.4.2",
+    "span": [
+     188,
+     215
+    ],
+    "p_null": 0.0017039556932
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2-ultra",
+   "case": "x7-docker",
+   "field": "npm_ci_seconds",
+   "expected": 31.2,
+   "ok": false,
+   "answer": {
+    "type": "number",
+    "value": null,
+    "span": [
+     28,
+     33
+    ],
+    "p_null": 0
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2-ultra",
+   "case": "x7-docker",
+   "field": "push_digest",
+   "expected": null,
+   "ok": true,
+   "answer": {
+    "type": "text",
+    "value": null,
+    "p_null": 0.532080012899
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2-ultra",
+   "case": "x8-unicode",
+   "field": "failed_region",
+   "expected": "São Paulo-3",
+   "ok": true,
+   "answer": {
+    "type": "text",
+    "value": "São Paulo-3",
+    "guess": "São Paulo-3",
+    "span": [
+     120,
+     131
+    ],
+    "p_null": 0.00491379727802
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2-ultra",
+   "case": "x8-unicode",
+   "field": "timeout",
+   "expected": 30,
+   "ok": false,
+   "answer": {
+    "type": "number",
+    "value": null,
+    "span": [
+     141,
+     144
+    ],
+    "p_null": 0
+   },
+   "error": null
+  },
+  {
+   "model": "liquid/d1.2-ultra",
+   "case": "x8-unicode",
+   "field": "recovered_region",
+   "expected": "São Paulo-1",
+   "ok": true,
+   "answer": {
+    "type": "text",
+    "value": "São Paulo-1",
+    "guess": "São Paulo-1",
+    "span": [
+     206,
+     217
+    ],
+    "p_null": 0
+   },
+   "error": null
+  }
+ ]
+}

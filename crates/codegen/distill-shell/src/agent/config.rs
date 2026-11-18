@@ -1371,6 +1371,13 @@ pub struct JevConfig {
     pub max_completion_tokens: Option<u32>,
     /// Per-lever switches of the token-saving ladder (§1.3.1).
     pub ladder: JevLadderConfig,
+    /// `[jev.models]`: the decision model per lever (`b2_step_battery =
+    /// "liquid/d1.2-ultra"`), plus `stored_output_search` for the evidence
+    /// selector and `jev_decide_fields` for `jev_decide` extraction (a
+    /// `liquid/d1.2` model only). A key left out keeps that lever's shipped
+    /// model; a value that is not a `typesafe/jev` or `liquid/d1.2` model is
+    /// ignored with a warning.
+    pub models: std::collections::BTreeMap<String, String>,
     /// Optional local model the decision layer may route a model call to.
     #[serde(default)]
     pub local: JevLocalConfig,
@@ -1502,6 +1509,16 @@ pub struct JevLadderConfig {
     pub b8_criteria_v2: Option<bool>,
     /// B8 mid-turn review: the mode only moves up inside a request (default on).
     pub b8_up_only: Option<bool>,
+    /// B2: effort and tier from the step battery (default on; `false` restores the effort and
+    /// tier `choice` questions).
+    pub b2_step_battery: Option<bool>,
+    /// B6: the delegation hint from the work shape, asked when a request arrives (default on).
+    pub b6_work_shape: Option<bool>,
+    /// B7: reading-only `explore` children run on the utility model (default on).
+    pub b7_utility_children: Option<bool>,
+    /// A reminder after two rounds that each spent long reasoning and then ran only a small check,
+    /// before the turn has written anything (default on; `false` turns it off).
+    pub e_planning_churn: Option<bool>,
 }
 pub use distill_agent::prompt::paths::PathsConfig;
 /// `[permission]` known keys, declared for the unrecognized-key scan only; consumed out-of-band.

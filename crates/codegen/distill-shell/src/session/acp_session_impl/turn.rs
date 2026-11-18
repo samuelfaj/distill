@@ -1258,6 +1258,8 @@ impl SessionActor {
                     super::super::PromptOrigin::SchedulerFired
                 )
             {
+                // In the background, so it overlaps the mode pick below.
+                self.jev_start_work_shape(&user_message);
                 self.jev_auto_pick_mode(&user_message).await;
             }
             self.inject_execution_mode_reminder_at_turn_start().await;
@@ -2858,10 +2860,15 @@ impl SessionActor {
         let mut last_progress_checkpoint: usize = 1;
         let mut loop_index: u32 = 0;
         let mut last_prompt_tokens: Option<u32> = None;
+        // What the model wrote this turn (reasoning, text, tool calls): the request carries it
+        // back, so the report budget counts the prompt without it.
+        let mut turn_written_tokens: u32 = 0;
         let mut report_budget_sent = false;
         let mut identical_tool_calls = IdenticalToolCallRun::default();
         let mut hands_on = super::jev_tool_subset::HandsOnRun::default();
         let mut hands_on_reminder_due = false;
+        let mut planning_churn = super::jev_tool_subset::PlanningChurnRun::default();
+        let mut planning_churn_due = false;
         let mut todo_gate_fires: u32 = 0;
         // Set when the final-check reminder was just sent: the next reply may
         // be the bare confirmation token.
@@ -3031,10 +3038,13 @@ impl SessionActor {
                 if std::mem::take(&mut hands_on_reminder_due) {
                     self.flush_hands_on_reminder();
                 }
+                if std::mem::take(&mut planning_churn_due) {
+                    self.flush_planning_churn_reminder();
+                }
                 self.flush_late_skill_hint(loop_index);
                 self.flush_report_budget(
                     loop_index.saturating_sub(1),
-                    last_prompt_tokens,
+                    last_prompt_tokens.map(|tokens| tokens.saturating_sub(turn_written_tokens)),
                     &mut report_budget_sent,
                 )
                 .await;
@@ -3542,6 +3552,7 @@ impl SessionActor {
             last_prompt_tokens = prompt_tokens;
             let cached_prompt_tokens = usage.map(|u| u.cached_prompt_tokens);
             let completion_tokens = usage.map(|u| u.completion_tokens);
+            turn_written_tokens = turn_written_tokens.saturating_add(completion_tokens.unwrap_or(0));
             let reasoning_tokens = usage.map(|u| u.reasoning_tokens);
             let (jev_session_id, jev_turn_id, jev_round_id) = crate::jev::telemetry_context();
             let execution = self.jev_ledger.borrow().last_execution.clone();
@@ -4101,6 +4112,11 @@ impl SessionActor {
                 .map(|tc| tool_bridge.tool_kind(&tc.name))
                 .collect::<Vec<_>>();
             hands_on_reminder_due |= hands_on.observe(&step_tool_kinds);
+            planning_churn_due |= planning_churn.observe(
+                completion_tokens,
+                tool_calls.iter().map(|tc| tc.arguments.len()).sum(),
+                &step_tool_kinds,
+            );
             let step_problematic = step_is_problematically_repeating(&step_tool_kinds);
             let is_true_noop = self.is_run_true_step(&tool_calls).await;
             identical_tool_calls.observe(

@@ -383,6 +383,7 @@ fn direct_messages_body(request: &ConversationRequest) -> serde_json::Value {
         extended_ttl: false,
         system_messages: true,
         deferred_tools: true,
+        per_message_effort: false,
     };
     serde_json::to_value(build_messages_request_with(request, options)).expect("serializable body")
 }

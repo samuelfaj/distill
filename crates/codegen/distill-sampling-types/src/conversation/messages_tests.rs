@@ -546,6 +546,7 @@ fn anchored(items: Vec<ConversationItem>) -> crate::messages::MessagesRequest {
             extended_ttl: false,
             system_messages: false,
             deferred_tools: false,
+            per_message_effort: false,
         },
     )
 }
@@ -629,6 +630,7 @@ fn the_anchor_needs_its_option_and_never_marks_a_one_shot() {
             extended_ttl: true,
             system_messages: false,
             deferred_tools: false,
+            per_message_effort: false,
         },
     );
     assert_eq!(
@@ -670,6 +672,7 @@ fn a_long_wait_marks_every_breakpoint_one_hour_only_where_the_endpoint_takes_it(
         extended_ttl: true,
         system_messages: false,
         deferred_tools: false,
+        per_message_effort: false,
     };
     let long = build_messages_request_with(&req, options);
     assert_eq!(ttl_values(&long), vec![Some("1h".to_owned()); 4]);
@@ -710,6 +713,15 @@ fn per_message_effort_history() -> Vec<ConversationItem> {
     items
 }
 
+/// The marker is an option the sending client turns on; these tests describe the marker itself.
+const PER_MESSAGE_EFFORT: MessagesCacheOptions = MessagesCacheOptions {
+    anchor: false,
+    extended_ttl: false,
+    system_messages: false,
+    deferred_tools: false,
+    per_message_effort: true,
+};
+
 fn per_message_effort_request(
     model: &str,
     items: Vec<ConversationItem>,
@@ -717,7 +729,39 @@ fn per_message_effort_request(
 ) -> serde_json::Value {
     let mut req = ConversationRequest::from_items(items).with_model(model);
     req.reasoning_effort = Some(effort);
-    serde_json::to_value(build_messages_request(&req)).unwrap()
+    serde_json::to_value(build_messages_request_with(&req, PER_MESSAGE_EFFORT)).unwrap()
+}
+
+// The marker makes the API drop the thinking of earlier rounds, so by default the effort goes top-level and the
+// previous round's thinking block goes back with its assistant message: a worker that keeps its reasoning does not
+// plan the same work again in the next round.
+#[test]
+fn by_default_the_effort_is_top_level_and_the_last_rounds_thinking_goes_back() {
+    let mut items = per_message_effort_history();
+    let at = items
+        .iter()
+        .position(|item| matches!(item, ConversationItem::Assistant(_)))
+        .expect("the history has an assistant message");
+    items.insert(at, reasoning_sibling("rs_1", "planned the change", Some("sig-1")));
+    let mut req = ConversationRequest::from_items(items).with_model("claude-sonnet-5-5");
+    req.reasoning_effort = Some(crate::ReasoningEffort::Medium);
+    let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+    assert_eq!(
+        json.pointer("/output_config/effort").and_then(|v| v.as_str()),
+        Some("medium"),
+        "{json:#}"
+    );
+    let messages = json["messages"].as_array().unwrap();
+    assert!(messages.iter().all(|m| m["role"] != "system"), "no marker: {json:#}");
+    let last_assistant = messages.iter().rfind(|m| m["role"] == "assistant").unwrap();
+    assert!(
+        last_assistant["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|block| block["type"] == "thinking" && block["signature"] == "sig-1"),
+        "{json:#}"
+    );
 }
 
 fn marker_json(effort: &str) -> serde_json::Value {
@@ -834,7 +878,7 @@ fn per_message_effort_keeps_json_schema_top_level() {
         .with_model("claude-opus-5-5")
         .with_json_schema(schema);
     req.reasoning_effort = Some(crate::ReasoningEffort::Low);
-    let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+    let json = serde_json::to_value(build_messages_request_with(&req, PER_MESSAGE_EFFORT)).unwrap();
     assert!(json.pointer("/output_config/format").is_some(), "{json:#}");
     assert!(json.pointer("/output_config/effort").is_none(), "{json:#}");
     assert!(
@@ -851,6 +895,7 @@ const SYSTEM_MESSAGES: MessagesCacheOptions = MessagesCacheOptions {
     extended_ttl: false,
     system_messages: true,
     deferred_tools: false,
+    per_message_effort: false,
 };
 
 /// Two agent rounds and a closing answer under the opening prompt `v1`, then `tail`.
@@ -1036,7 +1081,11 @@ fn per_message_effort_survives_a_trailing_system_prompt_update() {
     ]))
     .with_model("claude-opus-5-5");
     req.reasoning_effort = Some(crate::ReasoningEffort::Low);
-    let json = serde_json::to_value(build_messages_request_with(&req, SYSTEM_MESSAGES)).unwrap();
+    let options = MessagesCacheOptions {
+        per_message_effort: true,
+        ..SYSTEM_MESSAGES
+    };
+    let json = serde_json::to_value(build_messages_request_with(&req, options)).unwrap();
     assert!(json.pointer("/output_config/effort").is_none(), "{json:#}");
     let messages = json["messages"].as_array().unwrap();
     assert!(messages.contains(&marker_json("low")), "{json:#}");
@@ -1077,6 +1126,7 @@ const DEFERRED_TOOLS: MessagesCacheOptions = MessagesCacheOptions {
     extended_ttl: false,
     system_messages: true,
     deferred_tools: true,
+    per_message_effort: false,
 };
 
 fn tool_spec(name: &str) -> ToolSpec {

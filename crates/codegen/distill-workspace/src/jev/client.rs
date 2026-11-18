@@ -130,8 +130,19 @@ struct DecisionMemo {
     answers: JevAnswerSet,
 }
 
-fn is_jev_model(model: &str) -> bool {
-    model.starts_with("~typesafe/jev") || model.starts_with("typesafe/jev")
+/// Decision models this client may call: Jev, and Liquid's d1.2 family.
+///
+/// d1 and d1-ultra stay out: they bill the whole state once per question, so
+/// a battery costs a multiple of one request, while d1.2 bills it once per
+/// request (`docs/d1.2-decision-results.md`).
+pub fn is_decision_model(model: &str) -> bool {
+    model.starts_with("~typesafe/jev") || model.starts_with("typesafe/jev") || is_liquid_d12(model)
+}
+
+/// `liquid/d1.2`, `liquid/d1.2-ultra` and their dated snapshots. These are
+/// also the only models that serve typed field extraction.
+pub fn is_liquid_d12(model: &str) -> bool {
+    model == "liquid/d1.2" || model.starts_with("liquid/d1.2-")
 }
 
 fn env_key_resolver() -> ApiKeyResolver {
@@ -156,8 +167,10 @@ impl JevClient {
         if config.api_key_env != DEFAULT_API_KEY_ENV {
             return Err(JevError::invalid("Jev requires OPENROUTER_API_KEY"));
         }
-        if !is_jev_model(&config.model) {
-            return Err(JevError::invalid("Jev model must be a typesafe/jev model"));
+        if !is_decision_model(&config.model) {
+            return Err(JevError::invalid(
+                "decision model must be a typesafe/jev or liquid/d1.2 model",
+            ));
         }
         let production_url = config.base_url.trim_end_matches('/') == DEFAULT_BASE_URL;
         #[cfg(test)]
@@ -362,40 +375,8 @@ impl JevClient {
             ));
         }
 
-        // One attempt; the deadline covers connection, response *and body read*.
-        let attempt = async {
-            let mut request = http
-                .post(&url)
-                .bearer_auth(&secret)
-                .header(reqwest::header::CONTENT_TYPE, "application/json");
-            if long_context {
-                request = request.header("TypeSafe-Danger-Zone-Long-Context", "true");
-            }
-            let response = request
-                .body(body)
-                .send()
-                .await
-                .map_err(|e| JevError::transport(format!("request failed: {e}")))?;
-            let status = response.status();
-            let retry_after_ms = response
-                .headers()
-                .get(reqwest::header::RETRY_AFTER)
-                .and_then(|v| v.to_str().ok())
-                .and_then(parse_retry_after_ms);
-            let request_id = response
-                .headers()
-                .get("x-typesafe-request-id")
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_owned);
-            let bytes = response
-                .bytes()
-                .await
-                .map_err(|e| JevError::transport(format!("response body failed: {e}")))?;
-            Ok::<_, JevError>((status, request_id, retry_after_ms, bytes))
-        };
-
         let (status, request_id, retry_after_ms, bytes) =
-            match tokio::time::timeout(deadline, attempt).await {
+            match post_within(&http, &url, &secret, body, deadline, long_context).await {
                 Err(_) => {
                     return Err(JevError::timeout(format!(
                         "no complete response within {} ms",
@@ -451,6 +432,117 @@ impl JevClient {
                 Err(error.redact(&secret))
             }
         }
+    }
+
+    /// Asks a d1.2 model for typed fields of `state` on the Extractions route.
+    /// One attempt inside the client's deadline; every value is checked
+    /// against its span (see [`super::extractions`]).
+    pub async fn extract(
+        &self,
+        state: &str,
+        fields: &BTreeMap<String, super::extractions::Field>,
+    ) -> Result<super::extractions::ExtractionAnswerSet, JevError> {
+        use super::extractions::{
+            EXTRACTIONS_PATH, ExtractionRequest, MAX_EXTRACTION_STATE_BYTES, MAX_FIELDS,
+            read_reply, validate_field_id,
+        };
+        if !is_liquid_d12(&self.config.model) {
+            return Err(JevError::invalid(
+                "field extraction is served by liquid/d1.2 models only",
+            ));
+        }
+        if fields.is_empty() || fields.len() > MAX_FIELDS {
+            return Err(JevError::invalid(format!(
+                "ask between 1 and {MAX_FIELDS} fields"
+            )));
+        }
+        for (id, field) in fields {
+            validate_field_id(id)?;
+            field
+                .validate()
+                .map_err(|e| JevError::invalid(format!("field `{id}`: {}", e.detail())))?;
+        }
+        if state.trim().is_empty() {
+            return Err(JevError::invalid("state must not be empty"));
+        }
+        if state.len() > MAX_EXTRACTION_STATE_BYTES {
+            return Err(JevError::invalid(format!(
+                "state is {} bytes, over the {MAX_EXTRACTION_STATE_BYTES} byte ceiling for one extraction",
+                state.len()
+            )));
+        }
+        let body = serde_json::to_vec(&ExtractionRequest {
+            model: &self.config.model,
+            state,
+            fields: fields
+                .iter()
+                .map(|(id, field)| (id.as_str(), field.to_json()))
+                .collect(),
+        })
+        .map_err(|e| JevError::invalid(format!("request serialization failed: {e}")))?;
+        let secret = (self.key_resolver)(&self.config.api_key_env).ok_or_else(|| {
+            JevError::invalid(format!(
+                "credential env `{}` is unset or empty",
+                self.config.api_key_env
+            ))
+        })?;
+        let url = format!(
+            "{}{EXTRACTIONS_PATH}",
+            self.config.base_url.trim_end_matches('/')
+        );
+        let mut attempt_guard =
+            AttemptGuard::new(self.observer.as_ref(), self.config.model.clone(), url.clone(), None);
+        let started = Instant::now();
+        let deadline = self.config.timeout;
+        let (status, request_id, retry_after_ms, bytes) =
+            match post_within(&self.http, &url, &secret, body, deadline, false).await {
+                Err(_) => {
+                    return Err(JevError::timeout(format!(
+                        "no complete response within {} ms",
+                        deadline.as_millis()
+                    )));
+                }
+                Ok(Err(err)) => {
+                    if let Some(guard) = attempt_guard.take() {
+                        guard.finish(AttemptStatus::Failed);
+                    }
+                    return Err(err.redact(&secret));
+                }
+                Ok(Ok(parts)) => parts,
+            };
+        let latency_ms = started.elapsed().as_millis() as u64;
+        let (response_model, response_id, response_usage, response_billing) =
+            parse_response_metadata(&bytes);
+        if let Some(guard) = attempt_guard.as_mut() {
+            guard.set_response(
+                response_id.or(request_id.clone()),
+                response_model,
+                (!response_usage.is_empty()).then_some(response_usage),
+            );
+            guard.set_billing(response_billing);
+        }
+        if !status.is_success() {
+            if let Some(guard) = attempt_guard.take() {
+                guard.finish(AttemptStatus::Failed);
+            }
+            let parsed: Option<Json> = serde_json::from_slice(&bytes).ok();
+            return Err(JevError::from_status(
+                status.as_u16(),
+                parsed.as_ref(),
+                request_id,
+                retry_after_ms,
+            )
+            .redact(&secret));
+        }
+        let read = read_reply(state, fields, &bytes, request_id, latency_ms);
+        if let Some(guard) = attempt_guard.take() {
+            guard.finish(if read.is_ok() {
+                AttemptStatus::Completed
+            } else {
+                AttemptStatus::Rejected
+            });
+        }
+        read.map_err(|error| error.redact(&secret))
     }
 
     /// One request body for the configured provider: the System One envelope, or
@@ -560,6 +652,51 @@ impl JevClient {
             latency_ms,
         })
     }
+}
+
+/// Status, request id, `Retry-After` and body of one POST.
+pub(super) type PostParts = (reqwest::StatusCode, Option<String>, Option<u64>, Vec<u8>);
+
+/// One attempt; the deadline covers connection, response *and body read*.
+pub(super) async fn post_within(
+    http: &reqwest::Client,
+    url: &str,
+    secret: &str,
+    body: Vec<u8>,
+    deadline: Duration,
+    long_context: bool,
+) -> Result<Result<PostParts, JevError>, tokio::time::error::Elapsed> {
+    let attempt = async {
+        let mut request = http
+            .post(url)
+            .bearer_auth(secret)
+            .header(reqwest::header::CONTENT_TYPE, "application/json");
+        if long_context {
+            request = request.header("TypeSafe-Danger-Zone-Long-Context", "true");
+        }
+        let response = request
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| JevError::transport(format!("request failed: {e}")))?;
+        let status = response.status();
+        let retry_after_ms = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(parse_retry_after_ms);
+        let request_id = response
+            .headers()
+            .get("x-typesafe-request-id")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|e| JevError::transport(format!("response body failed: {e}")))?;
+        Ok::<_, JevError>((status, request_id, retry_after_ms, bytes.to_vec()))
+    };
+    tokio::time::timeout(deadline, attempt).await
 }
 
 /// Whether the named environment variable currently holds a non-empty value.
@@ -714,6 +851,7 @@ mod tests {
         let app = Router::new()
             .route("/v1/systemone", post(handler))
             .route("/alpha/decisions", post(handler))
+            .route("/alpha/extractions", post(handler))
             .route("/chat/completions", post(handler))
             .with_state(stub);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1253,7 +1391,75 @@ mod tests {
         assert!(JevClient::with_key_resolver(config, resolver.clone()).is_err());
         let mut config = JevClientConfig::default();
         config.model = "typesafe/jev-1.14-20261014".to_owned();
-        assert!(JevClient::with_key_resolver(config, resolver).is_ok(), "a pinned Jev version is accepted");
+        assert!(JevClient::with_key_resolver(config, resolver.clone()).is_ok(), "a pinned Jev version is accepted");
+        for model in ["liquid/d1.2", "liquid/d1.2-ultra", "liquid/d1.2-ultra-20261116"] {
+            let mut config = JevClientConfig::default();
+            config.model = model.to_owned();
+            assert!(JevClient::with_key_resolver(config, resolver.clone()).is_ok(), "{model} is a decision model");
+        }
+        // d1 bills the state once per question: a battery would cost a multiple.
+        for model in ["liquid/d1", "liquid/d1-ultra", "liquid/d1.20"] {
+            let mut config = JevClientConfig::default();
+            config.model = model.to_owned();
+            assert!(JevClient::with_key_resolver(config, resolver.clone()).is_err(), "{model} is refused");
+        }
+    }
+
+    fn extraction_client(base_url: String, model: &str) -> JevClient {
+        let config = JevClientConfig {
+            base_url: base_url.clone(),
+            model: model.to_owned(),
+            timeout: Duration::from_secs(5),
+            ..JevClientConfig::default()
+        };
+        let resolver: ApiKeyResolver = Arc::new(|_| Some(TEST_KEY.to_owned()));
+        JevClient::with_test_base_url(config, base_url, resolver).expect("client builds")
+    }
+
+    /// The extraction request goes to its own route with the documented field
+    /// shape, and a value the state does not hold never comes back as found.
+    #[tokio::test]
+    async fn extraction_posts_fields_and_checks_spans() {
+        use super::super::extractions::{Extracted, Field};
+        let state = "test result: FAILED. 4 passed; 2 failed\n";
+        let reply = serde_json::json!({
+            "model": "liquid/d1.2-20261116",
+            "answers": {
+                "failed": {"type": "number", "value": 2, "span": [31, 32], "p_null": 0.01},
+                "url": {"type": "text", "value": "https://made.up", "span": [0, 15]}
+            },
+            "usage": {"input_tokens": 70, "output_tokens": 0, "cost": 0.0000014},
+            "id": "gen-dec-1"
+        });
+        let stub = Stub::new(StubReply::Json(200, reply.to_string()));
+        let base = spawn_stub(stub.clone()).await;
+        let client = extraction_client(base, "liquid/d1.2");
+        let fields: BTreeMap<String, Field> = [
+            ("failed".to_owned(), Field::Number { instructions: "How many tests failed".into(), null_threshold: 0.5 }),
+            ("url".to_owned(), Field::Text { instructions: "The deploy URL".into(), null_threshold: 0.5 }),
+        ]
+        .into();
+        let read = client.extract(state, &fields).await.expect("extraction answers");
+        assert!(matches!(read.answers["failed"], Extracted::Number { value: Some(v), .. } if v == 2.0));
+        assert!(matches!(read.answers["url"], Extracted::Text { value: None, dropped: true, .. }));
+        assert_eq!(read.usage.input_tokens, Some(70));
+        let sent: serde_json::Value = serde_json::from_str(&stub.last_body()).expect("json body");
+        assert_eq!(sent["model"], "liquid/d1.2");
+        assert_eq!(sent["state"], state);
+        assert_eq!(sent["fields"]["failed"]["type"], "number");
+        assert!(sent.get("questions").is_none(), "the extractions route refuses `questions`");
+    }
+
+    #[tokio::test]
+    async fn extraction_is_refused_on_jev_before_any_request() {
+        use super::super::extractions::Field;
+        let stub = Stub::new(StubReply::Json(200, ok_body()));
+        let base = spawn_stub(stub.clone()).await;
+        let client = test_client(base, Duration::from_secs(1));
+        let fields: BTreeMap<String, Field> =
+            [("x".to_owned(), Field::TextList { instructions: "lines".into() })].into();
+        assert!(client.extract("some text", &fields).await.is_err());
+        assert_eq!(stub.hits(), 0);
     }
 
     #[tokio::test]

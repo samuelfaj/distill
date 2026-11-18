@@ -6,7 +6,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from .compare_additional import comparison_cost, config, native_usage, provider_usage
+from .compare_additional import comparison_cost, config, is_decision_model, native_usage, provider_usage
 
 
 class AdditionalBenchmarkTests(unittest.TestCase):
@@ -137,6 +137,29 @@ class AdditionalBenchmarkTests(unittest.TestCase):
             self.assertTrue(result['accounting_complete'])
             self.assertIsNone(result['cost_usd'])
             self.assertAlmostEqual(result['reference_cost_usd'], (50 * 2 + 20 * .1 + 20 * 2.5 + 10 * 4 + 10 * 10) / 1e6)
+
+    def test_liquid_decision_calls_are_accounted_like_jev_calls(self):
+        """A run of a build whose decisions use d1.2 stays complete: those calls
+        carry native ticks, as Jev's do, and only the d1.2 family is accepted."""
+        for model in ('liquid/d1.2', 'liquid/d1.2-ultra', 'liquid/d1.2-20261116', 'liquid/d1.2-ultra-20261116'):
+            self.assertTrue(is_decision_model(model), model)
+            self.assertAlmostEqual(comparison_cost([{'model': model, 'cost_usd_ticks': 52400}]), 52400 / 1e10)
+            self.assertIsNone(comparison_cost([{'model': model, 'usage': {'prompt_tokens': 1, 'cached_prompt_tokens': 0, 'completion_tokens': 1}}]))
+        for model in ('liquid/d1', 'liquid/d1-ultra', 'liquid/d1.20', 'liquid/lfm-3', 'jevx/other'):
+            self.assertFalse(is_decision_model(model), model)
+            self.assertIsNone(comparison_cost([{'model': model, 'cost_usd_ticks': 1}]))
+        row = {'attempt': 'a', 'complete': True, 'status': 'completed', 'owner': 's', 'model': 'liquid/d1.2-20261116'}
+        accounted = {'call_usage': [row], 'ledger_totals_match': True, 'unfolded_child_attempts': []}
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            usage = home / 'sessions/s/usage.json'
+            usage.parent.mkdir(parents=True)
+            usage.write_text(json.dumps({'session': {'modelCalls': 1, 'attributions': [
+                {'attempt_id': 'a', 'cost_usd_ticks': 52400, 'cost_basis': 'reported'}]}}))
+            with patch('tools.task_cost_eval.compare_additional.distill_accounting', return_value=accounted):
+                result = provider_usage(home, 's')
+        self.assertTrue(result['accounting_complete'])
+        self.assertAlmostEqual(result['reference_cost_usd'], 52400 / 1e10)
 
     def test_reference_cost_mixed_gpt_jev_and_free_unknown(self):
         rows = [

@@ -527,6 +527,18 @@ impl SessionActor {
         if live_triggers().is_empty() {
             return None;
         }
+        let previous = self.midturn_switch_keeps(picked, entries)?;
+        record(
+            "tier:refused_midturn",
+            &format!("kept {} over {}", previous.id(), picked.id()),
+        );
+        Some(previous)
+    }
+
+    /// The tier the previous dispatch of this turn ran on, when moving to
+    /// `picked` now would be a refused switch (see
+    /// [`refuses_midturn_switch`]). `entries` are every candidate.
+    pub(super) fn midturn_switch_keeps(&self, picked: Tier, entries: &[TierEntry]) -> Option<Tier> {
         let (previous_model, prompt_tokens) = {
             let ledger = self.jev_ledger.borrow();
             (
@@ -543,14 +555,9 @@ impl SessionActor {
                 .find(|entry| entry.model == model)
                 .map(|entry| entry.tier)
         });
-        if !refuses_midturn_switch(previous, picked, prompt_tokens) {
-            return None;
-        }
-        record(
-            "tier:refused_midturn",
-            &format!("kept {} over {}", previous?.id(), picked.id()),
-        );
-        previous
+        refuses_midturn_switch(previous, picked, prompt_tokens)
+            .then_some(previous)
+            .flatten()
     }
 
     /// Whether Auto's review must keep the mode instead of moving to `mode`:

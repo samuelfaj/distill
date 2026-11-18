@@ -2709,6 +2709,51 @@ fn only_a_fresh_delegated_explore_child_may_run_on_the_utility() {
     assert!(cheap_agent_eligible(&explore(), true, false, "another-parent"));
     crate::jev::clear_test_flags();
 }
+/// B7 sends an `explore` child to the utility only for plain reading: an
+/// assignment that judges or explains keeps the child's own model, and so
+/// does a missing answer. With the switch off nothing is asked.
+#[tokio::test(flavor = "current_thread")]
+async fn only_a_reading_assignment_sends_an_explore_child_to_the_utility() {
+    use distill_workspace::jev::catalog::battery::CHILD_TASK_QUESTION;
+    use distill_workspace::jev::{Answer, JevAnswerSet, JevFlags};
+    let kinds = |entries: &[(&str, f64)]| JevAnswerSet {
+        model: "liquid/d1.2-20261116".to_owned(),
+        answers: [(
+            CHILD_TASK_QUESTION.to_owned(),
+            Answer::Choice {
+                choice: entries[0].0.to_owned(),
+                probabilities: entries.iter().map(|(id, p)| ((*id).to_owned(), *p)).collect(),
+                confidence: None,
+            },
+        )]
+        .into(),
+        usage: Default::default(),
+        latency_ms: 5,
+        request_id: None,
+    };
+    let mut request = bootstrap_test_request(false);
+    request.subagent_type = "explore".to_string();
+    request.prompt = "Find every call site of parse_header and list them as file:line.".to_owned();
+    crate::jev::set_test_flags(JevFlags::harness_default());
+    crate::jev::set_test_decision_answers([
+        Some(kinds(&[("lookup", 0.9), ("analysis", 0.1)])),
+        Some(kinds(&[("analysis", 0.6), ("summary", 0.4)])),
+        None,
+    ]);
+    assert!(jev_child_on_utility(&request).await, "plain reading");
+    assert!(!jev_child_on_utility(&request).await, "an analysis keeps its model");
+    assert!(!jev_child_on_utility(&request).await, "no answer keeps its model");
+    assert_eq!(crate::jev::test_decision_answers_remaining(), 0);
+    crate::jev::set_test_flags(JevFlags {
+        b7_utility_children: false,
+        ..JevFlags::harness_default()
+    });
+    crate::jev::set_test_decision_answers([Some(kinds(&[("lookup", 1.0)]))]);
+    assert!(!jev_child_on_utility(&request).await);
+    assert_eq!(crate::jev::test_decision_answers_remaining(), 1, "nothing asked with the switch off");
+    crate::jev::clear_test_decision_answers();
+    crate::jev::clear_test_flags();
+}
 /// The worker's configured effort reaches a child on the worker model, auto
 /// included, but it never overrides an effort the caller, a role or the agent
 /// definition chose, and it never touches a child on another model.

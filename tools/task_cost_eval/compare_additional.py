@@ -26,6 +26,14 @@ FREE_WORKER = 'openrouter-free'
 NATIVE_VARIANTS = ('claude-native', 'opus-native')
 
 
+def is_decision_model(model):
+    """The decision layer's models: Jev, and Liquid's d1.2 family (see
+    `distill_workspace::jev::client::is_decision_model`). Their calls are billed
+    by OpenRouter per request and carry native cost ticks, not token rates."""
+    return (str(model).startswith(('jev/', 'typesafe/jev', '~typesafe/jev'))
+            or model == 'liquid/d1.2' or str(model).startswith('liquid/d1.2-'))
+
+
 def config(main, *, ablation=False, worker=None, enable_jev=None):
     worker = worker or main
     enable_jev = False if enable_jev is None else enable_jev
@@ -106,7 +114,7 @@ def comparison_cost(rows):
             continue
         usage = row.get('usage') or {}
         ticks = row.get('cost_usd_ticks')
-        if model.startswith(('jev/', 'typesafe/jev', '~typesafe/jev')) or model.endswith(':free') or model == 'openrouter/free':
+        if is_decision_model(model) or model.endswith(':free') or model == 'openrouter/free':
             if type(ticks) is not int or ticks < 0:
                 return None
             if (model.endswith(':free') or model == 'openrouter/free') and ticks != 0:
@@ -163,7 +171,7 @@ def provider_usage(home, session):
                 and len({r['attempt'] for r in rows}) == len(rows) == ledger.get('modelCalls')
                 and not result.get('unfolded_child_attempts')
                 and all(r.get('complete') and r.get('status') in ('completed', 'rejected') and r.get('owner')
-                        and (r.get('model') in known or r.get('model', '').startswith(('jev/', 'typesafe/jev', '~typesafe/jev')) or r.get('model', '').endswith(':free')) for r in rows))
+                        and (r.get('model') in known or is_decision_model(r.get('model', '')) or r.get('model', '').endswith(':free')) for r in rows))
     attributions = ledger.get('attributions', [])
     by_attempt_id = {r.get('attempt_id'): r for r in attributions}
     for row in rows:

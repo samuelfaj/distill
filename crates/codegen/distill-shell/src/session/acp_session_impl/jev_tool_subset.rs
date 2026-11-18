@@ -648,19 +648,21 @@ impl SessionActor {
     }
 
     /// A long child turn gets one "report now" reminder before its next model
-    /// request: after `REPORT_BUDGET_REQUESTS` requests, or once the last
-    /// prompt passed the token limit. `sent` keeps it to once per turn.
+    /// request: after `REPORT_BUDGET_REQUESTS` requests, or once what the
+    /// child has read (`read_tokens`: the last prompt less what it wrote this
+    /// turn, its kept reasoning included) passed the token limit. `sent` keeps
+    /// it to once per turn.
     pub(super) async fn flush_report_budget(
         &self,
         requests_made: u32,
-        last_prompt_tokens: Option<u32>,
+        read_tokens: Option<u32>,
         sent: &mut bool,
     ) {
         if *sent || !self.startup_hints.report_budget {
             return;
         }
         let over_requests = requests_made >= REPORT_BUDGET_REQUESTS;
-        let over_tokens = match last_prompt_tokens {
+        let over_tokens = match read_tokens {
             Some(tokens) => {
                 let window = self
                     .chat_state_handle

@@ -279,10 +279,12 @@ header), and `anthropic/*` and `google/gemini*` models get `cache_control`
 breakpoints there. On ChatGPT (Codex), the first response of a turn also issues
 an `x-codex-turn-state`, which the turn's later rounds send back.
 
-With auto effort, a turn keeps the effort its first round picked on backends
-whose cache is keyed by effort (everything except Messages models with the
-per-message effort marker); a new turn, a model switch, a compaction or a
-prompt under 16K tokens frees it. On `api.anthropic.com` every request keeps
+With auto effort, a turn keeps the effort its first round picked, since every
+backend's cache is keyed by effort; a new turn, a model switch, a compaction or
+a prompt under 16K tokens frees it. Claude's per-message effort marker, which
+kept one cache across efforts, is off: with it the API dropped the reasoning of
+the rounds before it (measured on Claude Sonnet 5.5 on 2026-11-18), and a
+worker that lost its reasoning planned the same work again each round. On `api.anthropic.com` every request keeps
 the five-minute cache lifetime by default: moving a warm five-minute prefix to
 the hour re-writes everything after the last one-hour entry at twice the input
 price, since a five-minute hit does not count when a later one-hour breakpoint

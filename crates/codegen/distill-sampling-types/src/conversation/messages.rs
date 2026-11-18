@@ -238,6 +238,13 @@ pub struct MessagesCacheOptions {
     /// [`supports_tool_changes`], so a tool family joining later keeps the cached prefix. Off, or where an addition
     /// cannot sit, the request sends the tools in effect, as before.
     pub deferred_tools: bool,
+    /// Send the effort as a system-role marker after the last assistant message, for a model in
+    /// [`supports_per_message_effort`], so an effort change keeps the cached prefix. Off, the effort goes in the
+    /// top-level `output_config`. The API drops the thinking of the rounds before a marker: measured on Claude
+    /// Sonnet 5.5 on 2026-11-18, the next request's input grew by the round's visible output only with the marker
+    /// and by its full output (thinking included) without it, and a worker that loses its reasoning plans the
+    /// same work again in the next round.
+    pub per_message_effort: bool,
 }
 
 /// Opens a system prompt update sent as a system-role message: the model must drop the instructions it replaces.
@@ -702,6 +709,7 @@ pub fn build_messages_request_with(
     // A top-level effort change restarts the prompt cache and a marker does not, so models that take one get the effort as a system-role marker after the last assistant message.
     // A marker after the final user message would not apply to this request, hence the last-role check (past a trailing system prompt update).
     let per_message_effort = effort.is_some()
+        && cache.per_message_effort
         && req
             .model
             .as_deref()

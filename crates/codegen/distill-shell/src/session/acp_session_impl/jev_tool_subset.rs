@@ -574,7 +574,14 @@ impl SessionActor {
             answer.abort();
             return None;
         }
-        let left = WORK_SHAPE_WAIT.saturating_sub(started.elapsed());
+        // A mode that awaits no decision before its first request (UltraFast)
+        // takes the answer only once it is in; the check it carries is about
+        // the report, so a later round still serves it.
+        let left = if self.mode_policy().runtime.jev.await_turn_start {
+            WORK_SHAPE_WAIT.saturating_sub(started.elapsed())
+        } else {
+            std::time::Duration::ZERO
+        };
         let Ok(answers) = tokio::time::timeout(left, &mut answer).await else {
             if let Some(ask) = self.jev_ledger.borrow_mut().work_shape.as_mut()
                 && ask.turn == turn

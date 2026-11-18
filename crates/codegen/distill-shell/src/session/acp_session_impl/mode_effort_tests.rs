@@ -769,8 +769,11 @@ fn run_ultrafast_turn(modes: Option<V2Modes>) -> (Vec<crate::jev::TestAsk>, Vec<
                 *actor.current_prompt_id.lock().unwrap() = Some("ultrafast-turn".into());
                 let _ = crate::jev::take_test_ask_log();
                 crate::jev::set_test_decision_answers(
-                    // UltraFast runs code from clear requirements at medium.
-                    std::iter::once(Some(battery_answer(&[("implement", 1.0)], 0.1)))
+                    // The work-shape ask goes out first, when the request
+                    // arrives; then UltraFast runs code from clear
+                    // requirements at medium.
+                    [None, Some(battery_answer(&[("implement", 1.0)], 0.1))]
+                        .into_iter()
                         .chain(std::iter::repeat_n(None, 63)),
                 );
                 tokio::time::timeout(

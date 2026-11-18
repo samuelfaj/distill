@@ -112,6 +112,52 @@ impl HandsOnRun {
     }
 }
 
+/// Sent after rounds that each reasoned at length and then ran a small check.
+const PLANNING_CHURN_REMINDER: &str = "<planning_hint>Your last rounds each reasoned at length and then ran only a small check. What you reasoned out is still in your context, so act on it now: write the file or make the change you have drafted in one step (one command or edit for a large file), then run it and fix what the output shows. Settle API and detail questions by running the code instead of drafting the whole solution again before each lookup.</planning_hint>";
+
+/// Output tokens (mostly reasoning) that make a round a long one: in the
+/// Paris, 1888 runs of 2026-11-17 such rounds took 6 to 10 minutes each and
+/// carried 79% of the cost.
+const PLANNING_CHURN_OUTPUT_TOKENS: u32 = 20_000;
+
+/// Tool arguments of at least this size write the work itself (a page, a
+/// module); below it a round only looked something up or ran a check.
+const PLANNING_CHURN_ACTION_BYTES: usize = 3_000;
+
+/// Long rounds that end in a small check, in a row, before the reminder.
+const PLANNING_CHURN_ROUNDS: u32 = 2;
+
+/// Long rounds that ended in a small check since the work last moved. In
+/// those runs 121 of 162 long rounds drafted the whole solution in their
+/// reasoning and then ran one small command (an API lookup, a grep), and
+/// the next round drafted it again. A round that writes the work or
+/// delegates it starts a new count; short rounds neither count nor reset.
+#[derive(Default)]
+pub(super) struct PlanningChurnRun {
+    rounds: u32,
+}
+
+impl PlanningChurnRun {
+    /// Records one tool round. True on every round that completes another
+    /// [`PLANNING_CHURN_ROUNDS`] long rounds ending in a small check.
+    pub(super) fn observe(
+        &mut self,
+        output_tokens: Option<u32>,
+        argument_bytes: usize,
+        kinds: &[Option<ToolKind>],
+    ) -> bool {
+        if argument_bytes >= PLANNING_CHURN_ACTION_BYTES || kinds.contains(&Some(ToolKind::Task)) {
+            self.rounds = 0;
+            return false;
+        }
+        if output_tokens.is_none_or(|tokens| tokens < PLANNING_CHURN_OUTPUT_TOKENS) {
+            return false;
+        }
+        self.rounds += 1;
+        self.rounds.is_multiple_of(PLANNING_CHURN_ROUNDS)
+    }
+}
+
 impl SessionActor {
     /// Runs the turn-start pass over the tool definitions: optional families
     /// (media, scheduling, feedback, and MCP when `search_tool` can find it again)
@@ -574,6 +620,23 @@ impl SessionActor {
             .push_user_message(ConversationItem::system_reminder(HANDS_ON_REMINDER));
     }
 
+    /// Asks a model that keeps re-planning before small checks to act on its
+    /// plan. Main model and workers alike; off with `e_planning_churn`.
+    pub(super) fn flush_planning_churn_reminder(&self) {
+        if !crate::jev::lever_active(JevLever::EPlanningChurn) || self.plan_mode.lock().is_active() {
+            return;
+        }
+        crate::jev::record_item(
+            JevLever::EPlanningChurn,
+            "planning_churn_reminder",
+            "long rounds kept ending in a small check; reminder added",
+            None,
+            None,
+        );
+        self.chat_state_handle
+            .push_user_message(ConversationItem::system_reminder(PLANNING_CHURN_REMINDER));
+    }
+
     /// A long child turn gets one "report now" reminder before its next model
     /// request: after `REPORT_BUDGET_REQUESTS` requests, or once the last
     /// prompt passed the token limit. `sent` keeps it to once per turn.
@@ -706,6 +769,31 @@ mod tests {
         let due: Vec<bool> = (0..8).map(|_| run.observe(&review)).collect();
         assert_eq!(due.iter().filter(|due| **due).count(), 1);
         assert_eq!(due.last(), Some(&true));
+    }
+
+    /// The reminder is for a model that drafts the whole solution in its
+    /// reasoning and then only runs a small check, twice in a row. A round
+    /// that writes the work or delegates it ends the stretch; short rounds
+    /// (a quick look, a wait) do not interrupt it, and a long round that
+    /// writes the page is the behaviour wanted, not churn.
+    #[test]
+    fn planning_churn_reminds_after_two_long_rounds_that_only_checked() {
+        let shell = [Some(ToolKind::Execute)];
+        let delegate = [Some(ToolKind::Task)];
+        let mut run = PlanningChurnRun::default();
+
+        assert!(!run.observe(Some(40_000), 200, &shell), "one long round is not a pattern");
+        assert!(!run.observe(Some(300), 120, &shell), "a short round neither counts nor resets");
+        assert!(!run.observe(None, 120, &shell), "unknown usage is not a long round");
+        assert!(run.observe(Some(38_000), 250, &shell), "second long round ending in a check");
+        assert!(!run.observe(Some(41_000), 180, &shell));
+        assert!(run.observe(Some(36_000), 90, &shell), "repeats every second such round");
+
+        assert!(!run.observe(Some(45_000), 64_000, &shell), "writing the page resets");
+        assert!(!run.observe(Some(39_000), 200, &shell));
+        assert!(!run.observe(Some(30_000), 400, &delegate), "a delegation resets");
+        assert!(!run.observe(Some(39_000), 200, &shell));
+        assert!(run.observe(Some(39_000), 200, &shell));
     }
 
     /// A utility lane on a mock endpoint that answers `answers` in order.

@@ -61,6 +61,7 @@ b6_delegation_hint    = true  # B6: with a worker model, a delegation hint befor
 b6_work_shape         = true  # B6 asks the work shape (direct answer, one or two calls, specified work, investigation, open design) in the background when a request arrives, and the hint says what to hand over; the first model request waits for it up to 1.2 s; false restores the two questions on the tool-family request
 b2_step_battery       = true  # auto effort and UltraSave's tier come from the kind of step (lookup ... review) and a table per mode, one question per round; false restores the effort choice
 b7_utility_children   = true  # a fresh explore child whose assignment is plain reading runs on the utility model, falling back to its own model on any failed request; only when [jev.local] model is a catalog entry
+e_planning_churn      = true  # after two rounds that each reasoned at length (20k+ output tokens) and then ran only a small check, the model is asked to write what it drafted in one step; no decision call
 
 # Off until their own gate passes (the plan's standing rule):
 b2_model_tier         = false # money lever: only ever downgrades a routine turn

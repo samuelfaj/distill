@@ -141,6 +141,8 @@ pub struct JevLadderOverlay {
     /// B7: a fresh `explore` child whose assignment is plain reading runs on
     /// the utility model, by one decision per child.
     pub b7_utility_children: Option<bool>,
+    /// A reminder after rounds that each spend long reasoning on a small check.
+    pub e_planning_churn: Option<bool>,
 }
 
 /// Resolves one boolean switch: an explicit value from any trusted layer wins
@@ -238,6 +240,10 @@ impl JevFlags {
             // reports are not measured against the worker's yet. Asks only
             // when the utility is a catalog model.
             b7_utility_children: true,
+            // On: in the Paris, 1888 runs of 2026-11-17, 121 of 162 rounds
+            // over 20k output tokens re-planned the work and then ran one
+            // small check. No Jev call; `false` turns the reminder off.
+            e_planning_churn: true,
         }
     }
 
@@ -351,6 +357,8 @@ impl JevFlags {
             && resolve_switch(ladder.b6_work_shape, None, self.b6_work_shape);
         self.b7_utility_children = self.b7_subagent_model
             && resolve_switch(ladder.b7_utility_children, None, self.b7_utility_children);
+        self.e_planning_churn =
+            self.enabled && resolve_switch(ladder.e_planning_churn, None, self.e_planning_churn);
         self
     }
 }
@@ -461,6 +469,8 @@ pub struct JevFlags {
     pub b6_work_shape: bool,
     /// B7: reading-only `explore` children run on the utility model.
     pub b7_utility_children: bool,
+    /// A reminder after rounds that each spend long reasoning on a small check.
+    pub e_planning_churn: bool,
 }
 
 impl JevFlags {
@@ -512,6 +522,7 @@ impl JevFlags {
             b2_step_battery: false,
             b6_work_shape: false,
             b7_utility_children: false,
+            e_planning_churn: false,
         }
     }
 
@@ -623,6 +634,7 @@ impl JevFlags {
             // Refinements of B6 and B7: off with their parent lever.
             JevLever::B6WorkShape => self.b6_delegation_hint && self.b6_work_shape,
             JevLever::B7UtilityChildren => self.b7_subagent_model && self.b7_utility_children,
+            JevLever::EPlanningChurn => self.e_planning_churn,
         }
     }
 
@@ -681,6 +693,7 @@ pub enum JevLever {
     B2StepBattery,
     B6WorkShape,
     B7UtilityChildren,
+    EPlanningChurn,
 }
 
 impl JevLever {
@@ -730,6 +743,7 @@ impl JevLever {
             Self::B2StepBattery => "b2_step_battery",
             Self::B6WorkShape => "b6_work_shape",
             Self::B7UtilityChildren => "b7_utility_children",
+            Self::EPlanningChurn => "e_planning_churn",
         }
     }
 }
@@ -997,7 +1011,11 @@ mod tests {
     fn the_battery_switches_default_on_and_follow_their_parent_levers() {
         let overlaid = |ladder| JevFlags::harness_default().overlaid(None, None, None, ladder);
         let default = overlaid(JevLadderOverlay::default());
-        for lever in [JevLever::B2StepBattery, JevLever::B6WorkShape, JevLever::B7UtilityChildren] {
+        for lever in [
+            JevLever::B2StepBattery,
+            JevLever::B6WorkShape,
+            JevLever::B7UtilityChildren,
+        ] {
             assert!(default.lever_active(lever), "{}", lever.as_str());
         }
         let battery_off = overlaid(JevLadderOverlay {
@@ -1005,7 +1023,10 @@ mod tests {
             ..JevLadderOverlay::default()
         });
         assert!(!battery_off.lever_active(JevLever::B2StepBattery));
-        assert!(battery_off.lever_active(JevLever::B2MicroEffort), "the old effort question stays");
+        assert!(
+            battery_off.lever_active(JevLever::B2MicroEffort),
+            "the old effort question stays"
+        );
         let hint_off = overlaid(JevLadderOverlay {
             b6_delegation_hint: Some(false),
             ..JevLadderOverlay::default()
@@ -1016,7 +1037,19 @@ mod tests {
             ..JevLadderOverlay::default()
         });
         assert!(!b7_off.lever_active(JevLever::B7UtilityChildren));
-        let master_off = JevFlags::harness_default().overlaid(Some(false), None, None, JevLadderOverlay::default());
+        assert!(default.lever_active(JevLever::EPlanningChurn));
+        let churn_off = overlaid(JevLadderOverlay {
+            e_planning_churn: Some(false),
+            ..JevLadderOverlay::default()
+        });
+        assert!(!churn_off.lever_active(JevLever::EPlanningChurn));
+        assert_eq!(JevLever::EPlanningChurn.as_str(), "e_planning_churn");
+        let master_off = JevFlags::harness_default().overlaid(
+            Some(false),
+            None,
+            None,
+            JevLadderOverlay::default(),
+        );
         assert!(!master_off.lever_active(JevLever::B2StepBattery));
         assert_eq!(JevLever::B7UtilityChildren.as_str(), "b7_utility_children");
     }

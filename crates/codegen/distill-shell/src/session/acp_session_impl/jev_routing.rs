@@ -472,7 +472,9 @@ impl SessionActor {
         offered: &[routing::EffortChoice],
         quantile: f64,
     ) -> Option<distill_workspace::jev::catalog::battery::StepPick> {
-        use distill_workspace::jev::catalog::battery::{OfferedLevel, compose_step_effort};
+        use distill_workspace::jev::catalog::battery::{
+            OfferedLevel, compose_step_effort, raise_to_worker_floor,
+        };
         let menu = self.model_effort_menu(&cfg.model).unwrap_or_default();
         let levels: Vec<OfferedLevel> = offered
             .iter()
@@ -485,7 +487,14 @@ impl SessionActor {
                     })
             })
             .collect();
-        compose_step_effort(answers, &levels, self.escalation_effort_mode(), quantile)
+        let mode = self.escalation_effort_mode();
+        let pick = compose_step_effort(answers, &levels, mode, quantile)?;
+        // A delegated worker's steps are read from its last command alone.
+        Some(if self.startup_hints.is_subagent {
+            raise_to_worker_floor(pick, &levels, mode)
+        } else {
+            pick
+        })
     }
 
     fn offered_efforts(&self, model: &str) -> Vec<routing::EffortChoice> {
@@ -565,10 +574,11 @@ impl SessionActor {
         }
         let detail = match &step {
             Some(step) => format!(
-                "applied to model {}: step {}{}",
+                "applied to model {}: step {}{}{}",
                 cfg.model,
                 step.kind.id(),
-                if step.costly { ", costly" } else { "" }
+                if step.costly { ", costly" } else { "" },
+                if step.floored { ", worker floor" } else { "" }
             ),
             None => format!("applied to model {}", cfg.model),
         };

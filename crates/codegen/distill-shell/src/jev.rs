@@ -97,6 +97,7 @@ pub fn flags_from_tiers(cfg: &JevConfig, env_enabled: Option<bool>) -> JevFlags 
             b2_step_battery: cfg.ladder.b2_step_battery,
             b6_work_shape: cfg.ladder.b6_work_shape,
             b7_utility_children: cfg.ladder.b7_utility_children,
+            e_planning_churn: cfg.ladder.e_planning_churn,
         },
     )
 }

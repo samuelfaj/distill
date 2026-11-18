@@ -2864,6 +2864,8 @@ impl SessionActor {
         let mut identical_tool_calls = IdenticalToolCallRun::default();
         let mut hands_on = super::jev_tool_subset::HandsOnRun::default();
         let mut hands_on_reminder_due = false;
+        let mut planning_churn = super::jev_tool_subset::PlanningChurnRun::default();
+        let mut planning_churn_due = false;
         let mut todo_gate_fires: u32 = 0;
         // Set when the final-check reminder was just sent: the next reply may
         // be the bare confirmation token.
@@ -3032,6 +3034,9 @@ impl SessionActor {
                 self.jev_flush_delegation_hint().await;
                 if std::mem::take(&mut hands_on_reminder_due) {
                     self.flush_hands_on_reminder();
+                }
+                if std::mem::take(&mut planning_churn_due) {
+                    self.flush_planning_churn_reminder();
                 }
                 self.flush_late_skill_hint(loop_index);
                 self.flush_report_budget(
@@ -4103,6 +4108,11 @@ impl SessionActor {
                 .map(|tc| tool_bridge.tool_kind(&tc.name))
                 .collect::<Vec<_>>();
             hands_on_reminder_due |= hands_on.observe(&step_tool_kinds);
+            planning_churn_due |= planning_churn.observe(
+                completion_tokens,
+                tool_calls.iter().map(|tc| tc.arguments.len()).sum(),
+                &step_tool_kinds,
+            );
             let step_problematic = step_is_problematically_repeating(&step_tool_kinds);
             let is_true_noop = self.is_run_true_step(&tool_calls).await;
             identical_tool_calls.observe(

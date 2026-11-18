@@ -1516,6 +1516,9 @@ pub struct JevLadderConfig {
     pub b6_work_shape: Option<bool>,
     /// B7: reading-only `explore` children run on the utility model (default on).
     pub b7_utility_children: Option<bool>,
+    /// A reminder after two rounds that each spent long reasoning and then ran only a small check
+    /// (default on; `false` turns it off).
+    pub e_planning_churn: Option<bool>,
 }
 pub use distill_agent::prompt::paths::PathsConfig;
 /// `[permission]` known keys, declared for the unrecognized-key scan only; consumed out-of-band.

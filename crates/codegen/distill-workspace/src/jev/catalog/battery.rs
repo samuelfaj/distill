@@ -218,6 +218,8 @@ pub struct StepPick {
     pub kind: StepKind,
     /// The costly bump was applied.
     pub costly: bool,
+    /// The pick was raised to the delegated worker's floor.
+    pub floored: bool,
 }
 
 /// The kind distribution of an answer set, over known kinds only. Without
@@ -306,7 +308,54 @@ pub fn compose_step_effort(
         id: level.id.clone(),
         kind,
         costly: bumped,
+        floored: false,
     })
+}
+
+/// The lowest effort a delegated worker runs at in `mode`: the mode's level
+/// for implementation. A worker's assignment is the work itself, and its
+/// rounds carry no plan text, so the step is guessed from the last command;
+/// in the Paris, 1888 runs of 2026-11-17 the battery read 39 of 47 worker
+/// steps as lookups, and the Normal worker at low split one page into 12
+/// long rounds where the one at medium took 1.
+pub const fn worker_floor(mode: ExecutionMode) -> u8 {
+    match effort_target(mode, StepKind::Implement) {
+        Some(rank) => rank,
+        None => rank::LOW,
+    }
+}
+
+/// Raises a delegated worker's pick to [`worker_floor`]: the cheapest offered
+/// level at or above it. A pick at or above the floor, or one whose id is not
+/// on the menu, is kept; the battery may still raise a worker's step.
+pub fn raise_to_worker_floor(
+    pick: StepPick,
+    offered: &[OfferedLevel],
+    mode: ExecutionMode,
+) -> StepPick {
+    let floor = worker_floor(mode);
+    let Some(rank) = offered
+        .iter()
+        .find(|level| level.id == pick.id)
+        .map(|level| level.rank)
+    else {
+        return pick;
+    };
+    if rank >= floor {
+        return pick;
+    }
+    match offered
+        .iter()
+        .filter(|level| level.rank >= floor)
+        .min_by_key(|level| level.rank)
+    {
+        Some(level) => StepPick {
+            id: level.id.clone(),
+            floored: true,
+            ..pick
+        },
+        None => pick,
+    }
 }
 
 /// Tier ranks, cheapest first: the user's utility, worker and main models.
@@ -326,9 +375,7 @@ pub const fn tier_target(kind: StepKind) -> u8 {
         StepKind::Lookup | StepKind::Relay | StepKind::EditSpecified => tier::UTILITY,
         StepKind::Implement => tier::WORKER,
         // Unknown work keeps the session's model, as a missing answer does.
-        StepKind::Diagnose | StepKind::Design | StepKind::Review | StepKind::Unstated => {
-            tier::MAIN
-        }
+        StepKind::Diagnose | StepKind::Design | StepKind::Review | StepKind::Unstated => tier::MAIN,
     }
 }
 
@@ -368,6 +415,7 @@ pub fn compose_step_tier(
             .to_owned(),
             kind,
             costly: bumped,
+            floored: false,
         },
     ))
 }
@@ -669,6 +717,46 @@ mod tests {
         }
     }
 
+    /// A delegated worker never runs below the mode's implementation level:
+    /// its steps read as lookups because it writes no plan between commands,
+    /// and at low it re-planned the page before each small command. The
+    /// battery can still raise it, and UltraSave keeps its cheap worker.
+    #[test]
+    fn a_delegated_worker_never_runs_below_the_implementation_level() {
+        let menu = claude_menu();
+        let floored = |kind: &[(&str, f64)], costly: f64, mode: ExecutionMode| {
+            let pick = compose_step_effort(&battery(kind, costly), &menu, mode, 0.5).unwrap();
+            raise_to_worker_floor(pick, &menu, mode)
+        };
+        let lookup = [("lookup", 0.66), ("implement", 0.34)];
+        let normal = floored(&lookup, 0.1, ExecutionMode::Normal);
+        assert_eq!((normal.id.as_str(), normal.floored), ("medium", true));
+        assert_eq!(floored(&lookup, 0.1, ExecutionMode::Ultracode).id, "high");
+        assert_eq!(floored(&lookup, 0.1, ExecutionMode::Ultrafast).id, "medium");
+        let save = floored(&lookup, 0.1, ExecutionMode::Ultrasave);
+        assert_eq!((save.id.as_str(), save.floored), ("low", false));
+
+        let diagnose = floored(&[("diagnose", 1.0)], 0.1, ExecutionMode::Normal);
+        assert_eq!((diagnose.id.as_str(), diagnose.floored), ("high", false));
+
+        // A menu without the floor's level keeps the pick rather than guess.
+        let low_only = vec![OfferedLevel {
+            id: "low".to_owned(),
+            rank: rank::LOW,
+        }];
+        let pick = compose_step_effort(
+            &battery(&lookup, 0.1),
+            &low_only,
+            ExecutionMode::Normal,
+            0.5,
+        )
+        .unwrap();
+        assert_eq!(
+            raise_to_worker_floor(pick, &low_only, ExecutionMode::Normal).id,
+            "low"
+        );
+    }
+
     /// The mode is a table row, not prose the decision model must weigh:
     /// the same diagnosis step runs cheaper in UltraSave and deeper in Normal.
     #[test]
@@ -720,10 +808,18 @@ mod tests {
     #[test]
     fn a_costly_flag_does_not_lift_a_picked_mechanical_step() {
         let split = battery(&[("relay", 0.45), ("diagnose", 0.55)], 0.8);
-        let save = compose_step_effort(&split, &claude_menu(), ExecutionMode::Ultrasave, 0.4).unwrap();
-        assert_eq!((save.kind, save.id.as_str(), save.costly), (StepKind::Relay, "low", false));
-        let normal = compose_step_effort(&split, &claude_menu(), ExecutionMode::Normal, 0.5).unwrap();
-        assert_eq!((normal.kind, normal.id.as_str()), (StepKind::Diagnose, "high"));
+        let save =
+            compose_step_effort(&split, &claude_menu(), ExecutionMode::Ultrasave, 0.4).unwrap();
+        assert_eq!(
+            (save.kind, save.id.as_str(), save.costly),
+            (StepKind::Relay, "low", false)
+        );
+        let normal =
+            compose_step_effort(&split, &claude_menu(), ExecutionMode::Normal, 0.5).unwrap();
+        assert_eq!(
+            (normal.kind, normal.id.as_str()),
+            (StepKind::Diagnose, "high")
+        );
     }
 
     /// "yes" or "continue" says nothing about the work. The decision model
@@ -732,13 +828,19 @@ mod tests {
     #[test]
     fn a_reply_that_shows_no_work_runs_at_the_modes_baseline() {
         let unstated = [("unstated", 0.9), ("design", 0.1)];
-        assert_eq!(effort(&unstated, 0.9, ExecutionMode::Normal), "medium", "no costly bump");
+        assert_eq!(
+            effort(&unstated, 0.9, ExecutionMode::Normal),
+            "medium",
+            "no costly bump"
+        );
         assert_eq!(effort(&unstated, 0.1, ExecutionMode::Ultrasave), "low");
         assert_eq!(effort(&unstated, 0.1, ExecutionMode::Ultrafast), "low");
         assert_eq!(effort(&unstated, 0.1, ExecutionMode::Ultracode), "high");
         let all = [tier::UTILITY, tier::WORKER, tier::MAIN];
         assert_eq!(
-            compose_step_tier(&battery(&unstated, 0.1), &all, 0.5).unwrap().0,
+            compose_step_tier(&battery(&unstated, 0.1), &all, 0.5)
+                .unwrap()
+                .0,
             tier::MAIN,
             "unknown work keeps the session's model"
         );
@@ -771,18 +873,31 @@ mod tests {
             ("high", rank::HIGH),
         ]
         .into_iter()
-        .map(|(id, rank)| OfferedLevel { id: id.to_owned(), rank })
+        .map(|(id, rank)| OfferedLevel {
+            id: id.to_owned(),
+            rank,
+        })
         .collect();
         let pick = |kind: &str, mode| {
-            compose_step_effort(&battery(&[(kind, 1.0)], 0.1), &menu, mode, 0.5).unwrap().id
+            compose_step_effort(&battery(&[(kind, 1.0)], 0.1), &menu, mode, 0.5)
+                .unwrap()
+                .id
         };
-        for mode in [ExecutionMode::Normal, ExecutionMode::Ultrafast, ExecutionMode::Ultracode] {
+        for mode in [
+            ExecutionMode::Normal,
+            ExecutionMode::Ultrafast,
+            ExecutionMode::Ultracode,
+        ] {
             assert_eq!(pick("lookup", mode), "low", "{mode:?}");
             assert_eq!(pick("relay", mode), "low", "{mode:?}");
         }
         assert_eq!(pick("lookup", ExecutionMode::Ultrasave), "none");
         assert_eq!(pick("relay", ExecutionMode::Ultrasave), "none");
-        assert_eq!(pick("edit_specified", ExecutionMode::Ultrasave), "low", "an edit is a code change");
+        assert_eq!(
+            pick("edit_specified", ExecutionMode::Ultrasave),
+            "low",
+            "an edit is a code change"
+        );
     }
 
     /// The target is mapped onto the model's own menu: a model without `low`
@@ -963,7 +1078,11 @@ mod tests {
                 texts(&question["criteria"], &mut wording);
             }
         }
-        assert!(wording.len() > 20, "instructions and criteria were read: {}", wording.len());
+        assert!(
+            wording.len() > 20,
+            "instructions and criteria were read: {}",
+            wording.len()
+        );
         for text in wording {
             assert!(script.contains(&text), "run.py no longer asks: {text}");
         }

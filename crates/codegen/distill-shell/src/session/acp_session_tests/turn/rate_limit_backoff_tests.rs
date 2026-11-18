@@ -1012,8 +1012,11 @@ async fn explicit_child_model_with_auto_effort_stays_pinned() {
                 .await
                 .expect("test actor has sampling config");
             config.model = "main-model".to_owned();
-            config.reasoning_effort = Some(distill_sampling_types::ReasoningEffort::High);
+            config.reasoning_effort = Some(distill_sampling_types::ReasoningEffort::Low);
             actor.chat_state_handle.update_sampling_config(config);
+            // The answer is a lookup, low on its own; a child never runs below the
+            // mode's implementation level (medium in Normal), and this menu offers
+            // only low and high, so the child runs at high, not the configured low.
             crate::jev::set_test_decision_answers([Some(controlled_effort_answer("low"))]);
 
             actor.prepare_sampler_for_turn().await;
@@ -1023,7 +1026,7 @@ async fn explicit_child_model_with_auto_effort_stays_pinned() {
                 .await
                 .expect("signals actor should be alive");
             assert_eq!(signals.active_model_id.as_deref(), Some("main-model"));
-            assert_eq!(signals.active_reasoning_effort.as_deref(), Some("low"));
+            assert_eq!(signals.active_reasoning_effort.as_deref(), Some("high"));
             assert_eq!(crate::jev::test_decision_answers_remaining(), 0);
             assert_eq!(
                 actor.jev_ledger.borrow().pending_route_model().as_deref(),
@@ -1055,7 +1058,7 @@ async fn explicit_child_model_with_auto_effort_stays_pinned() {
                 requests[0]
                     .pointer("/reasoning/effort")
                     .and_then(|value| value.as_str()),
-                Some("low")
+                Some("high")
             );
             crate::jev::clear_test_decision_answers();
             crate::jev::clear_test_local_config();

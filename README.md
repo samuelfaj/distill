@@ -61,30 +61,17 @@ Camera and look:
 
 </details>
 
-Final benchmark: Opus 5.5 main model, Sonnet 5.5 worker, list-price cost. Run counts vary by mode; quality is blind-judged against `main`. Lower cost/time does not imply higher quality.
+Final benchmark: Opus 5.5 main model, Sonnet 5.5 worker, list-price cost. Run counts vary by mode; quality is blind-judged against `main`. Lower cost/time does not imply higher quality. Each final montage shows `main` above the PR result; it is not one of the earlier single-run scenes.
 
-| Mode | Runs main / PR | Mean cost main → PR | Median cost main → PR | Mean time main → PR | Quality vs `main` (items / overall, of 32) |
-|---|---:|---:|---:|---:|---|
-| Normal | 4 / 4 | $7.71 → $3.73 (−52%) | $8.69 → $3.89 | 95 → 26 min | +1.42 / +0.72* |
-| Auto | 4 / 4 | $5.72 → $4.41 (−23%) | $5.85 → $4.27 | 77 → 27 min | +1.42 / +0.72* |
-| UltraSave | 3 / 4 | $7.16 → $2.37 (−67%) | $6.36 → $2.41 | 95 → 25 min | −0.92 / +0.67 |
-| UltraFast | 3 / 6 | $14.65 → $2.14 (−85%) | $13.60 → $1.75 | 128 → 13 min | −0.83 / −0.67 |
-| UltraCode | 3 / 4 | $14.39 → $7.83 (−46%) | $9.70 → $8.05 | 123 → 45 min | +3.50 / +1.08 |
-| Mean over modes | | $9.93 → $4.10 (−59%) | | | +1.06 items (p = 0.055), +0.55 overall (p = 0.016), 40 pages |
+| Mode | Result | Runs main / PR | Mean cost main → PR | Median cost main → PR | Mean time main → PR | Blind quality vs `main` (items / overall, of 32) |
+|---|---|---:|---:|---:|---:|---|
+| UltraSave | <a href="https://raw.githubusercontent.com/samuelfaj/distill/9fc868d9f8cd59a97884cb23f50df79c4be71977/paris-1888-rerun/1e10a3cb/ultrasave.jpg"><img src="https://raw.githubusercontent.com/samuelfaj/distill/9fc868d9f8cd59a97884cb23f50df79c4be71977/paris-1888-rerun/1e10a3cb/ultrasave.jpg" width="320" alt="UltraSave final comparison montage"></a> | 3 / 4 | $7.16 → $2.37 (−67%) | $6.36 → $2.41 | 95 → 25 min | −0.92 / +0.67 |
+| UltraFast | <a href="https://raw.githubusercontent.com/samuelfaj/distill/9fc868d9f8cd59a97884cb23f50df79c4be71977/paris-1888-rerun/1e10a3cb/ultrafast.jpg"><img src="https://raw.githubusercontent.com/samuelfaj/distill/9fc868d9f8cd59a97884cb23f50df79c4be71977/paris-1888-rerun/1e10a3cb/ultrafast.jpg" width="320" alt="UltraFast final comparison montage"></a> | 3 / 6 | $14.65 → $2.14 (−85%) | $13.60 → $1.75 | 128 → 13 min | −0.83 / −0.67 |
+| UltraCode | <a href="https://raw.githubusercontent.com/samuelfaj/distill/9fc868d9f8cd59a97884cb23f50df79c4be71977/paris-1888-rerun/1e10a3cb/ultracode.jpg"><img src="https://raw.githubusercontent.com/samuelfaj/distill/9fc868d9f8cd59a97884cb23f50df79c4be71977/paris-1888-rerun/1e10a3cb/ultracode.jpg" width="320" alt="UltraCode final comparison montage"></a> | 3 / 4 | $14.39 → $7.83 (−46%) | $9.70 → $8.05 | 123 → 45 min | +3.50 / +1.08 |
+| Auto | <a href="https://raw.githubusercontent.com/samuelfaj/distill/9fc868d9f8cd59a97884cb23f50df79c4be71977/paris-1888-rerun/1e10a3cb/auto.jpg"><img src="https://raw.githubusercontent.com/samuelfaj/distill/9fc868d9f8cd59a97884cb23f50df79c4be71977/paris-1888-rerun/1e10a3cb/auto.jpg" width="320" alt="Auto final comparison montage"></a> | 4 / 4 | $5.72 → $4.41 (−23%) | $5.85 → $4.27 | 77 → 27 min | +1.42 / +0.72* |
+| Normal | <a href="https://raw.githubusercontent.com/samuelfaj/distill/9fc868d9f8cd59a97884cb23f50df79c4be71977/paris-1888-rerun/1e10a3cb/normal.jpg"><img src="https://raw.githubusercontent.com/samuelfaj/distill/9fc868d9f8cd59a97884cb23f50df79c4be71977/paris-1888-rerun/1e10a3cb/normal.jpg" width="320" alt="Normal final comparison montage"></a> | 4 / 4 | $7.71 → $3.73 (−52%) | $8.69 → $3.89 | 95 → 26 min | +1.42 / +0.72* |
 
-*Normal and Auto quality pooled across 26 pages; same +1.42 / +0.72 result. Gains concentrate in Normal/Auto and UltraCode. UltraSave scored fewer items but better overall; UltraFast scored below `main` on both measures. Sample counts are small and single-page scores ranged 15–32, so mode-level quality differences are uncertain.
-
-**Method.** For each page, `window.renderAt(t)` supplied frames at 0, 7 and 13.9 seconds. Blind judges, shown random IDs and `main` anchors, scored 16 prompt elements (0–2 each) plus an overall mark. A PR score is its mark minus the mean `main` mark in the same panel and mode; p-values use a one-sided permutation test against `main`. Costs use Anthropic list prices (Opus: $4/M input, $0.20/M cached, $5/M cache write, $20/M output; Sonnet: $2/M, $0.10/M, $2.50/M, $10/M); runs used a Claude subscription. Jev and d1.2 calls (up to $0.0085/run) are excluded. The measurements mix builds: Normal/Auto quality pools builds from cc2f032b onward, but costs reflect 1e10a3cb; UltraCode uses the reminder-hold build; UltraFast and UltraSave use 1e10a3cb. Each montage shows `main` on top and PR below, at 7 seconds; tiles identify run, blind-judge score and list-price cost.
-
-![Normal final comparison montage](https://raw.githubusercontent.com/samuelfaj/distill/9fc868d9f8cd59a97884cb23f50df79c4be71977/paris-1888-rerun/1e10a3cb/normal.jpg)
-
-![Auto final comparison montage](https://raw.githubusercontent.com/samuelfaj/distill/9fc868d9f8cd59a97884cb23f50df79c4be71977/paris-1888-rerun/1e10a3cb/auto.jpg)
-
-![UltraSave final comparison montage](https://raw.githubusercontent.com/samuelfaj/distill/9fc868d9f8cd59a97884cb23f50df79c4be71977/paris-1888-rerun/1e10a3cb/ultrasave.jpg)
-
-![UltraFast final comparison montage](https://raw.githubusercontent.com/samuelfaj/distill/9fc868d9f8cd59a97884cb23f50df79c4be71977/paris-1888-rerun/1e10a3cb/ultrafast.jpg)
-
-![UltraCode final comparison montage](https://raw.githubusercontent.com/samuelfaj/distill/9fc868d9f8cd59a97884cb23f50df79c4be71977/paris-1888-rerun/1e10a3cb/ultracode.jpg)
+**Aggregate and method.** Mean over modes: $9.93 → $4.10 (−59%); quality +1.06 items (p = 0.055), +0.55 overall (p = 0.016), across 40 pages. Normal and Auto pool quality scores across 26 pages. Blind judges scored 16 prompt elements and an overall mark against `main`; see the [full report](docs/d1.2-decision-results.md#paris-1888-the-task-benchmark) for methodology and caveats.
 
 ## Benchmarks
 

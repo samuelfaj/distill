@@ -36,7 +36,7 @@ const DELEGATION_HINT: &str = "<delegation_hint>This request has independent par
 const SEQUENTIAL_DELEGATION_HINT: &str = "<delegation_hint>This request takes several steps: settle the decisions yourself, then hand the reading, editing and command work to a subagent with a precise spec and review what it returns. Do directly only what a single call covers.</delegation_hint>";
 
 /// B6 (work shape): work the request already specifies goes over whole.
-const SPECIFIED_WORK_HINT: &str = "<delegation_hint>This request is work its own wording already specifies: hand it to a subagent as one assignment with the goal, the files, the expected result and the check to run, then review the diff and the check output. Do directly only what a single call covers.</delegation_hint>";
+const SPECIFIED_WORK_HINT: &str = "<delegation_hint>This request is work its own wording already specifies: hand it to a subagent as one assignment with the goal, the requirements the request states (in its words), the files, the expected result and the check to run, then review the diff and the check output. Do directly only what a single call covers.</delegation_hint>";
 
 /// B6 (work shape): something to find out first goes over as a question.
 const INVESTIGATION_HINT: &str = "<delegation_hint>This request needs something found out first: hand the investigation to a subagent with the exact question and the evidence to bring back (file:line, command output), then decide the fix from its report and hand that over too.</delegation_hint>";
@@ -45,7 +45,7 @@ const INVESTIGATION_HINT: &str = "<delegation_hint>This request needs something 
 const PARALLEL_INVESTIGATION_HINT: &str = "<delegation_hint>This request needs several independent things found out: give each to its own subagent with the exact question and the evidence to bring back, launched together in one message, then decide from their reports.</delegation_hint>";
 
 /// B6 (work shape): open decisions stay with the main model.
-const SETTLE_THEN_DELEGATE_HINT: &str = "<delegation_hint>This request leaves decisions open: settle them yourself first, then hand the building to a subagent with a precise spec and review what comes back.</delegation_hint>";
+const SETTLE_THEN_DELEGATE_HINT: &str = "<delegation_hint>This request leaves decisions open: settle them yourself first, then hand the building to a subagent with a precise spec and review what comes back. Settle only what the request leaves open: every requirement it states goes into the spec in its words, and no decision of yours may relax one.</delegation_hint>";
 
 /// How long the turn's first model request waits, counted from the ask, for
 /// a work-shape answer still on its way. On 2026-11-17 `liquid/d1.2`

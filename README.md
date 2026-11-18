@@ -20,14 +20,10 @@ OpenAI-compatible protocol.
 
 ## One prompt, five modes
 
-The same complete prompt, run in all five modes. Final Paris, 1888 results compare
-`main` (2ff8b021) with PR #75 at `1e10a3cb`. See the [benchmark page](https://www.samuelfaj.com/en/distill/#benchmarks), [full report](docs/d1.2-decision-results.md#paris-1888-the-task-benchmark), and [final PR #75 comment](https://github.com/samuelfaj/distill/pull/75#issuecomment-6985680352). Each final montage below shows `main` above the PR result; it is not one of the earlier single-run scenes.
-
 ### Paris, 1888
 
-The task: build a 14-second deterministic voxel animation of the Eiffel Tower
-under construction. The final comparison below shows still frames from the
-animations.
+The same prompt in each mode, with Claude Opus 5.5 as the main model and
+Claude Sonnet 5.5 as the worker: a 14-second deterministic voxel animation.
 
 <details>
 <summary>Prompt</summary>
@@ -61,17 +57,16 @@ Camera and look:
 
 </details>
 
-Final benchmark: Opus 5.5 main model, Sonnet 5.5 worker, list-price cost. Run counts vary by mode; quality is blind-judged against `main`. Lower cost/time does not imply higher quality. Each final montage shows `main` above the PR result; it is not one of the earlier single-run scenes.
+| Mode | Result | Cost | Time |
+| --- | --- | ---: | ---: |
+| **UltraSave** | <a href="docs/images/eiffel/ultrasave-final.webp"><img src="docs/images/eiffel/ultrasave-final.webp" width="320" alt="UltraSave: voxel diorama of Paris in 1888"></a> | $2.37 | 25 min |
+| **UltraFast** | <a href="docs/images/eiffel/ultrafast-final.webp"><img src="docs/images/eiffel/ultrafast-final.webp" width="320" alt="UltraFast: voxel diorama of Paris in 1888"></a> | $2.14 | 13 min |
+| **UltraCode** | <a href="docs/images/eiffel/ultracode-final.webp"><img src="docs/images/eiffel/ultracode-final.webp" width="320" alt="UltraCode: voxel diorama of Paris in 1888"></a> | $7.83 | 45 min |
+| **Auto** | <a href="docs/images/eiffel/auto-final.webp"><img src="docs/images/eiffel/auto-final.webp" width="320" alt="Auto: voxel diorama of Paris in 1888"></a> | $4.41 | 27 min |
+| **Normal** | <a href="docs/images/eiffel/normal-final.webp"><img src="docs/images/eiffel/normal-final.webp" width="320" alt="Normal: voxel diorama of Paris in 1888"></a> | $3.73 | 26 min |
 
-| Mode | Result | Runs main / PR | Mean cost main → PR | Median cost main → PR | Mean time main → PR | Blind quality vs `main` (items / overall, of 32) |
-|---|---|---:|---:|---:|---:|---|
-| UltraSave | <a href="https://raw.githubusercontent.com/samuelfaj/distill/9fc868d9f8cd59a97884cb23f50df79c4be71977/paris-1888-rerun/1e10a3cb/ultrasave.jpg"><img src="https://raw.githubusercontent.com/samuelfaj/distill/9fc868d9f8cd59a97884cb23f50df79c4be71977/paris-1888-rerun/1e10a3cb/ultrasave.jpg" width="320" alt="UltraSave final comparison montage"></a> | 3 / 4 | $7.16 → $2.37 (−67%) | $6.36 → $2.41 | 95 → 25 min | −0.92 / +0.67 |
-| UltraFast | <a href="https://raw.githubusercontent.com/samuelfaj/distill/9fc868d9f8cd59a97884cb23f50df79c4be71977/paris-1888-rerun/1e10a3cb/ultrafast.jpg"><img src="https://raw.githubusercontent.com/samuelfaj/distill/9fc868d9f8cd59a97884cb23f50df79c4be71977/paris-1888-rerun/1e10a3cb/ultrafast.jpg" width="320" alt="UltraFast final comparison montage"></a> | 3 / 6 | $14.65 → $2.14 (−85%) | $13.60 → $1.75 | 128 → 13 min | −0.83 / −0.67 |
-| UltraCode | <a href="https://raw.githubusercontent.com/samuelfaj/distill/9fc868d9f8cd59a97884cb23f50df79c4be71977/paris-1888-rerun/1e10a3cb/ultracode.jpg"><img src="https://raw.githubusercontent.com/samuelfaj/distill/9fc868d9f8cd59a97884cb23f50df79c4be71977/paris-1888-rerun/1e10a3cb/ultracode.jpg" width="320" alt="UltraCode final comparison montage"></a> | 3 / 4 | $14.39 → $7.83 (−46%) | $9.70 → $8.05 | 123 → 45 min | +3.50 / +1.08 |
-| Auto | <a href="https://raw.githubusercontent.com/samuelfaj/distill/9fc868d9f8cd59a97884cb23f50df79c4be71977/paris-1888-rerun/1e10a3cb/auto.jpg"><img src="https://raw.githubusercontent.com/samuelfaj/distill/9fc868d9f8cd59a97884cb23f50df79c4be71977/paris-1888-rerun/1e10a3cb/auto.jpg" width="320" alt="Auto final comparison montage"></a> | 4 / 4 | $5.72 → $4.41 (−23%) | $5.85 → $4.27 | 77 → 27 min | +1.42 / +0.72* |
-| Normal | <a href="https://raw.githubusercontent.com/samuelfaj/distill/9fc868d9f8cd59a97884cb23f50df79c4be71977/paris-1888-rerun/1e10a3cb/normal.jpg"><img src="https://raw.githubusercontent.com/samuelfaj/distill/9fc868d9f8cd59a97884cb23f50df79c4be71977/paris-1888-rerun/1e10a3cb/normal.jpg" width="320" alt="Normal final comparison montage"></a> | 4 / 4 | $7.71 → $3.73 (−52%) | $8.69 → $3.89 | 95 → 26 min | +1.42 / +0.72* |
-
-**Aggregate and method.** Mean over modes: $9.93 → $4.10 (−59%); quality +1.06 items (p = 0.055), +0.55 overall (p = 0.016), across 40 pages. Normal and Auto pool quality scores across 26 pages. Blind judges scored 16 prompt elements and an overall mark against `main`; see the [full report](docs/d1.2-decision-results.md#paris-1888-the-task-benchmark) for methodology and caveats.
+Cost and time are averages across the final runs. Costs use Anthropic API list
+prices. Each image shows one final run at 7 seconds.
 
 ## Benchmarks
 

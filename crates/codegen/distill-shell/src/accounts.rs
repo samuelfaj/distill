@@ -869,6 +869,9 @@ impl AccountStore {
                         if limit.limit_reached { return Some(0.0); }
                         [limit.primary_window.as_ref(), limit.secondary_window.as_ref()].into_iter().flatten().filter_map(|w| percent(100.0 - w.used_percent)).reduce(f64::min)
                     });
+                    // Purchased credits keep the account usable after plan limits run out;
+                    // the balance has no percentage, so report the quota as unknown.
+                    let remaining = remaining.filter(|left| *left > 0.0 || !usage.credits.as_ref().is_some_and(|c| c.has_credits || c.unlimited));
                     // Only typed windows are emitted; arbitrary provider JSON and identifiers are excluded.
                     let detail = serde_json::json!({"rate_limit": usage.rate_limit, "additional_rate_limits": usage.additional_rate_limits.iter().map(|v| &v.rate_limit).collect::<Vec<_>>()});
                     Ok((remaining, detail))

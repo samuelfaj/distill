@@ -139,6 +139,7 @@ impl NamedAccounts {
                             "gpt-6-luna"
                         }
                         .into(),
+                        worker_fallback_model: None,
                         worker_model: Some(
                             if id == "one" {
                                 "gpt-6-luna"
@@ -184,6 +185,7 @@ impl NamedAccounts {
                 id: "expired".into(),
                 account_id: "expired".into(),
                 main_model: "claude/claude-opus-5-5".into(),
+                worker_fallback_model: None,
                 worker_model: None,
             },
         );
@@ -228,6 +230,7 @@ fn account_routing_order_unknown_highest_and_disabled_account_selection() {
                         id: "offline".into(),
                         account_id: "offline".into(),
                         main_model: "claude/unavailable-catalog-model".into(),
+                        worker_fallback_model: None,
                         worker_model: None,
                     },
                 );
@@ -559,6 +562,9 @@ fn account_routing_claude_pair_quota_and_provider_specific_402() {
         worker: false,
         pinned: false,
         operation_id: None,
+        worker_fallback_model: None,
+        using_worker_fallback: false,
+        worker_credential: Default::default(),
         failed_options: vec![],
     };
     let mut candidates = vec![(
@@ -620,7 +626,7 @@ fn account_routing_reresolves_auto_route_after_identity_change() {
                     "old-identity".into(),
                 );
                 assert!(
-                    restore_credentials(&fixture.store, &mut stale.clone())
+                    restore_credentials(&fixture.store, &fixture.models, &mut stale.clone())
                         .await
                         .is_err()
                 );

@@ -623,12 +623,17 @@ fn render_routes(buf: &mut Buffer, area: Rect, state: &mut AccountsModalState, t
                 inner,
                 y + 2,
                 format!(
-                    "  Worker: {}",
+                    "  Worker: {}{}",
                     option
                         .worker_model
                         .as_ref()
                         .map(|m| model_name(&state.models, m))
-                        .unwrap_or_else(|| "Same as Main".into())
+                        .unwrap_or_else(|| "Same as Main".into()),
+                    option
+                        .worker_fallback_model
+                        .as_ref()
+                        .map(|m| format!(" → {}", model_name(&state.models, m)))
+                        .unwrap_or_default()
                 ),
                 theme.gray_bright,
             );
@@ -847,8 +852,13 @@ fn render_editor(buf: &mut Buffer, area: Rect, state: &mut AccountsModalState, t
                     .as_ref()
                     .map(|m| model_name(&state.models, m))
                     .unwrap_or_else(|| "Same as Main".into()),
+                option
+                    .worker_fallback_model
+                    .as_ref()
+                    .map(|m| model_name(&state.models, m))
+                    .unwrap_or_else(|| "None".into()),
             ];
-            for (i, (name, value)) in ["Account", "Main", "Worker"]
+            for (i, (name, value)) in ["Account", "Main", "Worker", "Worker fallback"]
                 .into_iter()
                 .zip(values)
                 .enumerate()
@@ -864,11 +874,11 @@ fn render_editor(buf: &mut Buffer, area: Rect, state: &mut AccountsModalState, t
                 buf,
                 area,
                 y,
-                "Models must belong to the selected provider.",
+                "Main uses the selected account.",
                 theme.gray_bright,
             );
             y += 1;
-            let label = if *field == 3 {
+            let label = if *field == 4 {
                 "› Enter Apply option"
             } else {
                 "Enter Apply option"
@@ -877,7 +887,7 @@ fn render_editor(buf: &mut Buffer, area: Rect, state: &mut AccountsModalState, t
                 buf,
                 area,
                 &mut y,
-                &[(label, Control::Field(3)), ("Esc Cancel", Control::Cancel)],
+                &[(label, Control::Field(4)), ("Esc Cancel", Control::Cancel)],
                 state,
                 theme,
             );
@@ -893,6 +903,7 @@ fn render_editor(buf: &mut Buffer, area: Rect, state: &mut AccountsModalState, t
                 PickKind::Account => "Choose account",
                 PickKind::Main => "Choose Main model",
                 PickKind::Worker => "Choose Worker model",
+                PickKind::WorkerFallback => "Choose Worker fallback",
             };
             line(buf, area, y, title, theme.fuzzy_accent);
             y += 1;

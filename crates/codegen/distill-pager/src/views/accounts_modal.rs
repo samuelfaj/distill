@@ -147,6 +147,7 @@ pub(super) enum PickKind {
     Account,
     Main,
     Worker,
+    WorkerFallback,
 }
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Control {
@@ -347,18 +348,22 @@ impl AccountsModalState {
             })?;
         let provider = provider_name(account.account.provider);
         for (role, id) in [
-            ("Main", option.main_model.as_str()),
-            ("Worker", option.worker_model()),
+            ("Main", Some(option.main_model.as_str())),
+            ("Worker", option.worker_model.as_deref()),
+            ("Worker fallback", option.worker_fallback_model.as_deref()),
         ] {
-            if id.is_empty() {
-                return Err(format!("{prefix}: choose a {provider} {role} model."));
+            let Some(id) = id else { continue };
+            if id.is_empty() || id == "auto" {
+                return Err(format!("{prefix}: choose a {role} model from the catalog."));
             }
-            if id == "auto" {
-                return Err(format!(
-                    "{prefix}: {role} cannot be Auto. Choose a {provider} model."
-                ));
+            let model = self
+                .models
+                .iter()
+                .find(|model| model.id == id)
+                .ok_or_else(|| format!("{prefix}: {role} model is no longer in the catalog."))?;
+            if role != "Main" {
+                continue;
             }
-            let model = self.models.iter().find(|model| model.id == id).ok_or_else(|| format!("{prefix}: {role} model is no longer in the catalog. Choose a {provider} model."))?;
             let actual = model.provider.ok_or_else(|| {
                 format!(
                     "{prefix}: {role} provider is unverified. Choose a verified {provider} model."
@@ -541,8 +546,8 @@ impl AccountsModalState {
         }
         if let Mode::Route { field, .. } = &mut self.mode {
             match key.code {
-                KeyCode::Tab | KeyCode::Down => *field = (*field + 1) % 4,
-                KeyCode::BackTab | KeyCode::Up => *field = (*field + 3) % 4,
+                KeyCode::Tab | KeyCode::Down => *field = (*field + 1) % 5,
+                KeyCode::BackTab | KeyCode::Up => *field = (*field + 4) % 5,
                 KeyCode::Enter | KeyCode::Char(' ') => return self.activate(Control::Accept),
                 _ => {}
             }
@@ -728,23 +733,17 @@ impl AccountsModalState {
                             }) {
                                 option.main_model.clear();
                             }
-                            if option.worker_model.as_ref().is_some_and(|id| {
-                                !self.models.iter().any(|model| {
-                                    model.id == *id
-                                        && model.provider.is_some()
-                                        && model.provider == provider
-                                })
-                            }) {
-                                option.worker_model = None;
-                            }
                             self.message = Some(format!(
-                                "Account changed. Choose verified {} Main/Worker models; Worker can follow Main.",
+                                "Account changed. Choose a verified {} Main model.",
                                 provider.map(provider_name).unwrap_or("provider")
                             ));
                         }
                     }
                     PickKind::Main => option.main_model = value,
                     PickKind::Worker => option.worker_model = (!value.is_empty()).then_some(value),
+                    PickKind::WorkerFallback => {
+                        option.worker_fallback_model = (!value.is_empty()).then_some(value)
+                    }
                 }
             }
             return AccountsOutcome::Changed;
@@ -801,11 +800,12 @@ impl AccountsModalState {
                     self.mode = Mode::Browse;
                     return AccountsOutcome::Request(AccountsRequest::Rename { id, label });
                 }
-                Mode::Route { field, .. } if *field < 3 => {
+                Mode::Route { field, .. } if *field < 4 => {
                     let kind = match field {
                         0 => PickKind::Account,
                         1 => PickKind::Main,
-                        _ => PickKind::Worker,
+                        2 => PickKind::Worker,
+                        _ => PickKind::WorkerFallback,
                     };
                     self.open_picker(kind);
                 }
@@ -861,6 +861,7 @@ impl AccountsModalState {
                                 id: new_id("route"),
                                 account_id: self.accounts[self.account_selected].account.id.clone(),
                                 main_model: String::new(),
+                                worker_fallback_model: None,
                                 worker_model: None,
                             });
                     self.mode = Mode::Route {
@@ -986,7 +987,7 @@ impl AccountsModalState {
                     )
                 })
                 .collect(),
-            PickKind::Main | PickKind::Worker => {
+            PickKind::Main | PickKind::Worker | PickKind::WorkerFallback => {
                 let provider = match &self.mode {
                     Mode::Route { option, .. } => self
                         .accounts
@@ -997,13 +998,18 @@ impl AccountsModalState {
                 };
                 self.models
                     .iter()
-                    .filter(|model| model.provider.is_some() && model.provider == provider)
+                    .filter(|model| {
+                        !matches!(kind, PickKind::Main)
+                            || (model.provider.is_some() && model.provider == provider)
+                    })
                     .map(|model| (model.name.clone(), model.id.clone()))
                     .collect()
             }
         };
         if matches!(kind, PickKind::Worker) {
             choices.insert(0, ("Same as Main".into(), String::new()));
+        } else if matches!(kind, PickKind::WorkerFallback) {
+            choices.insert(0, ("None".into(), String::new()));
         }
         if choices.is_empty() {
             let provider = match &self.mode {
@@ -1025,6 +1031,7 @@ impl AccountsModalState {
                 PickKind::Account => option.account_id.as_str(),
                 PickKind::Main => option.main_model.as_str(),
                 PickKind::Worker => option.worker_model.as_deref().unwrap_or(""),
+                PickKind::WorkerFallback => option.worker_fallback_model.as_deref().unwrap_or(""),
             },
             _ => "",
         };

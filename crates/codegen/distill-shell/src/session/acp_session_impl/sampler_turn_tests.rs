@@ -2315,3 +2315,260 @@ fn account_routing_real_turn_exhausted_auth_and_partial_output_fail_closed() {
         },
     );
 }
+
+#[test]
+fn account_routing_deepseek_worker_haiku_and_luna_fallbacks() {
+    crate::agent::account_routing::tests::isolated(
+        "session::acp_session::sampler_turn::tests::account_routing_deepseek_worker_haiku_and_luna_fallbacks",
+        || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            tokio::task::LocalSet::new().block_on(&rt, exercise_deepseek_worker_fallbacks());
+        },
+    );
+}
+
+async fn exercise_deepseek_worker_fallbacks() {
+    use super::super::TurnParkState;
+    use super::super::support::{
+        create_test_actor, drain_gateway, drain_persistence, transient_state,
+    };
+    use crate::accounts::Provider;
+    use crate::agent::account_routing::{self, AccountRoute, tests::NamedAccounts};
+    use distill_sampler::{CollectedSamplingResult, SamplerHandle};
+    use distill_sampling_types::{
+        ApiBackend, ConversationItem, ConversationRequest, ConversationResponse, SamplingError,
+    };
+    use std::sync::{Arc, Mutex};
+
+    let mut fixture = NamedAccounts::new(crate::codex_auth::CODEX_INFERENCE_BASE_URL);
+    let mut deepseek = fixture.models["gpt-6.1-sol"].clone();
+    deepseek.info.model = "deepseek-chat".into();
+    deepseek.info.base_url = "https://api.deepseek.com/v1".into();
+    deepseek.info.api_backend = ApiBackend::ChatCompletions;
+    deepseek.api_key = Some("deepseek-only".into());
+    fixture.models.insert("custom-deepseek".into(), deepseek);
+    let mut haiku = fixture.models["gpt-6.1-sol"].clone();
+    haiku.info.model = "claude-haiku-4-5".into();
+    haiku.info.base_url = "https://api.anthropic.com".into();
+    haiku.info.api_backend = ApiBackend::Messages;
+    fixture.models.insert("haiku".into(), haiku);
+    fixture
+        .store
+        .add("claude", Provider::Claude, "Claude")
+        .unwrap();
+    let path = fixture.store.credential_path("claude").unwrap();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        path,
+        serde_json::to_vec(&crate::claude_auth::ClaudeAuthStore {
+            access_token: "haiku-only".into(),
+            refresh_token: String::new(),
+            expires_at: chrono::Utc::now() + chrono::Duration::hours(2),
+            scopes: vec![],
+            account_uuid: Some("haiku-account".into()),
+            email: None,
+            organization_uuid: None,
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let mut routing = fixture.store.load_routing().unwrap();
+    routing.options.truncate(2);
+    for (option, fallback) in routing.options.iter_mut().zip(["haiku", "gpt-6-luna"]) {
+        option.worker_model = Some("custom-deepseek".into());
+        option.worker_fallback_model = Some(fallback.into());
+    }
+    fixture.store.save_routing(&routing).unwrap();
+    let main = account_routing::select_startup_config(&fixture.base(), &fixture.models, false)
+        .await
+        .unwrap();
+    let route = AccountRoute::read(&main.extra_headers).unwrap().unwrap();
+    assert_eq!(route.account_id, "one");
+    assert_eq!(main.model, "gpt-6.1-sol");
+    assert_eq!(
+        main.bearer_resolver
+            .as_ref()
+            .unwrap()
+            .current_bearer()
+            .as_deref(),
+        Some("one-token")
+    );
+    let (primary, id) =
+        account_routing::select_worker_config(&fixture.store, &fixture.models, &main, route)
+            .await
+            .unwrap();
+    assert_eq!(id, "custom-deepseek");
+    for (first_fallback, success, partial, expected) in [
+        ("haiku", "deepseek-chat", false, vec!["deepseek-chat"]),
+        (
+            "haiku",
+            "claude-haiku-4-5",
+            false,
+            vec!["deepseek-chat", "claude-haiku-4-5"],
+        ),
+        (
+            "gpt-6-luna",
+            "gpt-6-luna",
+            false,
+            vec!["deepseek-chat", "gpt-6-luna"],
+        ),
+        (
+            "haiku",
+            "gpt-6-luna",
+            false,
+            vec!["deepseek-chat", "claude-haiku-4-5", "gpt-6-luna"],
+        ),
+        ("haiku", "", true, vec!["deepseek-chat"]),
+    ] {
+        routing.options[0].worker_fallback_model = Some(first_fallback.into());
+        fixture.store.save_routing(&routing).unwrap();
+        let (gateway, rx) = tokio::sync::mpsc::unbounded_channel();
+        drain_gateway(rx);
+        let (persistence, rx) = tokio::sync::mpsc::unbounded_channel();
+        drain_persistence(rx);
+        let mut actor = create_test_actor(0, 262_144, 85, gateway, persistence).await;
+        actor.startup_hints.is_subagent = true;
+        for (id, model) in &fixture.models {
+            actor.models_manager.insert_test_entry(id, model.clone());
+        }
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let record = calls.clone();
+        actor.sampler_handle = SamplerHandle::scripted(move |config, request| {
+            assert_eq!(request.model.as_deref(), Some(config.model.as_str()));
+            let active = AccountRoute::read(&config.extra_headers).unwrap().unwrap();
+            let bearer = config
+                .bearer_resolver
+                .as_ref()
+                .and_then(|resolver| resolver.current_bearer());
+            match config.model.as_str() {
+                "deepseek-chat" => {
+                    assert_eq!(config.api_key.as_deref(), Some("deepseek-only"));
+                    assert_eq!(config.base_url, "https://api.deepseek.com/v1");
+                    assert!(bearer.is_none() && active.credential_account().is_none());
+                    assert!(!config.extra_headers.contains_key("chatgpt-account-id"));
+                }
+                "claude-haiku-4-5" => {
+                    assert_eq!(active.account_id, "one");
+                    assert_eq!(active.credential_account(), Some("claude"));
+                    assert!(active.failed_options.is_empty());
+                    assert_eq!(bearer.as_deref(), Some("haiku-only"));
+                    assert!(
+                        config.api_key.is_none()
+                            && !config.extra_headers.contains_key("chatgpt-account-id")
+                    );
+                }
+                "gpt-6-luna" => {
+                    if first_fallback == "gpt-6-luna" {
+                        assert_eq!(active.account_id, "one");
+                        assert!(active.failed_options.is_empty());
+                        assert_eq!(bearer.as_deref(), Some("one-token"));
+                    } else {
+                        assert_eq!(active.account_id, "two");
+                        assert_eq!(active.failed_options, ["one"]);
+                        assert_eq!(bearer.as_deref(), Some("two-token"));
+                    }
+                    assert!(
+                        config.api_key.is_none()
+                            && !config.extra_headers.contains_key("anthropic-beta")
+                    );
+                }
+                other => panic!("unexpected worker {other}"),
+            }
+            record.lock().unwrap().push(config.model.clone());
+            let result = if config.model == success {
+                Ok((
+                    ConversationResponse {
+                        items: vec![ConversationItem::assistant("done")],
+                        stop_reason: None,
+                        usage: None,
+                        cost_usd_ticks: None,
+                        message_chunks_emitted: 0,
+                        doom_loop_signals: vec![],
+                        stop_message: None,
+                        message_id: None,
+                        raw_stop_reason: None,
+                        stop_sequence: None,
+                    },
+                    Default::default(),
+                ))
+            } else {
+                Err(SamplingError::Api {
+                    status: reqwest::StatusCode::SERVICE_UNAVAILABLE,
+                    message: "worker unavailable".into(),
+                    retry_after_secs: None,
+                    should_retry: None,
+                    error_code: None,
+                    model_metadata: None,
+                })
+            };
+            CollectedSamplingResult {
+                result,
+                terminal_event_queued: false,
+                output_observed: partial,
+                doom_loop_signals: vec![],
+                doom_loop_recovery_attempts: vec![],
+            }
+        });
+        let actor = Arc::new(actor);
+        actor.persist_account_config(&primary).await.unwrap();
+        let request = ConversationRequest::from_items(vec![ConversationItem::user("run once")]);
+        let mut budget = actor.rate_limit_wait_budget(None);
+        let result = actor
+            .run_turn_via_sampler(
+                request,
+                &mut budget,
+                transient_state(0, false),
+                false,
+                TurnParkState::Fresh,
+            )
+            .await;
+        assert_eq!(result.is_ok(), !partial, "{:?}", result.err());
+        assert_eq!(*calls.lock().unwrap(), expected);
+        if !partial {
+            let restored =
+                account_routing::load_session_config(&actor.session_info, &fixture.models)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(restored.model, success);
+            let routes =
+                account_routing::routes_for_turn(&fixture.store, &fixture.models, &restored, true)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                routes.first().unwrap().model(),
+                AccountRoute::read(&restored.extra_headers)
+                    .unwrap()
+                    .unwrap()
+                    .model()
+            );
+        }
+    }
+    // Restore a saved primary after its key disappears. Neither the main
+    // bearer nor the unrelated global key may be reused for DeepSeek.
+    let cwd = tempfile::tempdir().unwrap();
+    let info = crate::session::info::Info {
+        id: agent_client_protocol::SessionId::new("deepseek-worker"),
+        cwd: cwd.path().to_string_lossy().into_owned(),
+    };
+    account_routing::save_session_config(&info, &primary).unwrap();
+    fixture.models.get_mut("custom-deepseek").unwrap().api_key = None;
+    let _global = distill_test_support::EnvGuard::set("XAI_API_KEY", "wrong-provider");
+    let restored = account_routing::restore_session_config(&info, &main, &fixture.models)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(restored.model, "claude-haiku-4-5");
+    assert!(restored.api_key.is_none());
+    assert_eq!(
+        restored
+            .bearer_resolver
+            .unwrap()
+            .current_bearer()
+            .as_deref(),
+        Some("haiku-only")
+    );
+}

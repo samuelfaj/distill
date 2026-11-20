@@ -1242,6 +1242,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn partial_text_and_tool_activity_veto_account_fallback() {
+        let id = RequestId::random();
+        for event in [
+            SamplingEvent::ChannelToken {
+                request_id: id.clone(),
+                channel: crate::SamplingChannel::Text,
+                text: "partial".into(),
+                chunk_index: 1,
+            },
+            SamplingEvent::ToolCallDelta {
+                request_id: id.clone(),
+                tool_index: 0,
+                id: Some("call".into()),
+                name: Some("write_file".into()),
+                arguments_delta: None,
+            },
+        ] {
+            let observed = Arc::new(AtomicBool::new(false));
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            // The stream drops immediately after the first observable event.
+            let outcome = drive_l2(
+                stream::iter([event]),
+                id.clone(),
+                &tx,
+                &CancellationToken::new(),
+                Arc::new(Mutex::new(None)),
+                None,
+                FailedResponseCapture::default(),
+                observed.clone(),
+                Default::default(),
+            )
+            .await;
+            assert!(matches!(outcome, AttemptOutcome::Failed { .. }));
+            assert!(observed.load(Ordering::Relaxed));
+            assert!(rx.try_recv().is_ok());
+            assert!(rx.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
     async fn length_and_empty_outcomes_retain_terminal_detector_signals() {
         let length = terminal_outcome(completed_response(
             Some(distill_sampling_types::StopReason::Length),

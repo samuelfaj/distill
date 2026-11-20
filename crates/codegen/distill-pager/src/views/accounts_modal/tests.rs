@@ -72,6 +72,7 @@ fn add_route(state: &mut AccountsModalState, worker: bool) {
         key(state, KeyCode::Tab);
         key(state, KeyCode::Tab);
     }
+    key(state, KeyCode::Tab); // Skip optional fallback.
     key(state, KeyCode::Enter);
     assert!(matches!(state.mode, Mode::Browse));
 }
@@ -217,7 +218,13 @@ fn routing_selectors_edit_reorder_and_save_persist_the_draft() {
             .iter()
             .map(|(_, id)| id.as_str())
             .collect::<Vec<_>>(),
-        ["", "discovered-main", "discovered-worker"]
+        [
+            "",
+            "discovered-main",
+            "discovered-worker",
+            "foreign-model",
+            "chatgpt-unverified"
+        ]
     );
     filtered.activate(Control::Choose(2));
     filtered.activate(Control::Field(0));
@@ -226,14 +233,8 @@ fn routing_selectors_edit_reorder_and_save_persist_the_draft() {
         panic!("route")
     };
     assert!(option.main_model.is_empty());
-    assert!(option.worker_model.is_none());
-    assert!(
-        filtered
-            .message
-            .as_deref()
-            .unwrap()
-            .contains("Claude Main/Worker")
-    );
+    assert_eq!(option.worker_model.as_deref(), Some("discovered-worker"));
+    assert!(filtered.message.as_deref().unwrap().contains("Claude Main"));
     filtered.activate(Control::Field(1));
     let Mode::Pick { choices, .. } = &filtered.mode else {
         panic!("Claude Main")
@@ -255,37 +256,27 @@ fn routing_selectors_edit_reorder_and_save_persist_the_draft() {
             .iter()
             .map(|(_, id)| id.as_str())
             .collect::<Vec<_>>(),
-        ["", "foreign-model"]
+        [
+            "",
+            "discovered-main",
+            "discovered-worker",
+            "foreign-model",
+            "chatgpt-unverified"
+        ]
     );
-    filtered.activate(Control::Choose(0));
+    filtered.activate(Control::Choose(4)); // A custom model has no account-provider tag.
     filtered.activate(Control::Field(3));
-    assert!(filtered.validate_routing(&filtered.routing).is_ok()); // Disconnected accounts can be configured.
-
-    // Simulate an earlier saved profile containing a cross-provider Worker.
-    filtered.routing.options[0].worker_model = Some("discovered-worker".into());
-    filtered.saved = filtered.routing.clone();
-    let invalid = filtered.routing.clone();
-    let seq = filtered.request_seq;
-    assert!(matches!(
-        key(&mut filtered, KeyCode::Char('s')),
-        AccountsOutcome::Changed
-    ));
-    assert!(
-        filtered
-            .message
-            .as_deref()
-            .unwrap()
-            .contains("Worker must use Claude")
+    filtered.activate(Control::Choose(2));
+    filtered.activate(Control::Field(4));
+    assert_eq!(
+        filtered.routing.options[0].worker_model.as_deref(),
+        Some("chatgpt-unverified")
     );
-    assert!(
-        filtered
-            .begin(AccountsRequest::Save(invalid.clone()))
-            .is_none()
+    assert_eq!(
+        filtered.routing.options[0].worker_fallback_model.as_deref(),
+        Some("discovered-worker")
     );
-    assert_eq!(filtered.request_seq, seq);
-    assert!(filtered.busy.is_none());
-    assert_eq!(filtered.routing, invalid);
-    assert_eq!(filtered.saved, invalid);
+    assert!(filtered.validate_routing(&filtered.routing).is_ok());
     filtered.routing.options[0].main_model = "chatgpt-unverified".into();
     assert!(matches!(
         key(&mut filtered, KeyCode::Char('s')),
@@ -307,6 +298,7 @@ fn routing_selectors_edit_reorder_and_save_persist_the_draft() {
             id: "saved-route".into(),
             account_id: "work".into(),
             main_model: "discovered-main".into(),
+            worker_fallback_model: None,
             worker_model: None,
         }],
     };
@@ -353,6 +345,7 @@ fn async_cancellation_and_failed_save_preserve_identity_and_draft() {
         id: "route".into(),
         account_id: "work".into(),
         main_model: "discovered-main".into(),
+        worker_fallback_model: None,
         worker_model: None,
     });
     let draft = state.routing.clone();

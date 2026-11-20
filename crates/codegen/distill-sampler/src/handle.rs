@@ -65,6 +65,34 @@ impl SamplerHandle {
         Self { cmd_tx }
     }
 
+    /// Exercise session dispatch and retry against a scripted sampler without opening a socket.
+    #[cfg(feature = "test-support")]
+    pub fn scripted(
+        mut respond: impl FnMut(&SamplerConfig, &ConversationRequest) -> CollectedSamplingResult
+        + Send
+        + 'static,
+    ) -> Self {
+        let (cmd_tx, mut rx) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let mut current = SamplerConfig::default();
+            while let Some(command) = rx.recv().await {
+                match command {
+                    SamplerCommand::UpdateConfig { config } => current = *config,
+                    SamplerCommand::Submit {
+                        request,
+                        config,
+                        completion_tx: Some(tx),
+                        ..
+                    } => {
+                        let _ = tx.send(respond(config.as_deref().unwrap_or(&current), &request));
+                    }
+                    _ => {}
+                }
+            }
+        });
+        Self { cmd_tx }
+    }
+
     /// Fire-and-forget: results arrive via the shared event channel.
     pub fn submit(&self, request_id: RequestId, request: ConversationRequest) {
         let _ = self.cmd_tx.send(SamplerCommand::Submit {

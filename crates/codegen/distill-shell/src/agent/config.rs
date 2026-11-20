@@ -4760,6 +4760,20 @@ impl ModelEntry {
             api_base_url: entry.api_base_url.clone(),
         }
     }
+    /// An explicit credential source on the catalog entry takes precedence over account sign-in.
+    pub(crate) fn has_configured_auth(&self) -> bool {
+        first_own_credential(self.api_key.as_deref(), self.env_key.as_ref()).is_some()
+            || self.auth_provider.is_some()
+            || self
+                .info
+                .extra_headers
+                .keys()
+                .chain(self.info.env_http_headers.keys())
+                .any(|name| {
+                    name.eq_ignore_ascii_case("authorization")
+                        || name.eq_ignore_ascii_case("x-api-key")
+                })
+    }
     /// Non-empty `api_key`, then `env_key`, then the saved OpenRouter credential.
     /// `None` falls through to the session / global key.
     /// Static only: never consults auth-provider tokens.
@@ -5524,17 +5538,7 @@ pub(crate) fn sampling_config_for_account(
     let temperature = info.temperature;
     let top_p = info.top_p;
     let mut extra_headers = info.extra_headers.clone();
-    if first_own_credential(model.api_key.as_deref(), model.env_key.as_ref()).is_some()
-        || model.auth_provider.is_some()
-        || info
-            .extra_headers
-            .keys()
-            .chain(info.env_http_headers.keys())
-            .any(|name| {
-                name.eq_ignore_ascii_case("authorization")
-                    || name.eq_ignore_ascii_case("x-api-key")
-            })
-    {
+    if model.has_configured_auth() {
         extra_headers.insert(
             super::account_routing::CREDENTIAL_AUTHORITY_HEADER.into(),
             "1".into(),

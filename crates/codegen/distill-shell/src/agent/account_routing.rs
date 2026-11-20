@@ -16,12 +16,28 @@ pub(crate) const ROUTE_HEADER: &str = "x-distill-account-route";
 pub(crate) const PIN_HEADER: &str = "x-distill-model-pin";
 pub(crate) const CREDENTIAL_AUTHORITY_HEADER: &str = "x-distill-credential-authority";
 
+/// The option's account always owns Main. A worker may authenticate independently.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WorkerCredential {
+    #[default]
+    MainAccount,
+    Model,
+    Account(String),
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct AccountRoute {
     pub account_id: String,
     pub option_id: Option<String>,
     pub main_model: String,
     pub worker_model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_fallback_model: Option<String>,
+    #[serde(default)]
+    pub using_worker_fallback: bool,
+    #[serde(default)]
+    pub worker_credential: WorkerCredential,
     pub worker: bool,
     /// An explicit model keeps its model authority even with global Auto enabled.
     pub pinned: bool,
@@ -43,8 +59,25 @@ impl AccountRoute {
             .insert(ROUTE_HEADER.into(), serde_json::to_string(self)?);
         Ok(())
     }
+    pub(crate) fn credential_account(&self) -> Option<&str> {
+        match (&self.worker_credential, self.worker) {
+            (WorkerCredential::Model, true) => None,
+            (WorkerCredential::Account(id), true) => Some(id),
+            _ => Some(&self.account_id),
+        }
+    }
+    fn same_credential(&self, other: &Self) -> bool {
+        match (self.credential_account(), other.credential_account()) {
+            (None, None) => self.model() == other.model(),
+            (left, right) => left == right,
+        }
+    }
     pub(crate) fn model(&self) -> &str {
-        if self.worker {
+        if self.worker && self.using_worker_fallback {
+            self.worker_fallback_model
+                .as_deref()
+                .unwrap_or(&self.worker_model)
+        } else if self.worker {
             &self.worker_model
         } else {
             &self.main_model
@@ -64,14 +97,14 @@ pub(crate) fn account_history_needs_portability(
             is_identity_anchor(name)
                 && next.extra_headers.get(name).is_some_and(|next| next != value)
         })
-        || crate::agent::account_routing::AccountRoute::read(&previous.extra_headers)
-            .ok()
-            .flatten()
-            .map(|route| route.account_id)
-            != crate::agent::account_routing::AccountRoute::read(&next.extra_headers)
-                .ok()
-                .flatten()
-                .map(|route| route.account_id)
+        || match (
+            AccountRoute::read(&previous.extra_headers).ok().flatten(),
+            AccountRoute::read(&next.extra_headers).ok().flatten(),
+        ) {
+            (Some(old), Some(new)) => !old.same_credential(&new),
+            (None, None) => false,
+            _ => true,
+        }
 }
 
 /// Remove model-minted reasoning and retain backend tool context as text.
@@ -176,21 +209,18 @@ pub(crate) async fn routes_for_turn(
             {
                 continue;
             }
-            // Validate both destinations before choosing a pair.
-            for id in [&option.main_model[..], option.worker_model()] {
-                let model = find_model_by_id(models, id).ok_or_else(|| {
-                    anyhow!(
-                        "Auto option `{}` references unavailable model `{id}`",
-                        option.id
-                    )
-                })?;
-                ensure!(
-                    model.info.user_selectable
-                        && provider_for_url(&model.info.base_url) == Some(account.provider),
-                    "Auto option `{}` has a provider/model mismatch",
+            let main = find_model_by_id(models, &option.main_model).ok_or_else(|| {
+                anyhow!(
+                    "Auto option `{}` references unavailable main model",
                     option.id
-                );
-            }
+                )
+            })?;
+            ensure!(
+                main.info.user_selectable
+                    && provider_for_url(&main.info.base_url) == Some(account.provider),
+                "Auto option `{}` has a provider/model mismatch",
+                option.id
+            );
             let mut route = route_for_option(option, worker);
             if let Some(previous) = previous.as_ref() {
                 route.operation_id = previous.operation_id.clone();
@@ -203,7 +233,7 @@ pub(crate) async fn routes_for_turn(
         let mut routes = rank_routes(candidates, routing.strategy);
         // A delegated worker begins on the pair selected by its parent, then falls back in configured order.
         if worker
-            && let Some(previous) = previous
+            && let Some(previous) = &previous
             && let Some(index) = routes.iter().position(|route| {
                 route.option_id == previous.option_id && route.account_id == previous.account_id
             })
@@ -211,7 +241,37 @@ pub(crate) async fn routes_for_turn(
             let selected = routes.remove(index);
             routes.insert(0, selected);
         }
+        if worker {
+            let mut attempts = Vec::new();
+            for route in routes {
+                let resume_fallback = previous.as_ref().is_some_and(|old| {
+                    old.using_worker_fallback
+                        && old.option_id == route.option_id
+                        && old.account_id == route.account_id
+                        && old.worker_model == route.worker_model
+                        && old.worker_fallback_model == route.worker_fallback_model
+                });
+                if !resume_fallback {
+                    attempts.push(route.clone());
+                }
+                if route.worker_fallback_model.is_some() {
+                    attempts.push(AccountRoute {
+                        using_worker_fallback: true,
+                        ..route
+                    });
+                }
+            }
+            return Ok(attempts);
+        }
         return Ok(routes);
+    }
+    // An explicitly inherited Auto worker keeps its credential authority.
+    if let Some(mut route) = previous
+        .clone()
+        .filter(|route| route.worker && route.option_id.is_some() && pinned)
+    {
+        route.pinned = true;
+        return Ok(vec![route]);
     }
     // The selected entry stamps credential authority before its catalog id is
     // reduced to the wire slug, which may also name a subscription entry.
@@ -246,6 +306,9 @@ pub(crate) async fn routes_for_turn(
                 worker,
                 pinned,
                 operation_id: None,
+                worker_fallback_model: None,
+                using_worker_fallback: false,
+                worker_credential: Default::default(),
                 failed_options: Vec::new(),
             },
             store.quota_snapshot(&account.id)?,
@@ -427,7 +490,7 @@ pub(crate) async fn load_session_config(
             config.reasoning_effort = Some(effort);
         }
     }
-    restore_credentials(&store, &mut config).await?;
+    restore_credentials(&store, models, &mut config).await?;
     Ok(Some(config))
 }
 
@@ -440,9 +503,16 @@ pub(crate) async fn restore_session_config(
     models: &IndexMap<String, ModelEntry>,
 ) -> Result<Option<SamplerConfig>> {
     match load_session_config(info, models).await {
-        Err(error) if session_auto_route(info).is_some() => {
+        Err(error) => {
+            let Some(route) = session_auto_route(info) else {
+                return Err(error);
+            };
             tracing::warn!(%error, "Saved Auto route is unavailable; selecting Auto again");
-            select_startup_config(current, models, false)
+            let mut current = current.clone();
+            if route.worker {
+                route.write(&mut current)?;
+            }
+            select_startup_config(&current, models, false)
                 .await
                 .map(Some)
         }
@@ -459,8 +529,33 @@ fn route_for_option(option: &AutoOption, worker: bool) -> AccountRoute {
         worker,
         pinned: false,
         operation_id: None,
+        worker_fallback_model: option.worker_fallback_model.clone(),
+        using_worker_fallback: false,
+        worker_credential: Default::default(),
         failed_options: Vec::new(),
     }
+}
+
+/// Start a delegate on its parent's option, including credential-admission fallback.
+pub(crate) async fn select_worker_config(
+    store: &AccountStore,
+    models: &IndexMap<String, ModelEntry>,
+    parent: &SamplerConfig,
+    mut route: AccountRoute,
+) -> Result<(SamplerConfig, String)> {
+    route.worker = true;
+    let mut current = parent.clone();
+    route.write(&mut current)?;
+    let routes = routes_for_turn(store, models, &current, true).await?;
+    ensure!(
+        routes
+            .first()
+            .is_some_and(|r| r.option_id.is_some() && r.worker),
+        "Auto worker route unavailable"
+    );
+    let config = config_for_routes(store, models, parent, &routes).await?;
+    let selected = AccountRoute::read(&config.extra_headers)?.expect("configured route");
+    Ok((config, selected.model().to_owned()))
 }
 
 /// Select usable credentials in ranked order, advancing only through Auto options.
@@ -489,9 +584,42 @@ pub(crate) async fn config_for_route(
     previous: &SamplerConfig,
     route: &AccountRoute,
 ) -> Result<SamplerConfig> {
-    let mut config = model_config_for_route(store, models, previous, route)?;
-    if AccountRoute::read(&previous.extra_headers)?
-        .is_some_and(|old| old.account_id == route.account_id)
+    let mut route = route.clone();
+    if route.worker && route.option_id.is_some() && !route.pinned {
+        let model = find_model_by_id(models, route.model())
+            .filter(|model| model.info.user_selectable)
+            .ok_or_else(|| anyhow!("Worker model is unavailable"))?;
+        let provider = provider_for_url(&model.info.base_url);
+        let bound = store.get(&route.account_id)?;
+        route.worker_credential = if route.model() != route.main_model
+            && (model.has_configured_auth() || model.env_key.is_some() || provider.is_none())
+        {
+            WorkerCredential::Model
+        } else if provider == Some(bound.provider) {
+            WorkerCredential::MainAccount
+        } else {
+            let grok =
+                grok_for_provider(provider.ok_or_else(|| anyhow!("Unknown worker provider"))?)?;
+            let account = store
+                .list()?
+                .into_iter()
+                .find(|account| {
+                    Some(account.provider) == provider
+                        && store
+                            .status(&account.id, grok.as_ref())
+                            .is_ok_and(|status| {
+                                status.connected
+                                    && known_remaining(status.quota.as_ref()) != Some(0.0)
+                            })
+                })
+                .ok_or_else(|| anyhow!("No connected account for the worker provider"))?;
+            WorkerCredential::Account(account.id)
+        };
+    }
+    let mut config = model_config_for_route(store, models, previous, &route)?;
+    if previous.base_url == config.base_url
+        && AccountRoute::read(&previous.extra_headers)?
+            .is_some_and(|old| old.same_credential(&route))
     {
         config.extra_headers.extend(
             previous
@@ -501,7 +629,7 @@ pub(crate) async fn config_for_route(
                 .map(|(name, value)| (name.clone(), value.clone())),
         );
     }
-    restore_credentials(store, &mut config).await?;
+    restore_credentials(store, models, &mut config).await?;
     Ok(config)
 }
 
@@ -513,10 +641,12 @@ fn model_config_for_route(
 ) -> Result<SamplerConfig> {
     let model = find_model_by_id(models, route.model())
         .ok_or_else(|| anyhow!("Selected account model is unavailable"))?;
-    ensure!(
-        provider_for_url(&model.info.base_url) == Some(store.get(&route.account_id)?.provider),
-        "Selected account provider/model mismatch"
-    );
+    if let Some(id) = route.credential_account() {
+        ensure!(
+            provider_for_url(&model.info.base_url) == Some(store.get(id)?.provider),
+            "Selected account provider/model mismatch"
+        );
+    }
     let mut config = sampling_config_for_account(
         model,
         ResolvedCredentials {
@@ -546,7 +676,10 @@ fn model_config_for_route(
     config.doom_loop_recovery = previous.doom_loop_recovery;
     // A pinned mode's serving path (its tier and the OpenRouter variant it defaulted) stays
     // with the session model it was decided for.
-    if previous.model == config.model && previous.provider_tier.is_some() {
+    if previous.model == config.model
+        && previous.base_url == config.base_url
+        && previous.provider_tier.is_some()
+    {
         config.provider_tier = previous.provider_tier;
         config.openrouter_variant = previous.openrouter_variant.clone();
     }
@@ -589,10 +722,17 @@ fn apply_model_quotas(
         else {
             continue;
         };
-        for id in [&route.main_model, &route.worker_model] {
-            let Some(model) = find_model_by_id(models, id) else {
-                continue;
-            };
+        // A separate worker provider has a separate quota. With a fallback, a
+        // depleted primary worker must not eliminate the whole option.
+        let main = find_model_by_id(models, &route.main_model);
+        let worker = find_model_by_id(models, &route.worker_model).filter(|worker| {
+            route.worker_fallback_model.is_none()
+                && !worker.has_configured_auth()
+                && main.is_some_and(|main| {
+                    provider_for_url(&main.info.base_url) == provider_for_url(&worker.info.base_url)
+                })
+        });
+        for model in main.into_iter().chain(worker) {
             let window = if model.info.model.contains("claude-opus") {
                 usage.seven_day_opus.as_ref()
             } else if model.info.model.contains("claude-sonnet") {
@@ -700,9 +840,61 @@ fn credential_header(name: &str) -> bool {
 
 pub(crate) async fn restore_credentials(
     store: &AccountStore,
+    models: &IndexMap<String, ModelEntry>,
     config: &mut SamplerConfig,
 ) -> Result<()> {
     let Some(route) = AccountRoute::read(&config.extra_headers)? else {
+        return Ok(());
+    };
+    let Some(account_id) = route.credential_account() else {
+        let model = find_model_by_id(models, route.model())
+            .filter(|model| {
+                model.info.base_url == config.base_url && model.info.model == config.model
+            })
+            .ok_or_else(|| anyhow!("Worker model or endpoint changed"))?;
+        // Rehydrate only this catalog entry's credentials, including on a live
+        // reconstruction where the chat state supplies no trusted bearer.
+        let auth_header = |name: &str| {
+            name.eq_ignore_ascii_case("authorization") || name.eq_ignore_ascii_case("x-api-key")
+        };
+        config
+            .extra_headers
+            .retain(|name, _| !credential_header(name));
+        config.extra_headers.extend(
+            model
+                .info
+                .extra_headers
+                .iter()
+                .filter(|(name, _)| auth_header(name))
+                .map(|(k, v)| (k.clone(), v.clone())),
+        );
+        config.env_http_headers = model.info.env_http_headers.clone();
+        config
+            .env_http_headers
+            .retain(|name, _| !credential_header(name) || auth_header(name));
+        config.bearer_resolver = None;
+        config.attribution_callback = None;
+        config.auth_scheme = model.info.auth_scheme;
+        config.api_key = match model.effective_auth_provider() {
+            Some(provider) => provider.ensure_fresh_token(None).await.rotated(),
+            None => super::config::first_own_credential(
+                model.api_key.as_deref(),
+                model.env_key.as_ref(),
+            ),
+        };
+        ensure!(
+            config.api_key.is_some()
+                || config
+                    .extra_headers
+                    .iter()
+                    .any(|(name, value)| auth_header(name) && !value.trim().is_empty())
+                || config
+                    .env_http_headers
+                    .iter()
+                    .any(|(name, var)| auth_header(name)
+                        && std::env::var(var).is_ok_and(|v| !v.trim().is_empty())),
+            "Worker model has no usable credential"
+        );
         return Ok(());
     };
     let anchors: Vec<_> = config
@@ -716,9 +908,9 @@ pub(crate) async fn restore_credentials(
         })
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect();
-    let grok = grok_for_provider(store.get(&route.account_id)?.provider)?;
+    let grok = grok_for_provider(store.get(account_id)?.provider)?;
     store
-        .apply_credentials(&route.account_id, config, grok.as_ref())
+        .apply_credentials(account_id, config, grok.as_ref())
         .await?;
     ensure!(
         anchors

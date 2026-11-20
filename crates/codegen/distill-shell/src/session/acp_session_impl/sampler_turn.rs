@@ -1080,9 +1080,13 @@ impl SessionActor {
         };
         let store = crate::accounts::AccountStore::default();
         if selected_account
-            && crate::agent::account_routing::restore_credentials(&store, &mut restored)
-                .await
-                .is_err()
+            && crate::agent::account_routing::restore_credentials(
+                &store,
+                &self.models_manager.models(),
+                &mut restored,
+            )
+            .await
+            .is_err()
         {
             Box::pin(crate::agent::account_routing::reresolve_or_block(
                 &store,
@@ -2798,16 +2802,31 @@ impl SessionActor {
             .ok()
             .flatten()
             .map_or_else(Vec::new, |route| route.failed_options);
-        for mut route in routes {
+        let mut routes = routes.into_iter().peekable();
+        while let Some(mut route) = routes.next() {
+            let last_in_option = routes
+                .peek()
+                .is_none_or(|next| next.option_id != route.option_id);
             route.failed_options = failed_options.clone();
-            if !attempted.insert((route.account_id.clone(), route.model().to_owned())) {
+            let config = account_routing::config_for_route(&store, &models, &initial, &route).await;
+            // Record exhaustion for the following candidate only. A main account
+            // that failed credential admission has never received a request.
+            if last_in_option
+                && (route.worker || config.is_ok())
+                && let Some(id) = &route.option_id
+            {
+                failed_options.push(id.clone());
+            }
+            let Ok(config) = config else { continue };
+            let mut route = account_routing::AccountRoute::read(&config.extra_headers)
+                .map_err(|_| acp::Error::internal_error())?
+                .expect("configured route");
+            if !attempted.insert((
+                route.credential_account().map(str::to_owned),
+                route.model().to_owned(),
+            )) {
                 continue;
             }
-            let Ok(config) =
-                account_routing::config_for_route(&store, &models, &initial, &route).await
-            else {
-                continue;
-            };
             let previous = self.chat_state_handle.get_sampling_config().await;
             self.persist_account_config(&config).await.map_err(|_| {
                 acp::Error::internal_error().data("Could not persist selected account route")
@@ -2848,17 +2867,14 @@ impl SessionActor {
             {
                 Ok(outcome) => return Ok(outcome),
                 Err(info)
-                    if account_routing::quota_fallback_eligible(
-                        &info,
-                        store
-                            .get(&route.account_id)
-                            .map_err(|_| acp::Error::internal_error())?
-                            .provider,
-                    ) =>
+                    if info.should_retry != Some(false)
+                        && !is_revoked_sampling(&info)
+                        && (route.worker
+                            || account_routing::provider_for_url(&config.base_url)
+                                .is_some_and(|provider| {
+                                    account_routing::quota_fallback_eligible(&info, provider)
+                                })) =>
                 {
-                    if let Some(id) = route.option_id.as_ref() {
-                        failed_options.push(id.clone());
-                    }
                     route.failed_options = failed_options.clone();
                     let mut rejected = config.clone();
                     route
@@ -2871,7 +2887,8 @@ impl SessionActor {
                 }
                 // Same refused serving path as in `handle_sampling_failure_for_route`.
                 Err(info)
-                    if provider_tier_rejected(&info, &config)
+                    if info.should_retry != Some(false)
+                        && provider_tier_rejected(&info, &config)
                         && crate::extensions::session_ultracode::drop_rejected_provider_tier(
                             &self.session_info,
                         ) =>
@@ -3137,7 +3154,9 @@ impl SessionActor {
                     StreamDrainOutcome::Revoked
                 };
                 let mut final_info = error_after_stream_drain(outcome, original);
-                if collected.output_observed {
+                if collected.output_observed
+                    || matches!(&rich_err, distill_sampling_types::SamplingError::Auth { message, .. } if message == "request cancelled")
+                {
                     final_info.should_retry = Some(false);
                 }
                 self.remember_observed_route_context_cap(

@@ -95,6 +95,8 @@ pub struct AutoOption {
     pub main_model: String,
     #[serde(default)]
     pub worker_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_fallback_model: Option<String>,
 }
 impl AutoOption {
     pub fn worker_model(&self) -> &str {
@@ -520,7 +522,12 @@ impl AccountStore {
                 "Routing option references unknown account"
             );
             ensure!(
-                !option.main_model.trim().is_empty() && !option.worker_model().trim().is_empty(),
+                !option.main_model.trim().is_empty()
+                    && !option.worker_model().trim().is_empty()
+                    && option
+                        .worker_fallback_model
+                        .as_ref()
+                        .is_none_or(|id| !id.trim().is_empty()),
                 "Model names cannot be empty"
             );
         }
@@ -1014,12 +1021,14 @@ mod tests {
                     id: "route1".into(),
                     account_id: "one".into(),
                     main_model: "gpt-model".into(),
+                    worker_fallback_model: None,
                     worker_model: None,
                 },
                 AutoOption {
                     id: "route2".into(),
                     account_id: "two".into(),
                     main_model: "gpt-model".into(),
+                    worker_fallback_model: None,
                     worker_model: Some("gpt-worker".into()),
                 },
             ],
@@ -1508,6 +1517,7 @@ mod tests {
                                 id: "route".into(),
                                 account_id: "grok-one".into(),
                                 main_model: "grok-main".into(),
+                                worker_fallback_model: None,
                                 worker_model: None,
                             }],
                         })

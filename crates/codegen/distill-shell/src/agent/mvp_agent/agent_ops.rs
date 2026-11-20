@@ -7,7 +7,11 @@ use super::*;
 use crate::sampling::EffortTarget;
 /// The models an Auto route runs, as clients read them under `_meta.autoRoute`.
 pub(crate) fn auto_route_meta(route: &crate::agent::account_routing::AccountRoute) -> serde_json::Value {
-    serde_json::json!({ "mainModelId": route.main_model, "workerModelId": route.worker_model })
+    let mut meta = serde_json::json!({ "mainModelId": route.main_model, "workerModelId": route.worker_model });
+    if let Some(fallback) = &route.worker_fallback_model {
+        meta["workerFallbackModelId"] = serde_json::json!(fallback);
+    }
+    meta
 }
 use distill_login::PreferredAuthMethod;
 use crate::upload::trace::PromptMetadataParams;
@@ -4649,7 +4653,7 @@ impl MvpAgent {
                 .map_err(|error| crate::session::persistence::io_error_to_acp(&error))?;
         }
         let session_model_id = crate::agent::account_routing::AccountRoute::read(&sampling_config.extra_headers)
-            .ok().flatten().map(|route| acp::ModelId::new(route.main_model))
+            .ok().flatten().map(|route| acp::ModelId::new(route.model().to_owned()))
             .unwrap_or(session_model_id);
         let (auto_compact_threshold_percent, system_prompt_label) = {
             let cfg = self.cfg.borrow();

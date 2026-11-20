@@ -170,6 +170,7 @@ fn enabled_save_switches_to_auto_failure_keeps_model_and_disabled_save_does_not_
             id: "route".into(),
             account_id: "fixture".into(),
             main_model: "manual".into(),
+            worker_fallback_model: None,
             worker_model: None,
         }],
     };

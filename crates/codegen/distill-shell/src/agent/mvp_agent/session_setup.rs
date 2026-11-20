@@ -520,6 +520,10 @@ impl MvpAgent {
                 let models = self.models_manager.models();
                 config::find_model_by_id(&models, &option.main_model).is_none()
                     || config::find_model_by_id(&models, option.worker_model()).is_none()
+                    || option
+                        .worker_fallback_model
+                        .as_deref()
+                        .is_some_and(|id| config::find_model_by_id(&models, id).is_none())
             })
         {
             self.models_manager.refresh_chatgpt_models().await;

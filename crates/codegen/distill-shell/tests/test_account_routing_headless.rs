@@ -23,6 +23,7 @@ async fn headless_explicit_byok_model_admits_with_all_auto_accounts_disconnected
                 id: "offline".into(),
                 account_id: "offline".into(),
                 main_model: "gpt-6.1-sol".into(),
+                worker_fallback_model: None,
                 worker_model: None,
             }],
         })

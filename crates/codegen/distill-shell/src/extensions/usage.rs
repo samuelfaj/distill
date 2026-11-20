@@ -71,11 +71,14 @@ fn chatgpt_credential_path(
     );
     let route = AccountRoute::read(headers)?
         .ok_or_else(|| anyhow::anyhow!("session has no account route"))?;
+    let id = route
+        .credential_account()
+        .ok_or_else(|| anyhow::anyhow!("session uses model credentials"))?;
     anyhow::ensure!(
-        store.get(&route.account_id)?.provider == Provider::Chatgpt,
+        store.get(id)?.provider == Provider::Chatgpt,
         "account is not ChatGPT"
     );
-    store.credential_path(&route.account_id)
+    store.credential_path(id)
 }
 
 async fn handle_chatgpt_usage(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
@@ -199,6 +202,9 @@ mod tests {
             worker: false,
             pinned: true,
             operation_id: None,
+            worker_fallback_model: None,
+            using_worker_fallback: false,
+            worker_credential: Default::default(),
             failed_options: vec![],
         };
         let mut headers = indexmap::IndexMap::new();

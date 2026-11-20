@@ -1184,20 +1184,23 @@ async fn resolve_subagent_sampling_config(
         && route.option_id.is_some()
         && !route.pinned
     {
-        route.worker = true;
-        let config = crate::agent::account_routing::config_for_route(
+        let selected = crate::agent::account_routing::select_worker_config(
             &crate::accounts::AccountStore::default(),
             &ctx.available_models,
             &parent_config,
-            &route,
+            route.clone(),
         )
         .await;
-        match config {
-            Ok(config) => return (config, acp::ModelId::new(route.worker_model), None),
+        match selected {
+            Ok((config, id)) => return (config, acp::ModelId::new(id), None),
             Err(_) => {
-                let mut config = parent_config.clone();
+                let mut config = parent_config;
+                route.worker = true;
+                route
+                    .write(&mut config)
+                    .expect("serializable account route");
                 crate::agent::account_routing::block_credentials(&mut config);
-                return (config, parent_mid, None);
+                return (config, acp::ModelId::new(route.model().to_owned()), None);
             }
         }
     }
@@ -1408,9 +1411,13 @@ async fn read_parent_sampling_config(
                 .contains_key(crate::agent::account_routing::ROUTE_HEADER)
             {
                 let store = crate::accounts::AccountStore::default();
-                if crate::agent::account_routing::restore_credentials(&store, &mut inherited)
-                    .await
-                    .is_err()
+                if crate::agent::account_routing::restore_credentials(
+                    &store,
+                    &ctx.available_models,
+                    &mut inherited,
+                )
+                .await
+                .is_err()
                 {
                     Box::pin(crate::agent::account_routing::reresolve_or_block(
                         &store,

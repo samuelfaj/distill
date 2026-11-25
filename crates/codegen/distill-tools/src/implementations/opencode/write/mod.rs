@@ -5,6 +5,7 @@
 
 use crate::notification::types::FileWritten;
 
+use crate::types::file_read_state::{FileStamp, changed_since_seen, record_seen};
 use crate::types::output::{
     SearchReplaceEditContextInformation, SearchReplaceEditDetail, SearchReplaceEditsApplied,
     SearchReplaceOutput,
@@ -113,9 +114,21 @@ impl distill_tool_runtime::Tool for WriteTool {
         // Resolve the model-provided path.
         let path = resolve_model_path(&cwd, display_cwd.as_deref(), &input.file_path);
 
+        // Serialize with other mutations of this path for the whole check-and-write.
+        let _lock = crate::implementations::editor_infra::lock_paths(&resources, &[&path]).await;
+
         // ── Check if file exists and read old content ────────────
+        let stamp = FileStamp::capture(&path).await;
         let (mut existed, mut old_content) = match fs.read_file(&path).await {
-            Ok(bytes) => (true, Some(String::from_utf8_lossy(&bytes).into_owned())),
+            Ok(bytes) => {
+                if changed_since_seen(&resources, &path, &bytes, stamp).await {
+                    return Ok(SearchReplaceOutput::InvalidInput(format!(
+                        "Error: {} changed since you last read it (modified by another process or session), so it was not overwritten. Read it again, then rewrite it.",
+                        path.display()
+                    )));
+                }
+                (true, Some(String::from_utf8_lossy(&bytes).into_owned()))
+            }
             Err(_) => (false, None),
         };
         let is_memory_write = match crate::types::memory_v2::write_memory_v2_file(
@@ -162,6 +175,14 @@ impl distill_tool_runtime::Tool for WriteTool {
                     )
                 })?;
         }
+
+        record_seen(
+            &resources,
+            &path,
+            input.content.as_bytes(),
+            FileStamp::capture(&path).await,
+        )
+        .await;
 
         // ── Send FileWritten notification ────────────────────────
         notification_handle.send_file_written(FileWritten {
@@ -315,6 +336,110 @@ mod tests {
         assert!(matches!(result, SearchReplaceOutput::EditsApplied(_)));
         let content = std::fs::read_to_string(&nested).unwrap();
         assert_eq!(content, "nested\n");
+    }
+
+    // ── Stale-write protection ─────────────────────────────────
+
+    async fn run_write(
+        shared: &crate::types::resources::SharedResources,
+        path: &std::path::Path,
+        content: &str,
+    ) -> SearchReplaceOutput {
+        let input = WriteInput {
+            file_path: path.to_string_lossy().into_owned(),
+            content: content.to_string(),
+        };
+        distill_tool_runtime::Tool::run(&WriteTool, test_ctx(shared.clone()), input)
+            .await
+            .unwrap()
+    }
+
+    async fn mark_read(shared: &crate::types::resources::SharedResources, path: &std::path::Path) {
+        let stamp = FileStamp::capture(path).await;
+        let bytes = std::fs::read(path).unwrap();
+        record_seen(shared, path, &bytes, stamp).await;
+    }
+
+    #[tokio::test]
+    async fn overwrite_is_refused_when_file_changed_since_the_session_read_it() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("shared.txt");
+        std::fs::write(&file, "v1\n").unwrap();
+        let shared = test_resources(tmp.path()).into_shared();
+        mark_read(&shared, &file).await;
+
+        std::fs::write(&file, "edited by another agent\n").unwrap();
+        match run_write(&shared, &file, "mine\n").await {
+            SearchReplaceOutput::InvalidInput(msg) => {
+                assert!(msg.contains("changed since you last read it"), "{msg}");
+                assert!(msg.contains("Read it again"), "{msg}");
+            }
+            other => panic!("expected refusal, got {other:?}"),
+        }
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "edited by another agent\n",
+            "the other agent's work must survive"
+        );
+    }
+
+    #[tokio::test]
+    async fn overwrite_succeeds_when_file_is_unchanged_since_read() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("same.txt");
+        std::fs::write(&file, "v1\n").unwrap();
+        let shared = test_resources(tmp.path()).into_shared();
+        mark_read(&shared, &file).await;
+
+        let out = run_write(&shared, &file, "v2\n").await;
+        assert!(
+            matches!(out, SearchReplaceOutput::EditsApplied(_)),
+            "{out:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "v2\n");
+    }
+
+    #[tokio::test]
+    async fn own_write_counts_as_seen_but_a_later_outside_change_is_refused() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("own.txt");
+        let shared = test_resources(tmp.path()).into_shared();
+
+        // New file, then rewrite without any read in between: both are the session's own writes.
+        assert!(matches!(
+            run_write(&shared, &file, "one\n").await,
+            SearchReplaceOutput::EditsApplied(_)
+        ));
+        assert!(matches!(
+            run_write(&shared, &file, "two\n").await,
+            SearchReplaceOutput::EditsApplied(_)
+        ));
+
+        std::fs::write(&file, "outside change\n").unwrap();
+        assert!(matches!(
+            run_write(&shared, &file, "three\n").await,
+            SearchReplaceOutput::InvalidInput(_)
+        ));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "outside change\n");
+    }
+
+    #[tokio::test]
+    async fn concurrent_writes_to_one_path_wait_for_the_path_lock() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("locked.txt");
+        let shared = test_resources(tmp.path()).into_shared();
+
+        let held = crate::implementations::editor_infra::lock_paths(&shared, &[&file]).await;
+        let (shared2, file2) = (shared.clone(), file.clone());
+        let write = tokio::spawn(async move { run_write(&shared2, &file2, "late\n").await });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(!write.is_finished(), "write must wait for the held lock");
+        assert!(!file.exists());
+
+        drop(held);
+        let out = write.await.unwrap();
+        assert!(matches!(out, SearchReplaceOutput::EditsApplied(_)));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "late\n");
     }
 
     // ── Tool metadata ──────────────────────────────────────────

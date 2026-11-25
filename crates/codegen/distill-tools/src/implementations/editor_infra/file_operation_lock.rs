@@ -155,38 +155,55 @@ impl LockInner {
     /// Process the wait queue, granting locks to eligible waiters. If a waiter's receiver has been
     /// dropped (task cancelled), the send will fail. In that case, we undo the lock grant and
     /// continue to the next waiter. This prevents phantom locks from cancelled tool calls.
+    ///
+    /// A waiter whose path is still locked does not hold back waiters for other free paths: a caller that holds one path while waiting
+    /// for a second (multi-file patch) would otherwise deadlock behind a queued waiter for the first. Waiters for the same path stay
+    /// FIFO, and nothing is granted past a queued exclusive waiter.
     fn process_queue(&mut self) {
-        while let Some(front) = self.wait_queue.front() {
-            match front {
+        let mut blocked_paths: HashSet<String> = HashSet::new();
+        let mut exclusive_ahead = false;
+        let mut i = 0;
+        while let Some(waiter) = self.wait_queue.get(i) {
+            let grantable = match waiter {
                 QueuedWaiter::Exclusive { .. } => {
-                    if !self.locked_files.is_empty() || self.exclusive_lock_active {
-                        break;
+                    i == 0 && self.locked_files.is_empty() && !self.exclusive_lock_active
+                }
+                QueuedWaiter::File { path, .. } => {
+                    !self.exclusive_lock_active
+                        && !exclusive_ahead
+                        && !self.locked_files.contains(path)
+                        && !blocked_paths.contains(path)
+                }
+            };
+            if !grantable {
+                match waiter {
+                    QueuedWaiter::File { path, .. } => {
+                        blocked_paths.insert(path.clone());
                     }
-                    if let Some(QueuedWaiter::Exclusive { tx }) = self.wait_queue.pop_front() {
-                        self.exclusive_lock_active = true;
-                        if tx.send(()).is_err() {
-                            // Receiver dropped (cancelled) — undo the grant.
-                            self.exclusive_lock_active = false;
-                            continue;
-                        }
+                    QueuedWaiter::Exclusive { .. } => exclusive_ahead = true,
+                }
+                i += 1;
+                continue;
+            }
+            match self.wait_queue.remove(i) {
+                Some(QueuedWaiter::Exclusive { tx }) => {
+                    self.exclusive_lock_active = true;
+                    if tx.send(()).is_err() {
+                        // Receiver dropped (cancelled) — undo the grant.
+                        self.exclusive_lock_active = false;
+                        continue;
                     }
                     // Exclusive lock granted — stop processing.
                     break;
                 }
-                QueuedWaiter::File { path, .. } => {
-                    if self.exclusive_lock_active || self.locked_files.contains(path) {
-                        break;
-                    }
-                    let path = path.clone();
-                    if let Some(QueuedWaiter::File { tx, .. }) = self.wait_queue.pop_front() {
-                        self.locked_files.insert(path.clone());
-                        if tx.send(()).is_err() {
-                            // Receiver dropped (cancelled) — undo the grant.
-                            self.locked_files.remove(&path);
-                            continue;
-                        }
+                Some(QueuedWaiter::File { path, tx }) => {
+                    self.locked_files.insert(path.clone());
+                    if tx.send(()).is_err() {
+                        // Receiver dropped (cancelled) — undo the grant.
+                        self.locked_files.remove(&path);
                     }
                 }
+                None => break,
             }
         }
     }
@@ -258,5 +275,51 @@ mod tests {
         drop(exclusive);
         handle.await.unwrap();
         assert!(*acquired.lock().await);
+    }
+
+    #[tokio::test]
+    async fn waiter_for_a_free_path_is_not_stuck_behind_a_blocked_one() {
+        let mgr = FileOperationLockManager::new();
+        let guard_a = mgr.wait_for_lock("a.ts").await;
+        let guard_b = mgr.wait_for_lock("b.ts").await;
+
+        let mgr_a = mgr.clone();
+        let wait_a = tokio::spawn(async move { mgr_a.wait_for_lock("a.ts").await });
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        let mgr_b = mgr.clone();
+        let wait_b = tokio::spawn(async move { mgr_b.wait_for_lock("b.ts").await });
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+
+        // Releasing b must wake its waiter even though an older waiter for a is still blocked.
+        drop(guard_b);
+        let granted = tokio::time::timeout(std::time::Duration::from_millis(500), wait_b).await;
+        assert!(granted.is_ok(), "waiter for the freed path stayed blocked");
+        drop(guard_a);
+        wait_a.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn lock_paths_serializes_two_spellings_of_one_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join("sub")).unwrap();
+        let file = tmp.path().join("f.txt");
+        std::fs::write(&file, "x").unwrap();
+        let alias = tmp.path().join("sub/../f.txt");
+        let resources = crate::types::resources::Resources::new().into_shared();
+
+        let held = super::super::lock_paths(&resources, &[file.as_path()]).await;
+        let res2 = resources.clone();
+        let second = tokio::spawn(async move {
+            super::super::lock_paths(&res2, &[alias.as_path()])
+                .await
+                .len()
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            !second.is_finished(),
+            "alias path must wait for the first lock"
+        );
+        drop(held);
+        assert_eq!(second.await.unwrap(), 1);
     }
 }

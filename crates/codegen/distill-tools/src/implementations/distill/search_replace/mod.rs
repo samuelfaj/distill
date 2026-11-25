@@ -15,6 +15,9 @@
 pub(crate) mod helpers;
 mod versions;
 use crate::notification::types::FileWritten;
+use crate::types::file_read_state::{
+    CHANGED_OUTSIDE_NOTE, FileStamp, changed_since_seen, record_seen,
+};
 use crate::types::output::{
     SearchReplaceEditContextInformation, SearchReplaceEditDetail, SearchReplaceEditsApplied,
     SearchReplaceOutput,
@@ -212,6 +215,7 @@ pub(crate) async fn run_search_replace(
             .map(|p| p.0.include_user_edit_hint)
             .unwrap_or(true);
     }
+    let _lock = crate::implementations::editor_infra::lock_paths(&resources, &[&path]).await;
     let result = if input.old_string.is_empty() {
         handle_new_file_creation(
             &input,
@@ -296,13 +300,15 @@ async fn handle_new_file_creation(
     hints_enabled: bool,
     empty_old_string_does_not_override: bool,
 ) -> Result<SearchReplaceOutput, distill_tool_runtime::ToolError> {
-    let file_exists = match fs.read_file(path).await {
-        Ok(bytes) => !bytes.is_empty(),
-        Err(_) => false,
-    };
-    let old_text = match fs.read_file(path).await {
-        Ok(bytes) => Some(String::from_utf8_lossy(&bytes).to_string()),
-        Err(_) => None,
+    let stamp = FileStamp::capture(path).await;
+    let existing = fs.read_file(path).await.ok();
+    let file_exists = existing.as_ref().is_some_and(|bytes| !bytes.is_empty());
+    let old_text = existing
+        .as_ref()
+        .map(|bytes| String::from_utf8_lossy(bytes).to_string());
+    let changed_outside = match &existing {
+        Some(bytes) => changed_since_seen(&resources, path, bytes, stamp).await,
+        None => false,
     };
     if file_exists && empty_old_string_does_not_override {
         let old_string_name;
@@ -380,11 +386,28 @@ async fn handle_new_file_creation(
             is_new_file: true,
         });
     }
+    if !is_memory_write {
+        record_seen(
+            &resources,
+            path,
+            input.new_string.as_bytes(),
+            FileStamp::capture(path).await,
+        )
+        .await;
+    }
+    let outside_note = if changed_outside {
+        CHANGED_OUTSIDE_NOTE
+    } else {
+        ""
+    };
     let tool_output_for_prompt = format!(
-        "The file {} has been created successfully.",
+        "The file {} has been created successfully.{outside_note}",
         &input.file_path
     );
-    let tool_output_for_prompt_concise = format!("The file {} has been created.", &input.file_path);
+    let tool_output_for_prompt_concise = format!(
+        "The file {} has been created.{outside_note}",
+        &input.file_path
+    );
     let edits = vec![SearchReplaceEditDetail {
         old_string: input.old_string.clone(),
         old_line: 1,
@@ -527,6 +550,7 @@ async fn handle_replacement(
     is_legacy: bool,
     include_user_edit_hint: bool,
 ) -> Result<SearchReplaceOutput, distill_tool_runtime::ToolError> {
+    let stamp = FileStamp::capture(path).await;
     let bytes = match fs.read_file(path).await {
         Ok(bytes) => bytes,
         Err(e) => {
@@ -566,6 +590,7 @@ async fn handle_replacement(
             return Ok(output);
         }
     };
+    let changed_outside = changed_since_seen(&resources, path, &bytes, stamp).await;
     let old_text = String::from_utf8_lossy(&bytes).into_owned();
     let has_crlf = old_text.contains("\r\n");
     let match_text: std::borrow::Cow<'_, str> = if has_crlf {
@@ -734,6 +759,15 @@ async fn handle_replacement(
             )),
         });
     }
+    if !is_memory_write {
+        record_seen(
+            &resources,
+            path,
+            write_text.as_bytes(),
+            FileStamp::capture(path).await,
+        )
+        .await;
+    }
     notification_handle.send_file_written(FileWritten {
         tool_call_id: tool_call_id.to_string(),
         absolute_path: path.to_path_buf(),
@@ -748,6 +782,11 @@ async fn handle_replacement(
         &new_positions,
         CONTEXT_LINES,
     );
+    let outside_note = if changed_outside {
+        CHANGED_OUTSIDE_NOTE
+    } else {
+        ""
+    };
     let (tool_output_for_prompt, tool_output_for_prompt_concise) = if new_positions.len() == 1 {
         let default_msg = format!(
             "The file {} has been updated successfully.",
@@ -766,6 +805,8 @@ async fn handle_replacement(
         );
         (default_msg, concise_msg)
     };
+    let tool_output_for_prompt = format!("{tool_output_for_prompt}{outside_note}");
+    let tool_output_for_prompt_concise = format!("{tool_output_for_prompt_concise}{outside_note}");
     Ok(SearchReplaceOutput::EditsApplied(
         SearchReplaceEditsApplied {
             old_string: input.old_string.clone(),
@@ -1023,6 +1064,95 @@ mod tests {
             }
             other => panic!("Expected EditsApplied, got {:?}", other),
         }
+    }
+    async fn run_edit(
+        shared: &crate::types::resources::SharedResources,
+        input: SearchReplaceInput,
+    ) -> SearchReplaceOutput {
+        distill_tool_runtime::Tool::run(&SearchReplaceTool, test_ctx(shared.clone()), input)
+            .await
+            .unwrap()
+    }
+    async fn mark_read(shared: &crate::types::resources::SharedResources, path: &std::path::Path) {
+        let stamp = FileStamp::capture(path).await;
+        let bytes = std::fs::read(path).unwrap();
+        record_seen(shared, path, &bytes, stamp).await;
+    }
+    /// A unique match still applies after an outside change, and the result says the file moved under the session.
+    #[tokio::test]
+    async fn edit_after_outside_change_applies_and_appends_a_note() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("t.txt");
+        std::fs::write(&file, "alpha\nbeta\n").unwrap();
+        let shared = test_resources(tmp.path()).into_shared();
+        mark_read(&shared, &file).await;
+
+        std::fs::write(&file, "alpha\nbeta\ngamma added elsewhere\n").unwrap();
+        match run_edit(&shared, make_input("t.txt", "alpha", "ALPHA")).await {
+            SearchReplaceOutput::EditsApplied(applied) => {
+                assert!(
+                    applied
+                        .tool_output_for_prompt
+                        .contains("changed outside this session"),
+                    "{}",
+                    applied.tool_output_for_prompt
+                );
+                assert!(
+                    applied
+                        .tool_output_for_prompt_concise
+                        .as_deref()
+                        .is_some_and(|c| c.contains("changed outside this session"))
+                );
+            }
+            other => panic!("Expected EditsApplied, got {other:?}"),
+        }
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "ALPHA\nbeta\ngamma added elsewhere\n"
+        );
+        // The session now knows the new content, so the next edit carries no note.
+        match run_edit(&shared, make_input("t.txt", "beta", "BETA")).await {
+            SearchReplaceOutput::EditsApplied(applied) => {
+                assert!(!applied.tool_output_for_prompt.contains("changed outside"));
+            }
+            other => panic!("Expected EditsApplied, got {other:?}"),
+        }
+    }
+    #[tokio::test]
+    async fn edit_without_outside_change_has_no_note() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("t.txt");
+        std::fs::write(&file, "alpha\n").unwrap();
+        let shared = test_resources(tmp.path()).into_shared();
+        mark_read(&shared, &file).await;
+        match run_edit(&shared, make_input("t.txt", "alpha", "ALPHA")).await {
+            SearchReplaceOutput::EditsApplied(applied) => {
+                assert!(!applied.tool_output_for_prompt.contains("changed outside"));
+            }
+            other => panic!("Expected EditsApplied, got {other:?}"),
+        }
+    }
+    #[tokio::test]
+    async fn edit_waits_for_the_path_lock() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("t.txt");
+        std::fs::write(&file, "alpha\n").unwrap();
+        let shared = test_resources(tmp.path()).into_shared();
+
+        let held = crate::implementations::editor_infra::lock_paths(&shared, &[&file]).await;
+        let shared2 = shared.clone();
+        let edit =
+            tokio::spawn(
+                async move { run_edit(&shared2, make_input("t.txt", "alpha", "ALPHA")).await },
+            );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(!edit.is_finished(), "edit must wait for the held lock");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "alpha\n");
+        drop(held);
+        assert!(matches!(
+            edit.await.unwrap(),
+            SearchReplaceOutput::EditsApplied(_)
+        ));
     }
     #[tokio::test]
     async fn new_file_creation() {

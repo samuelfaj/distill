@@ -112,19 +112,6 @@ pub fn register(session: ActiveSession) -> io::Result<()> {
     register_in(&distill_config::distill_home(), session)
 }
 
-/// Apply `update` to the entry for `session_id`; `Ok(false)` when it is not registered.
-pub fn update(
-    session_id: &acp::SessionId,
-    update: impl FnOnce(&mut ActiveSession),
-) -> io::Result<bool> {
-    update_in(&distill_config::distill_home(), session_id, update)
-}
-
-/// Entries that are alive and fresh (see [`ActiveSession::is_live`]).
-pub fn list_live() -> io::Result<Vec<ActiveSession>> {
-    list_live_in(&distill_config::distill_home(), Utc::now())
-}
-
 /// Non-blocking unregister for signal handlers.
 /// Returns `Ok(false)` on lock contention; the orphan is cleaned up by `collect_crashed` next launch.
 pub fn try_unregister(session_id: &acp::SessionId) -> io::Result<bool> {
@@ -165,6 +152,7 @@ pub fn update_in(
     })
 }
 
+/// Entries that are alive and fresh (see [`ActiveSession::is_live`]).
 pub fn list_live_in(root: &Path, now: DateTime<Utc>) -> io::Result<Vec<ActiveSession>> {
     let mut sessions = list_in(root)?;
     sessions.retain(|s| s.is_live(now));

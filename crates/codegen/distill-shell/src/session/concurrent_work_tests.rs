@@ -83,6 +83,14 @@ fn reminder_is_off_when_maccode_hosts_the_session() {
 }
 
 #[test]
+fn host_env_marks_the_session_as_hosted_only_when_non_empty() {
+    assert!(is_hosted(Some("/tmp/app.sock".into())));
+    assert!(!is_hosted(Some("".into())));
+    assert!(!is_hosted(None));
+    assert_eq!(MACCODE_HOST_ENV, "RC_REMOTE_CODE_AGENT_APP_SOCKET_PATH");
+}
+
+#[test]
 fn reminder_ignores_stale_heartbeats() {
     let dir = TempDir::new().unwrap();
     let me = roster_in(dir.path(), "me", Some(REPO));
@@ -172,6 +180,24 @@ fn edit_writes_are_throttled_to_one_per_interval_with_a_trailing_flush() {
         r.note_edits(vec!["/d".into()], t0 + Duration::from_secs(5)),
         EditDecision::FlushNow(vec!["/c".into(), "/b".into(), "/d".into()])
     );
+}
+
+#[test]
+fn tool_calls_without_edits_still_heartbeat_but_never_queue_a_trailing_flush() {
+    let dir = TempDir::new().unwrap();
+    let r = roster_in(dir.path(), "me", Some(REPO));
+    let t0 = Instant::now();
+    assert_eq!(r.note_edits(vec![], t0), EditDecision::FlushNow(vec![]));
+    assert_eq!(
+        r.note_edits(vec![], t0 + Duration::from_secs(1)),
+        EditDecision::Queued
+    );
+    assert!(!r.throttle.lock().trailing_scheduled);
+    r.write_edits(&[], Utc::now()).unwrap();
+    let entry = distill_active_sessions::list_in(dir.path())
+        .unwrap()
+        .remove(0);
+    assert!(entry.heartbeat_at.is_some());
 }
 
 #[test]

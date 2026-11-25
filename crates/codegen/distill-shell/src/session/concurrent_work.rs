@@ -27,8 +27,13 @@ const MAX_FILES_SHOWN: usize = 10;
 static ROSTERS: LazyLock<Mutex<HashMap<String, Arc<Roster>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-pub(crate) fn hosted_by_maccode() -> bool {
-    std::env::var_os(MACCODE_HOST_ENV).is_some_and(|v| !v.is_empty())
+fn is_hosted(value: Option<std::ffi::OsString>) -> bool {
+    value.is_some_and(|v| !v.is_empty())
+}
+
+/// Tests run unhosted whatever the developer's shell exports.
+fn hosted_by_maccode() -> bool {
+    !cfg!(test) && is_hosted(std::env::var_os(MACCODE_HOST_ENV))
 }
 
 #[derive(Default)]
@@ -152,7 +157,7 @@ impl Roster {
             t.last_flush = Some(now);
             return EditDecision::FlushNow(std::mem::take(&mut t.pending));
         }
-        if t.trailing_scheduled {
+        if t.trailing_scheduled || t.pending.is_empty() {
             EditDecision::Queued
         } else {
             t.trailing_scheduled = true;
@@ -282,6 +287,28 @@ fn render_reminder(peers: &[ActiveSession], now: DateTime<Utc>, cwd: &Path) -> O
     Some(out)
 }
 
+/// Installs a roster over `root` for the session, as `register_session` does for the real registry.
+#[cfg(test)]
+pub(crate) fn install_for_test(
+    root: &Path,
+    session_id: &acp::SessionId,
+    cwd: &Path,
+    repo_root: &str,
+) -> RosterGuard {
+    let roster = Arc::new(Roster::new(
+        root.to_path_buf(),
+        session_id.clone(),
+        cwd,
+        Some(repo_root.to_owned()),
+        Some("main".into()),
+    ));
+    distill_active_sessions::register_in(root, roster.base.clone()).unwrap();
+    ROSTERS
+        .lock()
+        .insert(session_id.0.to_string(), roster.clone());
+    RosterGuard(roster)
+}
+
 fn lookup(session_id: &acp::SessionId) -> Option<Arc<Roster>> {
     ROSTERS.lock().get(session_id.0.as_ref()).cloned()
 }
@@ -318,9 +345,6 @@ pub(crate) async fn register_session(
 }
 
 fn spawn_flush(roster: Arc<Roster>, files: Vec<String>) {
-    if files.is_empty() {
-        return;
-    }
     tokio::task::spawn_blocking(move || {
         if let Err(e) = roster.write_edits(&files, Utc::now()) {
             tracing::warn!(error = %e, "concurrent work: failed to record edited files");
@@ -329,10 +353,8 @@ fn spawn_flush(roster: Arc<Roster>, files: Vec<String>) {
 }
 
 /// Records edited files for the session, writing the registry at most once per interval.
+/// An empty `paths` is a plain heartbeat, so a long turn without edits does not age out.
 pub(crate) fn note_edits(session_id: &acp::SessionId, paths: Vec<String>) {
-    if paths.is_empty() {
-        return;
-    }
     let Some(roster) = lookup(session_id) else {
         return;
     };
@@ -342,7 +364,9 @@ pub(crate) fn note_edits(session_id: &acp::SessionId, paths: Vec<String>) {
             tokio::spawn(async move {
                 tokio::time::sleep(EDIT_FLUSH_INTERVAL).await;
                 let files = roster.take_pending(Instant::now());
-                spawn_flush(roster, files);
+                if !files.is_empty() {
+                    spawn_flush(roster, files);
+                }
             });
         }
         EditDecision::Queued => {}

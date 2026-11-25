@@ -434,6 +434,15 @@ pub(super) async fn run_session(
     index_root: std::path::PathBuf,
     fs_watch_caps: fs_watch::FsWatchCapabilities,
 ) {
+    let _roster = if session.startup_hints.is_subagent {
+        None
+    } else {
+        crate::session::concurrent_work::register_session(
+            &session.session_info.id,
+            std::path::Path::new(session.session_info.cwd.as_str()),
+        )
+        .await
+    };
     let (completion_tx, mut completion_rx) =
         mpsc::unbounded_channel::<super::turn_task::TurnCompletionMsg>();
     let mut turn_end_queue = super::turn_end_hooks::TurnEndQueue::spawn(session.clone());

@@ -4418,6 +4418,7 @@ dependencies = [
  "dashmap",
  "dhat",
  "distill-acp-lib",
+ "distill-active-sessions",
  "distill-agent",
  "distill-agent-lifecycle",
  "distill-announcements",

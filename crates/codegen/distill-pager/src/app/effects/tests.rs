@@ -1024,12 +1024,7 @@ fn register_session_in(root: &std::path::Path, id: &str) -> acp::SessionId {
     let session_id = acp::SessionId::new(id);
     register_in(
             root,
-            ActiveSession {
-                session_id: session_id.clone(),
-                pid: std::process::id(),
-                cwd: "/tmp/test".into(),
-                opened_at: chrono::Utc::now(),
-            },
+            ActiveSession::new(session_id.clone(), std::process::id(), "/tmp/test".into()),
         )
         .expect("register");
     session_id

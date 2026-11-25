@@ -1063,6 +1063,22 @@ impl SessionActor {
             crate::session::fork_status::release_claim(&session_dir);
         }
     }
+    /// Refreshes this session's roster entry and tells the model which other sessions work in the same repo.
+    pub(super) async fn inject_concurrent_work_reminder(&self, prompt: Option<&str>) {
+        if self.startup_hints.is_subagent {
+            return;
+        }
+        let text = crate::session::concurrent_work::turn_start(&self.session_info.id, prompt).await;
+        // Autonomous turns only refresh the heartbeat; the reminder is for user turns.
+        let (Some(text), Some(_)) = (text, prompt) else {
+            return;
+        };
+        self.chat_state_handle
+            .push_user_message(wrap_untrusted_in_reminder_tag(
+                &text,
+                crate::session::concurrent_work::REMINDER_TAG,
+            ));
+    }
     pub(super) fn inject_resumed_tasks_reminder(&self) {
         let session_dir = crate::session::persistence::session_dir(&self.session_info);
         let snapshot = crate::session::resume_status::load_and_clear(&session_dir);

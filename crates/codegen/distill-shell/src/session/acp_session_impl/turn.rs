@@ -1250,6 +1250,13 @@ impl SessionActor {
             self.maybe_inject_mcp_reminder().await;
             self.maybe_inject_date_rollover_reminder().await;
             self.inject_plan_mode_reminders().await;
+            self.inject_concurrent_work_reminder(
+                policy
+                    .authority
+                    .is_human_intent()
+                    .then_some(user_message.as_str()),
+            )
+            .await;
             // A scheduled prompt is a new request too.
             if policy.authority.is_human_intent()
                 || self.startup_hints.is_subagent

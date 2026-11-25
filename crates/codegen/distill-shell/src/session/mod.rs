@@ -1,5 +1,6 @@
 // Modified for Distill by Samuel Fajreldines, 2026.
 pub mod acp_types;
+pub(crate) mod concurrent_work;
 pub mod announcement_state;
 pub(crate) mod auto_mode;
 pub mod commands;

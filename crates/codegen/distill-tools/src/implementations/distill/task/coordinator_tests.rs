@@ -4183,6 +4183,7 @@ fn ultracode_request(id: &str) -> SubagentRequest {
         max_depth: 2,
         off_max_depth: 1,
         v2: Default::default(),
+        explicit_nesting_ceiling: None,
         capability_ceiling: None,
         allowed_subagent_types: None,
     });
@@ -4341,6 +4342,126 @@ async fn ultracode_nested_depth_and_root_prompt_are_preserved_and_cancelled_as_o
     assert!(third.await.unwrap().unwrap().cancelled);
     assert!(nested.await.unwrap().unwrap().cancelled);
     assert!(outer.await.unwrap().unwrap().cancelled);
+    harness.actor.abort();
+}
+
+/// Normal mode with the default one-level ceiling.
+fn one_level_normal_policy() -> ExecutionPolicy {
+    ExecutionPolicy {
+        mode: std::sync::Arc::new(distill_tool_types::AtomicExecutionMode::new(
+            distill_tool_types::ExecutionMode::Normal,
+        )),
+        max_depth: 1,
+        off_max_depth: 1,
+        v2: Default::default(),
+        explicit_nesting_ceiling: None,
+        capability_ceiling: None,
+        allowed_subagent_types: None,
+    }
+}
+
+#[tokio::test]
+async fn explicit_parallel_request_admits_one_nested_level_on_a_one_level_ceiling() {
+    let mut harness = harness(false, std::time::Duration::from_secs(60));
+    let mut outer = request("outer", true);
+    outer.runtime_overrides.execution_policy = Some(one_level_normal_policy());
+    outer.runtime_overrides.explicit_parallel_request = true;
+    let outer_task = tokio::spawn({
+        let backend = harness.backend.clone();
+        async move { backend.spawn(outer, None).await }
+    });
+    harness.requests.recv().await.expect("outer observed");
+    harness.started.recv().await.expect("outer active");
+    let child_backend = session_backend(&harness, "outer");
+    let mut nested = request("nested", true);
+    nested.runtime_overrides.execution_policy = Some(one_level_normal_policy());
+    let nested_task = tokio::spawn({
+        let backend = child_backend.clone();
+        async move { backend.spawn(nested, None).await }
+    });
+    let admitted = tokio::time::timeout(std::time::Duration::from_secs(5), harness.requests.recv())
+        .await
+        .expect("explicit request must admit the grandchild")
+        .expect("grandchild request observed");
+    assert_eq!(admitted.runtime_overrides.spawn_depth, Some(2));
+    assert_eq!(admitted.parent_session_id, "parent");
+    harness.started.recv().await.expect("nested active");
+    let _ = harness.backend.cancel("outer").await;
+    assert!(outer_task.await.unwrap().unwrap().cancelled);
+    nested_task.abort();
+    harness.actor.abort();
+}
+
+/// UltraFast/UltraSave on their `today` row: one level below the root.
+fn one_level_mode_policy(mode: distill_tool_types::ExecutionMode) -> ExecutionPolicy {
+    ExecutionPolicy {
+        mode: std::sync::Arc::new(distill_tool_types::AtomicExecutionMode::new(mode)),
+        max_depth: 1,
+        off_max_depth: 1,
+        v2: Default::default(),
+        explicit_nesting_ceiling: None,
+        capability_ceiling: None,
+        allowed_subagent_types: None,
+    }
+}
+
+#[tokio::test]
+async fn explicit_parallel_request_admits_one_nested_level_in_a_one_level_mode() {
+    let mut harness = harness(false, std::time::Duration::from_secs(60));
+    let mut outer = request("outer", true);
+    outer.runtime_overrides.execution_policy = Some(one_level_mode_policy(
+        distill_tool_types::ExecutionMode::Ultrafast,
+    ));
+    outer.runtime_overrides.explicit_parallel_request = true;
+    let outer_task = tokio::spawn({
+        let backend = harness.backend.clone();
+        async move { backend.spawn(outer, None).await }
+    });
+    harness.requests.recv().await.expect("outer observed");
+    harness.started.recv().await.expect("outer active");
+    let child_backend = session_backend(&harness, "outer");
+    let mut nested = request("nested", true);
+    nested.runtime_overrides.execution_policy = Some(one_level_mode_policy(
+        distill_tool_types::ExecutionMode::Ultrafast,
+    ));
+    let nested_task = tokio::spawn({
+        let backend = child_backend.clone();
+        async move { backend.spawn(nested, None).await }
+    });
+    let admitted = tokio::time::timeout(std::time::Duration::from_secs(5), harness.requests.recv())
+        .await
+        .expect("an explicit ask must admit the grandchild in a one-level mode")
+        .expect("grandchild request observed");
+    assert_eq!(admitted.runtime_overrides.spawn_depth, Some(2));
+    harness.started.recv().await.expect("nested active");
+    let _ = harness.backend.cancel("outer").await;
+    assert!(outer_task.await.unwrap().unwrap().cancelled);
+    nested_task.abort();
+    harness.actor.abort();
+}
+
+#[tokio::test]
+async fn nested_spawn_without_an_explicit_request_keeps_the_one_level_ceiling() {
+    let mut harness = harness(false, std::time::Duration::from_secs(60));
+    let mut outer = request("outer", true);
+    outer.runtime_overrides.execution_policy = Some(one_level_normal_policy());
+    let outer_task = tokio::spawn({
+        let backend = harness.backend.clone();
+        async move { backend.spawn(outer, None).await }
+    });
+    harness.requests.recv().await.expect("outer observed");
+    harness.started.recv().await.expect("outer active");
+    let child_backend = session_backend(&harness, "outer");
+    let mut nested = request("nested", true);
+    nested.runtime_overrides.execution_policy = Some(one_level_normal_policy());
+    let refused = match child_backend.spawn(nested, None).await {
+        Ok(result) => result.error.unwrap_or_default(),
+        Err(error) => error.to_string(),
+    };
+    assert!(refused.contains("depth limit"), "refusal: {refused}");
+    assert!(harness.requests.try_recv().is_err());
+    let _ = harness.backend.cancel("outer").await;
+    assert!(outer_task.await.unwrap().unwrap().cancelled);
     harness.actor.abort();
 }
 

@@ -169,6 +169,7 @@ async fn ultracode_child_gets_delegation_sentences_only_below_the_depth_ceiling(
                     max_depth,
                     off_max_depth: 1,
                     v2: Default::default(),
+                    explicit_nesting_ceiling: None,
                     capability_ceiling: None,
                     allowed_subagent_types: None,
                 });
@@ -628,6 +629,7 @@ async fn execution_policy_survives_agent_rebuild_and_shared_off() {
                 max_depth: 2,
                 off_max_depth: 1,
                 v2: Default::default(),
+                explicit_nesting_ceiling: None,
                 capability_ceiling: None,
                 allowed_subagent_types: None,
             });

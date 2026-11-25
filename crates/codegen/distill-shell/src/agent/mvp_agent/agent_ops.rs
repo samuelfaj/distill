@@ -4487,6 +4487,7 @@ impl MvpAgent {
                 max_depth: self.cfg.borrow().subagents_ultracode_max_depth,
                 off_max_depth: self.cfg.borrow().subagents_max_depth,
                 v2: crate::session::acp_session::mode_policy::v2_modes(),
+                explicit_nesting_ceiling: None,
                 capability_ceiling: None,
                 allowed_subagent_types: None,
             },

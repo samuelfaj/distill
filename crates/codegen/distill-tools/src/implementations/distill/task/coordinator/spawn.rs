@@ -233,7 +233,14 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
                 ));
             }
             let depth = self.graph.depth(&spawner.request.id).unwrap_or(u32::MAX);
-            let max_depth = policy.effective_max_depth();
+            let mut max_depth = policy.effective_max_depth();
+            // An explicit user ask for subagents admits one level below the
+            // spawner; the mode's own cap and physical leaves still apply.
+            if spawner.request.runtime_overrides.explicit_parallel_request
+                && policy.explicit_request_can_nest()
+            {
+                max_depth = max_depth.max(depth.saturating_add(1));
+            }
             if depth >= max_depth {
                 return Err(rejected_spawn_result(
                     &request.id,

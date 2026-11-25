@@ -1686,9 +1686,14 @@ fn effort_execution_policy(mode: distill_tool_types::ExecutionMode) -> &'static 
 fn provider_effort_note(model_id: &str) -> Option<&'static str> {
     let id = model_id.to_ascii_lowercase();
     let has = |needles: &[&str]| needles.iter().any(|needle| id.contains(needle));
-    if has(&["claude", "opus", "sonnet", "haiku", "fable", "mythos"]) {
+    // Top-level gains from the Artificial Analysis Intelligence Index, 25 Nov 2026.
+    if has(&["fable"]) {
         Some(
-            "Anthropic: effort covers thinking, text and tool calls; lower effort makes fewer, terser tool calls. Anthropic recommends low for simple fast steps and subagents, medium for most agentic coding on smaller models, high or xhigh for hard coding; max is rarely worth its cost.",
+            "Anthropic Fable: effort covers thinking, text and tool calls; lower effort makes fewer, terser tool calls. high is the useful top: xhigh scores the same as high, and max adds about 3 points for about 79% more cost. Use low for simple fast steps, medium for most coding, high for hard coding and review; xhigh never, max only after high failed on this step.",
+        )
+    } else if has(&["claude", "opus", "sonnet", "haiku", "mythos"]) {
+        Some(
+            "Anthropic: effort covers thinking, text and tool calls; lower effort makes fewer, terser tool calls. Anthropic recommends low for simple fast steps and subagents, medium for most agentic coding on smaller models, high or xhigh for hard coding. On Opus, xhigh is the useful top: max adds about 1 point for about 66% more cost, so avoid max.",
         )
     } else if has(&["deepseek"]) {
         Some(
@@ -1704,11 +1709,11 @@ fn provider_effort_note(model_id: &str) -> Option<&'static str> {
         )
     } else if has(&["gemini"]) {
         Some(
-            "Google: a lower thinking level (low or medium) cuts cost and latency without truncating output; high for hard multi-step reasoning.",
+            "Google: a lower thinking level (low or medium) cuts cost and latency without truncating output; high for hard multi-step reasoning. high is the useful top: xhigh adds about 2 points for about 72% more cost, so use xhigh only after high failed on this step.",
         )
     } else if has(&["gpt", "codex", "o3", "o4"]) {
         Some(
-            "OpenAI: reasoning tokens bill as output and add latency. OpenAI recommends low for tool use, planning and search, medium as the default for most work, high for hard agentic coding, and xhigh only when evals show a clear gain.",
+            "OpenAI: reasoning tokens bill as output and add latency. OpenAI recommends low for tool use, planning and search, medium as the default for most work, high for hard agentic coding, and xhigh for the hardest coding and review. On GPT-6.2, xhigh is the useful top: max adds 0 to 1 point for 55% to 59% more cost, so avoid max.",
         )
     } else {
         None
@@ -2407,6 +2412,7 @@ mod tests {
     fn provider_effort_note_names_the_provider_of_the_model() {
         let note = |id| provider_effort_note(id).unwrap_or_default();
         assert!(note("claude-opus-5-5").starts_with("Anthropic"));
+        assert!(note("claude-fable-5-2").starts_with("Anthropic Fable"));
         assert!(note("deepseek-v4.1-flash").starts_with("DeepSeek"));
         assert!(note("gpt-6.1-sol").starts_with("OpenAI"));
         assert!(note("grok-4.7").starts_with("xAI"));

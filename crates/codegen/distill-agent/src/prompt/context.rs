@@ -1184,7 +1184,8 @@ mod tests {
 
     /// The parallel-split guidance is about the task tool, not the worker model:
     /// a session with a task tool but no worker still splits, launches in one
-    /// message and collects without polling. Each sentence renders once.
+    /// message and collects without polling, and the explicit-request rule in
+    /// the work policy renders there too. Each sentence renders once.
     #[test]
     fn parallel_work_guidance_needs_only_the_task_tool() {
         let render_primary = |ctx: minijinja::Value| {
@@ -1221,6 +1222,10 @@ mod tests {
                 "worker={worker}: {prompt}"
             );
             for text in [
+                "is part of the requested outcome",
+                "Honor a requested count of N agents by launching N",
+                "Do not do the delegated parts yourself",
+                "overrides execution-mode delegation limits",
                 "Split the work once, at the start",
                 "Launch every part that is ready in one message as parallel `spawn_subagent` calls",
                 "Launch dependent parts in the next batch. Never poll.",
@@ -1237,6 +1242,10 @@ mod tests {
                     "worker={worker}, once expected: {text}\n{prompt}"
                 );
             }
+            // The work-policy rule owns the explicit-request promise; the split
+            // mechanics live in <parallel_work> only, so neither repeats.
+            assert_eq!(prompt.matches("in one message").count(), 1, "worker={worker}\n{prompt}");
+            assert_eq!(prompt.matches("Split the work").count(), 1, "worker={worker}\n{prompt}");
         }
         assert!(!render_primary(ctx("chatgpt/gpt-6-luna", "")).contains("<parallel_work>"));
     }

@@ -136,7 +136,7 @@ When Auto changes the effective mode, the scrollback shows `Auto mode: UltraSave
 
 UltraFast favors simple interactive actions, such as taking and showing a browser screenshot, and uses parallel tasks only when they save time. UltraCode favors careful reasoning, refactoring and complex logic, including single-file changes; delegation is optional. UltraSave favors cost and token economy for well-specified mechanical work. Normal balances ordinary work. All modes preserve model and effort pins, permissions and required verification. An explicit user request for subagents or parallel work overrides these modes' delegation limits.
 
-Subagents inherit the user's choice, including later changes. In Auto, each subagent selects a mode for its own action without changing the parent's or siblings' effective modes. Existing delegation and capability limits still apply.
+Subagents inherit the user's choice, including later changes. In Auto, each subagent selects a mode for its own action without changing the parent's or siblings' effective modes. Limits that come from outside the mode, such as capability and budget ceilings, still apply.
 
 In the Models screen, select **Execution** and press Enter to cycle through Auto → Normal → UltraFast → UltraCode → UltraSave → Auto, then save.
 

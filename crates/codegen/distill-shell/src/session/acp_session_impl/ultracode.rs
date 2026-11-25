@@ -122,6 +122,7 @@ impl SessionActor {
 
     fn execution_mode_reminder(&self) -> ConversationItem {
         use distill_tool_types::ExecutionMode;
+        let mode_offers_spawn = self.mode_offers_spawn();
         let owned;
         let directive = match self.execution_mode.load() {
             ExecutionMode::Normal => NORMAL_DIRECTIVE,
@@ -138,8 +139,15 @@ impl SessionActor {
             }
             ExecutionMode::Ultrasave => ULTRASAVE_DIRECTIVE,
         };
-        let orchestration_without_spawn = !self.mode_offers_spawn()
-            && self.agent.borrow().prompt_context().worker_model.is_some();
+        // Without a spawn tool the override cannot be honored, and the same
+        // reminder may say so: stating it there would be false.
+        let directive = if mode_offers_spawn {
+            directive.to_owned()
+        } else {
+            directive.replace(&format!(" {EXPLICIT_REQUEST_OVERRIDE_SENTENCE}"), "")
+        };
+        let orchestration_without_spawn =
+            !mode_offers_spawn && self.agent.borrow().prompt_context().worker_model.is_some();
         let text = if orchestration_without_spawn {
             format!("{DIRECTIVE_LEAD} {directive} {NO_SUBAGENTS_SENTENCE}")
         } else {

@@ -231,11 +231,41 @@ fn write_after_the_guard_closed_does_not_resurrect_the_entry() {
 }
 
 #[test]
+fn edited_paths_read_the_update_that_carries_an_edit_kind_and_locations() {
+    let cwd = Path::new("/repo");
+    let update = |kind: Option<acp::ToolKind>| {
+        acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
+            acp::ToolCallId::new("t"),
+            acp::ToolCallUpdateFields::new()
+                .kind(kind)
+                .locations(Some(vec![acp::ToolCallLocation::new("src/a.rs")])),
+        ))
+    };
+    assert_eq!(
+        edited_paths(&update(Some(acp::ToolKind::Edit)), cwd),
+        vec!["/repo/src/a.rs"]
+    );
+    assert!(edited_paths(&update(Some(acp::ToolKind::Read)), cwd).is_empty());
+    assert!(edited_paths(&update(None), cwd).is_empty());
+}
+
+#[test]
+fn objective_drops_the_user_query_wrapper() {
+    assert_eq!(
+        strip_query_tags("<user_query>\nRefactor payments\n</user_query>"),
+        "Refactor payments"
+    );
+    assert_eq!(strip_query_tags("  plain ask "), "plain ask");
+}
+
+#[test]
 fn edited_paths_cover_edit_delete_move_but_not_reads() {
     let call = |kind, path: &str| {
-        acp::ToolCall::new(acp::ToolCallId::new("t"), "t")
-            .kind(kind)
-            .locations(vec![acp::ToolCallLocation::new(path)])
+        acp::SessionUpdate::ToolCall(
+            acp::ToolCall::new(acp::ToolCallId::new("t"), "t")
+                .kind(kind)
+                .locations(vec![acp::ToolCallLocation::new(path)]),
+        )
     };
     let cwd = Path::new("/repo");
     assert_eq!(
@@ -252,11 +282,13 @@ fn edited_paths_cover_edit_delete_move_but_not_reads() {
     );
     assert!(edited_paths(&call(acp::ToolKind::Read, "d.rs"), cwd).is_empty());
 
-    let patch = acp::ToolCall::new(acp::ToolCallId::new("p"), "Apply patch")
-        .kind(acp::ToolKind::Edit)
-        .raw_input(Some(serde_json::json!({
-            "patch": "*** Begin Patch\n*** Update File: src/a.rs\n*** Move to: src/b.rs\n@@\n-x\n+y\n*** Add File: /abs/n.rs\n+z\n*** Delete File: old.rs\n*** End Patch"
-        })));
+    let patch = acp::SessionUpdate::ToolCall(
+        acp::ToolCall::new(acp::ToolCallId::new("p"), "Apply patch")
+            .kind(acp::ToolKind::Edit)
+            .raw_input(Some(serde_json::json!({
+                "patch": "*** Begin Patch\n*** Update File: src/a.rs\n*** Move to: src/b.rs\n@@\n-x\n+y\n*** Add File: /abs/n.rs\n+z\n*** Delete File: old.rs\n*** End Patch"
+            }))),
+    );
     assert_eq!(
         edited_paths(&patch, cwd),
         vec![

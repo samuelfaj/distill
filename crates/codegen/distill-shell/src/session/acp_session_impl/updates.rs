@@ -416,11 +416,14 @@ impl SessionActor {
         is_replay: bool,
     ) {
         self.close_rewind_window().await;
-        if let acp::SessionUpdate::ToolCall(tool_call) = &update {
+        if matches!(
+            update,
+            acp::SessionUpdate::ToolCall(_) | acp::SessionUpdate::ToolCallUpdate(_)
+        ) {
             crate::session::concurrent_work::note_edits(
                 &self.session_info.id,
                 crate::session::concurrent_work::edited_paths(
-                    tool_call,
+                    &update,
                     self.tool_context.cwd.as_path(),
                 ),
             );

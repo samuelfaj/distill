@@ -91,23 +91,46 @@ fn repo_identity(cwd: &Path) -> (Option<String>, Option<String>) {
 }
 
 /// Absolute paths of the files an edit, delete or move tool call touches.
-pub(crate) fn edited_paths(tool_call: &acp::ToolCall, cwd: &Path) -> Vec<String> {
+///
+/// Edit tools announce their kind and locations in a later `ToolCallUpdate`, not the first
+/// `ToolCall`, so both are read.
+pub(crate) fn edited_paths(update: &acp::SessionUpdate, cwd: &Path) -> Vec<String> {
+    match update {
+        acp::SessionUpdate::ToolCall(call) => edited_paths_of(
+            Some(call.kind),
+            &call.locations,
+            call.raw_input.as_ref(),
+            cwd,
+        ),
+        acp::SessionUpdate::ToolCallUpdate(update) => edited_paths_of(
+            update.fields.kind,
+            update.fields.locations.as_deref().unwrap_or_default(),
+            update.fields.raw_input.as_ref(),
+            cwd,
+        ),
+        _ => Vec::new(),
+    }
+}
+
+fn edited_paths_of(
+    kind: Option<acp::ToolKind>,
+    locations: &[acp::ToolCallLocation],
+    raw_input: Option<&serde_json::Value>,
+    cwd: &Path,
+) -> Vec<String> {
     if !matches!(
-        tool_call.kind,
-        acp::ToolKind::Edit | acp::ToolKind::Delete | acp::ToolKind::Move
+        kind,
+        Some(acp::ToolKind::Edit | acp::ToolKind::Delete | acp::ToolKind::Move)
     ) {
         return Vec::new();
     }
-    let mut paths: Vec<String> = tool_call
-        .locations
+    let mut paths: Vec<String> = locations
         .iter()
         .filter(|loc| !loc.path.as_os_str().is_empty())
         .map(|loc| cwd.join(&loc.path).display().to_string())
         .collect();
     // `apply_patch` has no locations; its file headers are in the patch text.
-    if let Some(patch) = tool_call
-        .raw_input
-        .as_ref()
+    if let Some(patch) = raw_input
         .and_then(|input| input.get("patch"))
         .and_then(|patch| patch.as_str())
     {
@@ -196,7 +219,7 @@ impl Roster {
         let (_, branch) = repo_identity(Path::new(&self.base.cwd));
         let result = self.write(|s| {
             if let Some(prompt) = prompt {
-                s.set_objective_if_unset(prompt);
+                s.set_objective_if_unset(strip_query_tags(prompt));
             }
             if branch.is_some() {
                 s.branch.clone_from(&branch);
@@ -225,6 +248,16 @@ impl Roster {
         peers.truncate(MAX_PEERS);
         render_reminder(&peers, now, Path::new(&self.base.cwd))
     }
+}
+
+/// The turn's user message arrives wrapped in `<user_query>` tags; the objective is the text inside.
+fn strip_query_tags(prompt: &str) -> &str {
+    let trimmed = prompt.trim();
+    trimmed
+        .strip_prefix("<user_query>")
+        .and_then(|rest| rest.strip_suffix("</user_query>"))
+        .unwrap_or(trimmed)
+        .trim()
 }
 
 fn clean(text: &str) -> String {

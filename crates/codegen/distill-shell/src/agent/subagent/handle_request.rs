@@ -477,8 +477,7 @@ fn an_explicit_request_keeps_the_task_tool_and_lifts_the_child_policy() {
         "coordinator admits the grandchild"
     );
     let plain = install(false);
-    assert_eq!(plain.installation_max_depth, 1);
-    assert!(!(1 < plain.installation_max_depth), "child stays a leaf");
+    assert_eq!(plain.installation_max_depth, 1, "child stays a leaf");
     assert_eq!(
         plain.policy.as_ref().expect("policy").effective_max_depth(),
         1

@@ -270,6 +270,57 @@ impl SubagentCompletedOutput {
 pub const BACKGROUND_SUBAGENT_CONTINUE_PARENT_WORK: &str =
     "Do not only poll the child. Continue unfinished parent work now.";
 
+/// Whether `ask` explicitly asks for subagents, delegation, several agents or
+/// parallel work (English, Portuguese, Spanish).
+///
+/// Phrases only: a bare "parallel" in code names ("rayon parallel iterator",
+/// `parallel()`) is not a request. Case-insensitive via ASCII lowercase.
+pub fn asks_for_subagents(ask: &str) -> bool {
+    let t = ask.to_ascii_lowercase();
+    const PHRASES: &[&str] = &[
+        // English
+        "subagent",
+        "sub-agent",
+        "spawn agent",
+        "spawn an agent",
+        "spawn several",
+        "spawn multiple",
+        "use agent",
+        "in parallel",
+        "parallel work",
+        "parallel task",
+        "parallel agent",
+        "parallelize",
+        "parallelise",
+        // English "delegate"; Portuguese / Spanish "delegue", "delega", "delegar"
+        "deleg",
+        // Portuguese / Spanish
+        "subagente",
+        "agente",
+        "paralel",
+    ];
+    PHRASES.iter().any(|p| t.contains(p)) || has_counted_agents(&t)
+}
+
+/// `"use 8 agents"` / `"8 agentes"`: a number directly before an agent word.
+fn has_counted_agents(text: &str) -> bool {
+    let mut counted = false;
+    for word in text.split(|c: char| !c.is_alphanumeric()) {
+        if word.is_empty() {
+            continue;
+        }
+        if word.chars().all(|c| c.is_ascii_digit()) {
+            counted = true;
+            continue;
+        }
+        if counted && (word.starts_with("agent") || word.starts_with("subagent")) {
+            return true;
+        }
+        counted = false;
+    }
+    false
+}
+
 /// How many asks *before* the latest one may still count as leftover parent
 /// exec. Older implement/fix history after the user switched to review-only
 /// must not keep the CTA on.
@@ -352,6 +403,9 @@ fn blob_has_exec(text: &str) -> bool {
 }
 
 fn blob_is_delegate(text: &str) -> bool {
+    if asks_for_subagents(text) {
+        return true;
+    }
     let t = text.to_ascii_lowercase();
     const NEEDLES: &[&str] = &[
         "spawn an agent",
@@ -2069,6 +2123,46 @@ mod tests {
             !quiet.contains("you will be notified"),
             "no notification promise without system reminders: {quiet}"
         );
+    }
+
+    #[test]
+    fn asks_for_subagents_matches_explicit_requests_in_three_languages() {
+        for ask in [
+            "use subagents for this",
+            "spawn agents for each crate",
+            "do it with 8 agents",
+            "run the crates in parallel",
+            "parallelize the two migrations",
+            "delegate the review to another agent",
+            "Use 8 subagents, one per shard",
+            "use subagentes nisso",
+            "faz em paralelo",
+            "faz isto paralelamente",
+            "delegue a revisão",
+            "use agentes para cada parte",
+            "hazlo en paralelo",
+            "delega la revisión",
+            "usa 3 agentes",
+            "trabaja en paralelo",
+        ] {
+            assert!(asks_for_subagents(ask), "expected explicit request: {ask}");
+        }
+    }
+
+    #[test]
+    fn asks_for_subagents_ignores_plain_mentions() {
+        for ask in [
+            "fix the failing tests",
+            "review this PR",
+            "read AGENTS.md first",
+            "switch the iterator to rayon parallel",
+            "call parallel() before the join",
+            "the agents_of helper returns a list",
+            "what did the agent do",
+            "",
+        ] {
+            assert!(!asks_for_subagents(ask), "unexpected request: {ask}");
+        }
     }
 
     #[test]

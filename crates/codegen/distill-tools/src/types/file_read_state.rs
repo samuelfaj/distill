@@ -80,8 +80,21 @@ impl FileReadState {
     }
 }
 
-async fn key_for(path: &Path) -> PathBuf {
-    crate::util::fs::canonicalize_with_timeout(path.to_path_buf()).await
+/// Canonical key for `path`. A file that does not exist yet is keyed by its canonical parent plus its
+/// name, so the key stays the same once the file is created (e.g. `/tmp` vs `/private/tmp`).
+pub(crate) async fn key_for(path: &Path) -> PathBuf {
+    let canonical = crate::util::fs::canonicalize_with_timeout(path.to_path_buf()).await;
+    if canonical != path || tokio::fs::symlink_metadata(path).await.is_ok() {
+        return canonical;
+    }
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) if !parent.as_os_str().is_empty() => {
+            crate::util::fs::canonicalize_with_timeout(parent.to_path_buf())
+                .await
+                .join(name)
+        }
+        _ => canonical,
+    }
 }
 
 /// Remember that the session now knows `bytes` as the content of `path` (after a read, write or edit).
@@ -180,6 +193,21 @@ mod tests {
         write_with_mtime(&file, "two", fresh);
         let stamp = FileStamp::capture(&file).await;
         assert!(changed_since_seen(&resources, &file, b"two", stamp).await);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_missing_file_keeps_the_same_key_after_it_is_created() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let via_link = link.join("new.txt");
+
+        let before = key_for(&via_link).await;
+        std::fs::write(real.join("new.txt"), "x").unwrap();
+        assert_eq!(before, key_for(&via_link).await);
     }
 
     #[tokio::test]

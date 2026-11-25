@@ -22,7 +22,7 @@ pub async fn lock_paths(
         .clone();
     let mut keys: Vec<PathBuf> = Vec::with_capacity(paths.len());
     for path in paths {
-        keys.push(crate::util::fs::canonicalize_with_timeout(path.to_path_buf()).await);
+        keys.push(crate::types::file_read_state::key_for(path).await);
     }
     keys.sort();
     keys.dedup();

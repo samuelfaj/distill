@@ -1118,6 +1118,28 @@ mod tests {
             other => panic!("Expected EditsApplied, got {other:?}"),
         }
     }
+    /// Creating over an existing file (empty `old_string`) also reports an outside change.
+    #[tokio::test]
+    async fn overwrite_via_empty_old_string_after_outside_change_appends_a_note() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("t.txt");
+        std::fs::write(&file, "alpha\n").unwrap();
+        let shared = test_resources(tmp.path()).into_shared();
+        mark_read(&shared, &file).await;
+        std::fs::write(&file, "someone else\n").unwrap();
+        match run_edit(&shared, make_input("t.txt", "", "replaced\n")).await {
+            SearchReplaceOutput::EditsApplied(applied) => {
+                assert!(
+                    applied
+                        .tool_output_for_prompt
+                        .contains("changed outside this session"),
+                    "{}",
+                    applied.tool_output_for_prompt
+                );
+            }
+            other => panic!("Expected EditsApplied, got {other:?}"),
+        }
+    }
     #[tokio::test]
     async fn edit_without_outside_change_has_no_note() {
         let tmp = TempDir::new().unwrap();

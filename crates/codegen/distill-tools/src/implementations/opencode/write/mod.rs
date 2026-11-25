@@ -176,13 +176,15 @@ impl distill_tool_runtime::Tool for WriteTool {
                 })?;
         }
 
-        record_seen(
-            &resources,
-            &path,
-            input.content.as_bytes(),
-            FileStamp::capture(&path).await,
-        )
-        .await;
+        if !is_memory_write {
+            record_seen(
+                &resources,
+                &path,
+                input.content.as_bytes(),
+                FileStamp::capture(&path).await,
+            )
+            .await;
+        }
 
         // ── Send FileWritten notification ────────────────────────
         notification_handle.send_file_written(FileWritten {

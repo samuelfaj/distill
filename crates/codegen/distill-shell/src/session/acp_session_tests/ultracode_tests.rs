@@ -5,16 +5,22 @@ use super::*;
 
 #[tokio::test]
 async fn execution_mode_reminder_supersedes_previous_modes_without_changing_effort() {
-    use distill_tool_types::ExecutionMode;
+    use super::ultracode::EXPLICIT_REQUEST_OVERRIDE_SENTENCE;
+    use distill_tool_types::{ExecutionMode, V2Modes};
     tokio::task::LocalSet::new().run_until(async {
         let (actor, _gateway_rx) = build_actor().await;
+        let all = V2Modes::default()
+            .with(ExecutionMode::Ultrafast)
+            .with(ExecutionMode::Ultrasave)
+            .with(ExecutionMode::Ultracode);
+        super::mode_policy::set_v2_modes_for_tests(Some(all));
         let before = actor.chat_state_handle.get_sampling_config().await.map(|cfg| cfg.reasoning_effort);
-        for (mode, expected) in [
-            (ExecutionMode::Normal, "Normal execution mode is active"),
-            (ExecutionMode::Ultracode, "UltraCode mode is active"),
-            (ExecutionMode::Ultrafast, "UltraFast mode is active"),
-            (ExecutionMode::Ultrasave, "UltraSave mode is active"),
-            (ExecutionMode::Normal, "Normal execution mode is active"),
+        for (mode, expected, override_stated) in [
+            (ExecutionMode::Normal, "Normal execution mode is active", true),
+            (ExecutionMode::Ultracode, "UltraCode mode is active", false),
+            (ExecutionMode::Ultrafast, "UltraFast mode is active", false),
+            (ExecutionMode::Ultrasave, "UltraSave mode is active", true),
+            (ExecutionMode::Normal, "Normal execution mode is active", true),
         ] {
             actor.execution_mode.store(mode);
             actor.inject_execution_mode_reminder();
@@ -22,8 +28,17 @@ async fn execution_mode_reminder_supersedes_previous_modes_without_changing_effo
             let text = conversation.last().unwrap().text_content();
             assert!(text.contains(expected), "{text}");
             assert!(text.contains("supersedes all earlier"), "{text}");
+            // This actor has no spawn tool, so UltraCode states its leaf text,
+            // which drops the override with the other delegation sentences, and
+            // the v2 UltraFast row allows no subagents.
+            assert_eq!(
+                text.contains(EXPLICIT_REQUEST_OVERRIDE_SENTENCE),
+                override_stated,
+                "{mode:?}: {text}"
+            );
         }
         assert_eq!(before, actor.chat_state_handle.get_sampling_config().await.map(|cfg| cfg.reasoning_effort));
+        super::mode_policy::set_v2_modes_for_tests(None);
     }).await;
 }
 
@@ -166,6 +181,11 @@ async fn ultracode_child_gets_delegation_sentences_only_below_the_depth_ceiling(
                     can_delegate,
                     "max_depth {max_depth}: {text}"
                 );
+                assert_eq!(
+                    text.contains(super::ultracode::EXPLICIT_REQUEST_OVERRIDE_SENTENCE),
+                    can_delegate,
+                    "max_depth {max_depth}: {text}"
+                );
             }
         })
         .await;
@@ -180,8 +200,9 @@ async fn ultracode_child_gets_delegation_sentences_only_below_the_depth_ceiling(
 #[test]
 fn v2_directives_are_short_distinct_and_free_of_delegation_advice() {
     use super::ultracode::{
-        ULTRACODE_DIRECTIVE, ULTRACODE_V2_DIRECTIVE, ULTRACODE_V2_REVIEW_SENTENCE,
-        ULTRAFAST_DIRECTIVE, ULTRAFAST_V2_DIRECTIVE, ULTRASAVE_DIRECTIVE, ULTRASAVE_V2_DIRECTIVE,
+        EXPLICIT_REQUEST_OVERRIDE_SENTENCE, ULTRACODE_DIRECTIVE, ULTRACODE_V2_DIRECTIVE,
+        ULTRACODE_V2_REVIEW_SENTENCE, ULTRAFAST_DIRECTIVE, ULTRAFAST_V2_DIRECTIVE,
+        ULTRASAVE_DIRECTIVE, ULTRASAVE_V2_DIRECTIVE,
     };
     let v2 = [
         ULTRAFAST_V2_DIRECTIVE,
@@ -200,21 +221,52 @@ fn v2_directives_are_short_distinct_and_free_of_delegation_advice() {
         length(&v2),
         length(&today)
     );
+    // The explicit-request override is the one sentence the limiting modes share
+    // by design: it states a harness rule, not advice about this mode's row.
+    let body = |text: &str| text.replace(&format!(" {EXPLICIT_REQUEST_OVERRIDE_SENTENCE}"), "");
     for text in v2 {
-        let lower = text.to_lowercase();
+        let lower = body(text).to_lowercase();
         for word in ["delegat", "subagent"] {
             assert!(!lower.contains(word), "{word}: {text}");
         }
     }
-    let sentences = |text: &'static str| text.split_inclusive(". ").map(str::trim);
+    assert!(ULTRAFAST_V2_DIRECTIVE.ends_with(EXPLICIT_REQUEST_OVERRIDE_SENTENCE));
+    assert!(ULTRASAVE_V2_DIRECTIVE.ends_with(EXPLICIT_REQUEST_OVERRIDE_SENTENCE));
+    let sentences = |text: &str| text.split_inclusive(". ").map(str::trim).map(str::to_owned).collect::<Vec<_>>();
     for (index, text) in v2.into_iter().enumerate() {
         for other in v2.into_iter().skip(index + 1) {
-            for sentence in sentences(text) {
-                assert!(!other.contains(sentence), "shared: {sentence}");
+            let other = body(other);
+            for sentence in sentences(&body(text)) {
+                assert!(!other.contains(&sentence), "shared: {sentence}");
             }
         }
     }
     assert!(ULTRACODE_V2_DIRECTIVE.ends_with(ULTRACODE_V2_REVIEW_SENTENCE));
+}
+
+/// A user asking for parallel work outranks a mode's cap on it, so every
+/// directive that caps or discourages delegation names that way out.
+#[test]
+fn every_limiting_directive_states_the_explicit_request_override() {
+    use super::ultracode::{
+        EXPLICIT_REQUEST_OVERRIDE_SENTENCE, ULTRACODE_DIRECTIVE, ULTRAFAST_DIRECTIVE,
+        ULTRAFAST_V2_DIRECTIVE, ULTRASAVE_DIRECTIVE, ULTRASAVE_V2_DIRECTIVE, v2_directive,
+    };
+    use distill_tool_types::ExecutionMode;
+    let normal = v2_directive(ExecutionMode::Normal, false);
+    for (name, text) in [
+        ("ultracode", ULTRACODE_DIRECTIVE),
+        ("ultrafast", ULTRAFAST_DIRECTIVE),
+        ("ultrasave", ULTRASAVE_DIRECTIVE),
+        ("ultrafast v2", ULTRAFAST_V2_DIRECTIVE),
+        ("ultrasave v2", ULTRASAVE_V2_DIRECTIVE),
+        ("normal", normal.as_str()),
+    ] {
+        assert!(
+            text.ends_with(EXPLICIT_REQUEST_OVERRIDE_SENTENCE),
+            "{name}: {text}"
+        );
+    }
 }
 
 /// With `[modes] v2 = []` every mode states exactly the text it stated
@@ -223,21 +275,21 @@ fn v2_directives_are_short_distinct_and_free_of_delegation_advice() {
 #[tokio::test(flavor = "current_thread")]
 async fn each_mode_states_its_v2_text_on_its_v2_row_and_its_old_text_with_v2_off() {
     use super::ultracode::{
-        ULTRACODE_V2_DIRECTIVE, ULTRACODE_V2_REVIEW_SENTENCE, ULTRAFAST_DIRECTIVE,
-        ULTRAFAST_V2_DIRECTIVE, ULTRASAVE_DIRECTIVE, ULTRASAVE_V2_DIRECTIVE,
+        EXPLICIT_REQUEST_OVERRIDE_SENTENCE, ULTRACODE_V2_DIRECTIVE, ULTRACODE_V2_REVIEW_SENTENCE,
+        ULTRAFAST_DIRECTIVE, ULTRAFAST_V2_DIRECTIVE, ULTRASAVE_DIRECTIVE, ULTRASAVE_V2_DIRECTIVE,
         ultracode_leaf_directive,
     };
     use distill_tool_types::{ExecutionMode, V2Modes};
-    // The texts the previous release sent, by length, so an edit to them shows.
+    // The texts this release sends, by length, so an edit to them shows.
     assert_eq!(
         [
             super::ultracode::ULTRACODE_DIRECTIVE.len(),
             ULTRAFAST_DIRECTIVE.len(),
             ULTRASAVE_DIRECTIVE.len(),
         ],
-        [1537, 1118, 1087]
+        [1634, 1215, 1184]
     );
-    let normal = "Normal execution mode is active. Follow the configured default execution policy.";
+    let normal = "Normal execution mode is active. Follow the configured default execution policy. An explicit user request for subagents or parallel work overrides this mode's delegation limits.";
     let all = V2Modes::default()
         .with(ExecutionMode::Ultrafast)
         .with(ExecutionMode::Ultrasave)
@@ -246,6 +298,10 @@ async fn each_mode_states_its_v2_text_on_its_v2_row_and_its_old_text_with_v2_off
         ULTRACODE_V2_DIRECTIVE.replace(&format!(" {ULTRACODE_V2_REVIEW_SENTENCE}"), "");
     // The test actor has no spawn tool, so the today-row UltraCode text is the leaf one.
     let leaf = ultracode_leaf_directive();
+    // The v2 UltraFast row allows no subagents, so its text drops the override
+    // the tool list cannot honor.
+    let ultrafast_v2_without_spawn =
+        ULTRAFAST_V2_DIRECTIVE.replace(&format!(" {EXPLICIT_REQUEST_OVERRIDE_SENTENCE}"), "");
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut actor = super::support::plain_actor().await;
@@ -255,7 +311,7 @@ async fn each_mode_states_its_v2_text_on_its_v2_row_and_its_old_text_with_v2_off
                 (V2Modes::default(), false, ExecutionMode::Ultrasave, ULTRASAVE_DIRECTIVE),
                 (V2Modes::default(), false, ExecutionMode::Ultracode, leaf.as_str()),
                 (all, false, ExecutionMode::Normal, normal),
-                (all, false, ExecutionMode::Ultrafast, ULTRAFAST_V2_DIRECTIVE),
+                (all, false, ExecutionMode::Ultrafast, ultrafast_v2_without_spawn.as_str()),
                 (all, false, ExecutionMode::Ultrasave, ULTRASAVE_V2_DIRECTIVE),
                 (all, false, ExecutionMode::Ultracode, ULTRACODE_V2_DIRECTIVE),
                 (all, true, ExecutionMode::Ultracode, child_ultracode.as_str()),
@@ -287,10 +343,11 @@ async fn each_mode_states_its_v2_text_on_its_v2_row_and_its_old_text_with_v2_off
 /// keeps `<orchestration>` ("Delegate by default") because it is not rebuilt on
 /// a mode switch. The directive must withdraw that default, and only then: a
 /// mode that offers the tool, Auto, and a session without a worker stay as is.
+/// The same reminder must not promise an override it cannot honor.
 #[tokio::test(flavor = "current_thread")]
 async fn a_mode_without_subagents_withdraws_the_delegation_default() {
     use super::skill_projection_tests::set_worker_model;
-    use super::ultracode::NO_SUBAGENTS_SENTENCE;
+    use super::ultracode::{EXPLICIT_REQUEST_OVERRIDE_SENTENCE, NO_SUBAGENTS_SENTENCE};
     use distill_tool_types::{ExecutionMode, V2Modes};
     let all = V2Modes::default()
         .with(ExecutionMode::Ultrafast)
@@ -328,6 +385,16 @@ async fn a_mode_without_subagents_withdraws_the_delegation_default() {
                     withdrawn,
                     "worker={worker:?} {mode:?} auto={auto}: {text}"
                 );
+                // A mode whose list has no spawn tool cannot honor the override.
+                if !actor.mode_offers_spawn() {
+                    assert!(
+                        !text.contains(EXPLICIT_REQUEST_OVERRIDE_SENTENCE),
+                        "worker={worker:?} {mode:?} auto={auto}: {text}"
+                    );
+                }
+                if auto {
+                    assert!(text.contains(EXPLICIT_REQUEST_OVERRIDE_SENTENCE), "{text}");
+                }
             }
         })
         .await;

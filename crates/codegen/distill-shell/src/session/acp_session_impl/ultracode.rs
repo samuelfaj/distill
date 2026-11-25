@@ -2,18 +2,23 @@
 //! Authoritative per-turn execution mode for `SessionActor`.
 use super::*;
 
-pub(super) const ULTRACODE_DIRECTIVE: &str = "Ultracode mode is ON. Prioritize care and correctness for refactoring, substantial logic, subtle bugs and risky changes, even in one file. Understand invariants and the root cause before editing; verify the changed behavior and relevant edge cases. For this objective choose the smallest useful next action: execute directly when the work is understood; investigate a specific uncertainty; or decompose only when bounded smaller tasks can be verified independently. Delegation is optional in this mode, overriding default delegation preferences, with no agent quota. Keep targeted inspection, implementation and checks for a bounded known change with one execution owner; separate exploration or planning only to resolve a concrete uncertainty. Preserve useful independent parallel work and quality checks. Before delegating, state the objective, restrictions, owned paths, acceptance criteria and existing evidence references. Preserve explicit model/effort pins and capability and permission ceilings. Delegate only tasks smaller than the parent objective, within the shared depth, concurrency and budget limits. If admission is refused, execute locally or wait for independent work to finish; never recursively retry or multiply budgets. Workflow-owned, harness-internal, output-budgeted and isolated-worktree agents are leaves. Integrate child results by inspecting their evidence and actual changes, then verify the parent objective; a child report alone is not completion. Report unresolved uncertainty and concrete runtime limits.";
+/// Every mode that caps or discourages delegation states the way out of the
+/// cap, so a user asking for parallel work is never talked out of it.
+pub(super) const EXPLICIT_REQUEST_OVERRIDE_SENTENCE: &str = "An explicit user request for subagents or parallel work overrides this mode's delegation limits.";
 
-pub(super) const ULTRAFAST_DIRECTIVE: &str = "UltraFast mode is active. Minimize elapsed time to a verified result. For a simple interactive action, such as capturing and showing a browser screenshot, act directly and return the result promptly. Delegate only genuinely independent parts when parallel work saves time after startup and integration costs; never split a single quick action. Batch independent tool calls and do the critical path directly yourself. Inspect the smallest relevant surface, implement, run focused checks first and the full check once at the end, and fix only actual failures. Do not write plans or progress lists, or rerun checks that later edits did not invalidate. Preserve explicit model and effort choices, permissions, repository instructions, required project checks and final integrated verification. Inspect real command output; a summary alone is not proof. After a failure diagnose its cause and change the approach. Stop when acceptance criteria are verified and report concisely, including anything unverified. Before finishing, check every requirement and edge case the task states with a quick test, and fix any that fail.";
+pub(super) const ULTRACODE_DIRECTIVE: &str = "Ultracode mode is ON. Prioritize care and correctness for refactoring, substantial logic, subtle bugs and risky changes, even in one file. Understand invariants and the root cause before editing; verify the changed behavior and relevant edge cases. For this objective choose the smallest useful next action: execute directly when the work is understood; investigate a specific uncertainty; or decompose only when bounded smaller tasks can be verified independently. Delegation is optional in this mode, overriding default delegation preferences, with no agent quota. Keep targeted inspection, implementation and checks for a bounded known change with one execution owner; separate exploration or planning only to resolve a concrete uncertainty. Preserve useful independent parallel work and quality checks. Before delegating, state the objective, restrictions, owned paths, acceptance criteria and existing evidence references. Preserve explicit model/effort pins and capability and permission ceilings. Delegate only tasks smaller than the parent objective, within the shared depth, concurrency and budget limits. If admission is refused, execute locally or wait for independent work to finish; never recursively retry or multiply budgets. Workflow-owned, harness-internal, output-budgeted and isolated-worktree agents are leaves. Integrate child results by inspecting their evidence and actual changes, then verify the parent objective; a child report alone is not completion. Report unresolved uncertainty and concrete runtime limits. An explicit user request for subagents or parallel work overrides this mode's delegation limits.";
 
-pub(super) const ULTRASAVE_DIRECTIVE: &str = "UltraSave mode is active. Minimize money cost first, then total input and output tokens, to a verified result. Execute directly. Delegate to a subagent (runs on the cheaper worker model) only large, mechanical, fully specified work where the worker's re-reads cost less than the main model doing it; do small or judgment work directly. Search narrowly before reading, read only relevant ranges, reuse evidence already in context, and batch independent reads or edits in one round. Do not write plans or progress lists, or repeat checks that later edits did not invalidate. Do not restate source text in a report when a path and check result suffice. Preserve explicit model and effort choices, repository instructions, permissions, exact code and error evidence and required project checks. Never hide failures, truncate required work or omit verification to save tokens. Stop when acceptance criteria are verified and report the result and remaining uncertainty concisely. Before finishing, check every requirement and edge case the task states with a quick test, and fix any that fail.";
+pub(super) const ULTRAFAST_DIRECTIVE: &str = "UltraFast mode is active. Minimize elapsed time to a verified result. For a simple interactive action, such as capturing and showing a browser screenshot, act directly and return the result promptly. Delegate only genuinely independent parts when parallel work saves time after startup and integration costs; never split a single quick action. Batch independent tool calls and do the critical path directly yourself. Inspect the smallest relevant surface, implement, run focused checks first and the full check once at the end, and fix only actual failures. Do not write plans or progress lists, or rerun checks that later edits did not invalidate. Preserve explicit model and effort choices, permissions, repository instructions, required project checks and final integrated verification. Inspect real command output; a summary alone is not proof. After a failure diagnose its cause and change the approach. Stop when acceptance criteria are verified and report concisely, including anything unverified. Before finishing, check every requirement and edge case the task states with a quick test, and fix any that fail. An explicit user request for subagents or parallel work overrides this mode's delegation limits.";
+
+pub(super) const ULTRASAVE_DIRECTIVE: &str = "UltraSave mode is active. Minimize money cost first, then total input and output tokens, to a verified result. Execute directly. Delegate to a subagent (runs on the cheaper worker model) only large, mechanical, fully specified work where the worker's re-reads cost less than the main model doing it; do small or judgment work directly. Search narrowly before reading, read only relevant ranges, reuse evidence already in context, and batch independent reads or edits in one round. Do not write plans or progress lists, or repeat checks that later edits did not invalidate. Do not restate source text in a report when a path and check result suffice. Preserve explicit model and effort choices, repository instructions, permissions, exact code and error evidence and required project checks. Never hide failures, truncate required work or omit verification to save tokens. Stop when acceptance criteria are verified and report the result and remaining uncertainty concisely. Before finishing, check every requirement and edge case the task states with a quick test, and fix any that fail. An explicit user request for subagents or parallel work overrides this mode's delegation limits.";
 
 // The texts for a mode on its v2 row: the objective, then only what the
 // harness enforces on that row or what the model must do because the harness
-// cannot. No delegation advice: a mode that may delegate says nothing about it.
-pub(super) const ULTRAFAST_V2_DIRECTIVE: &str = "UltraFast mode is active: reach a verified result in the least elapsed time. Automatic reasoning effort is set once per turn, at medium or lower. Batch independent tool calls and write no plans or progress lists. Run focused checks while working and the full check once at the end; after a failure, find its cause and change the approach. Before finishing, confirm each stated requirement with a quick test and name anything left unverified.";
+// cannot. No delegation advice beyond the explicit-request override: a mode
+// that may delegate says nothing else about it.
+pub(super) const ULTRAFAST_V2_DIRECTIVE: &str = "UltraFast mode is active: reach a verified result in the least elapsed time. Automatic reasoning effort is set once per turn, at medium or lower. Batch independent tool calls and write no plans or progress lists. Run focused checks while working and the full check once at the end; after a failure, find its cause and change the approach. Before finishing, confirm each stated requirement with a quick test and name anything left unverified. An explicit user request for subagents or parallel work overrides this mode's delegation limits.";
 
-pub(super) const ULTRASAVE_V2_DIRECTIVE: &str = "UltraSave mode is active: reach a verified result at the lowest money cost. Automatic reasoning effort is chosen per round, at high or lower. Reuse evidence already in context instead of reading or running it again, batch independent reads and edits into one round, and report paths and check results rather than quoted source. Never drop required work or verification to save tokens. Before finishing, test every requirement the task states and fix what fails.";
+pub(super) const ULTRASAVE_V2_DIRECTIVE: &str = "UltraSave mode is active: reach a verified result at the lowest money cost. Automatic reasoning effort is chosen per round, at high or lower. Reuse evidence already in context instead of reading or running it again, batch independent reads and edits into one round, and report paths and check results rather than quoted source. Never drop required work or verification to save tokens. Before finishing, test every requirement the task states and fix what fails. An explicit user request for subagents or parallel work overrides this mode's delegation limits.";
 
 pub(super) const ULTRACODE_V2_DIRECTIVE: &str = "UltraCode mode is active: make the change correct first, ahead of speed and cost. Understand the invariants and the root cause before editing, and verify the changed behavior and its edge cases with checks you run. Automatic reasoning effort is never lowered for a routine round and is at least high after a failed check or tool. At the end of a turn that changed code, the harness reviews the changes independently, returns refuted gaps for you to fix, and appends the verification status to your final message.";
 
@@ -35,8 +40,7 @@ pub(super) fn v2_directive(mode: distill_tool_types::ExecutionMode, is_subagent:
     }
 }
 
-const NORMAL_DIRECTIVE: &str =
-    "Normal execution mode is active. Follow the configured default execution policy.";
+const NORMAL_DIRECTIVE: &str = "Normal execution mode is active. Follow the configured default execution policy. An explicit user request for subagents or parallel work overrides this mode's delegation limits.";
 
 /// Added when the system prompt carries `<orchestration>` but the mode's tool
 /// list has no spawn tool: the prompt is not rebuilt on a mode switch, so the
@@ -44,7 +48,7 @@ const NORMAL_DIRECTIVE: &str =
 pub(super) const NO_SUBAGENTS_SENTENCE: &str = "This mode has no subagents: do all of the work yourself and disregard the delegation guidance in <orchestration>.";
 
 /// The UltraCode sentences that only matter to a session that can delegate.
-pub(super) const ULTRACODE_DELEGATION_SENTENCES: [&str; 7] = [
+pub(super) const ULTRACODE_DELEGATION_SENTENCES: [&str; 8] = [
     "Delegation is optional in this mode, overriding default delegation preferences, with no agent quota.",
     "Keep targeted inspection, implementation and checks for a bounded known change with one execution owner; separate exploration or planning only to resolve a concrete uncertainty.",
     "Before delegating, state the objective, restrictions, owned paths, acceptance criteria and existing evidence references.",
@@ -52,6 +56,7 @@ pub(super) const ULTRACODE_DELEGATION_SENTENCES: [&str; 7] = [
     "If admission is refused, execute locally or wait for independent work to finish; never recursively retry or multiply budgets.",
     "Workflow-owned, harness-internal, output-budgeted and isolated-worktree agents are leaves.",
     "Integrate child results by inspecting their evidence and actual changes, then verify the parent objective; a child report alone is not completion.",
+    EXPLICIT_REQUEST_OVERRIDE_SENTENCE,
 ];
 
 /// [`ULTRACODE_DIRECTIVE`] for a session that cannot spawn: delegation advice
@@ -117,6 +122,7 @@ impl SessionActor {
 
     fn execution_mode_reminder(&self) -> ConversationItem {
         use distill_tool_types::ExecutionMode;
+        let mode_offers_spawn = self.mode_offers_spawn();
         let owned;
         let directive = match self.execution_mode.load() {
             ExecutionMode::Normal => NORMAL_DIRECTIVE,
@@ -133,8 +139,15 @@ impl SessionActor {
             }
             ExecutionMode::Ultrasave => ULTRASAVE_DIRECTIVE,
         };
-        let orchestration_without_spawn = !self.mode_offers_spawn()
-            && self.agent.borrow().prompt_context().worker_model.is_some();
+        // Without a spawn tool the override cannot be honored, and the same
+        // reminder may say so: stating it there would be false.
+        let directive = if mode_offers_spawn {
+            directive.to_owned()
+        } else {
+            directive.replace(&format!(" {EXPLICIT_REQUEST_OVERRIDE_SENTENCE}"), "")
+        };
+        let orchestration_without_spawn =
+            !mode_offers_spawn && self.agent.borrow().prompt_context().worker_model.is_some();
         let text = if orchestration_without_spawn {
             format!("{DIRECTIVE_LEAD} {directive} {NO_SUBAGENTS_SENTENCE}")
         } else {

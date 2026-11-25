@@ -1096,9 +1096,10 @@ mod tests {
         assert!(!prompt.contains("Level full"));
         assert_eq!(prompt.matches("<output_style>\n").count(), 1);
     }
-    /// The main model is told to plan, delegate and review only when there is a
-    /// worker to delegate to and a tool to delegate with. A child never gets it:
-    /// it is the one doing the delegated work.
+    /// Delegating by default and reviewing the worker need a worker model and a
+    /// task tool. Splitting the work into parallel calls needs only the task tool,
+    /// so a session without a worker still gets that part, once. A child never
+    /// gets either: it is the one doing the delegated work.
     #[test]
     fn orchestration_renders_only_for_a_primary_prompt_with_a_worker_and_the_task_tool() {
         let render_primary = |ctx: minijinja::Value| {
@@ -1179,6 +1180,74 @@ mod tests {
             !render_subagent_template(ctx("chatgpt/gpt-6-luna", "spawn_subagent"))
                 .contains("<orchestration>")
         );
+    }
+
+    /// The parallel-split guidance is about the task tool, not the worker model:
+    /// a session with a task tool but no worker still splits, launches in one
+    /// message and collects without polling, and the explicit-request rule in
+    /// the work policy renders there too. Each sentence renders once.
+    #[test]
+    fn parallel_work_guidance_needs_only_the_task_tool() {
+        let render_primary = |ctx: minijinja::Value| {
+            let mut env = minijinja::Environment::new();
+            env.set_syntax(
+                minijinja::syntax::SyntaxConfig::builder()
+                    .block_delimiters("${%", "%}")
+                    .variable_delimiters("${{", "}}")
+                    .comment_delimiters("${#", "#}")
+                    .build()
+                    .unwrap(),
+            );
+            let tmpl = crate::prompt::template::base_template();
+            env.add_template("prompt", &tmpl).unwrap();
+            env.get_template("prompt").unwrap().render(ctx).unwrap()
+        };
+        let ctx = |worker: &str, task: &str| {
+            minijinja::context! {
+                worker_model => worker,
+                tools => minijinja::context! {
+                    by_kind => minijinja::context! {
+                        task => task,
+                        read => "read_file",
+                        background_task_action => "get_command_or_subagent_output"
+                    }
+                },
+                ..base_template_ctx()
+            }
+        };
+        for worker in ["", "chatgpt/gpt-6-luna"] {
+            let prompt = render_primary(ctx(worker, "spawn_subagent"));
+            assert!(
+                prompt.contains("<parallel_work>"),
+                "worker={worker}: {prompt}"
+            );
+            for text in [
+                "is part of the requested outcome",
+                "Honor a requested count of N agents by launching N",
+                "Do not do the delegated parts yourself",
+                "overrides execution-mode delegation limits",
+                "Split the work once, at the start",
+                "Launch every part that is ready in one message as parallel `spawn_subagent` calls",
+                "Launch dependent parts in the next batch. Never poll.",
+                "Give each assignment one question or one target",
+                "stop and report after about 30 model requests",
+                "Give each file one owner per batch",
+                "each with `isolation: worktree`",
+                "run one combined check yourself after the batch",
+                "write it once to a scratch file outside the repository",
+            ] {
+                assert_eq!(
+                    prompt.matches(text).count(),
+                    1,
+                    "worker={worker}, once expected: {text}\n{prompt}"
+                );
+            }
+            // The work-policy rule owns the explicit-request promise; the split
+            // mechanics live in <parallel_work> only, so neither repeats.
+            assert_eq!(prompt.matches("in one message").count(), 1, "worker={worker}\n{prompt}");
+            assert_eq!(prompt.matches("Split the work").count(), 1, "worker={worker}\n{prompt}");
+        }
+        assert!(!render_primary(ctx("chatgpt/gpt-6-luna", "")).contains("<parallel_work>"));
     }
     #[test]
     fn child_rendered_prompt_includes_memory_section() {

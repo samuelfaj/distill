@@ -5,6 +5,7 @@ use super::*;
 
 #[tokio::test]
 async fn execution_mode_reminder_supersedes_previous_modes_without_changing_effort() {
+    use super::ultracode::EXPLICIT_REQUEST_OVERRIDE_SENTENCE;
     use distill_tool_types::ExecutionMode;
     tokio::task::LocalSet::new().run_until(async {
         let (actor, _gateway_rx) = build_actor().await;
@@ -22,6 +23,13 @@ async fn execution_mode_reminder_supersedes_previous_modes_without_changing_effo
             let text = conversation.last().unwrap().text_content();
             assert!(text.contains(expected), "{text}");
             assert!(text.contains("supersedes all earlier"), "{text}");
+            // This actor has no spawn tool, so UltraCode states its leaf text,
+            // which drops the override with the other delegation sentences.
+            assert_eq!(
+                text.contains(EXPLICIT_REQUEST_OVERRIDE_SENTENCE),
+                mode != ExecutionMode::Ultracode,
+                "{mode:?}: {text}"
+            );
         }
         assert_eq!(before, actor.chat_state_handle.get_sampling_config().await.map(|cfg| cfg.reasoning_effort));
     }).await;
@@ -166,6 +174,11 @@ async fn ultracode_child_gets_delegation_sentences_only_below_the_depth_ceiling(
                     can_delegate,
                     "max_depth {max_depth}: {text}"
                 );
+                assert_eq!(
+                    text.contains(super::ultracode::EXPLICIT_REQUEST_OVERRIDE_SENTENCE),
+                    can_delegate,
+                    "max_depth {max_depth}: {text}"
+                );
             }
         })
         .await;
@@ -180,8 +193,9 @@ async fn ultracode_child_gets_delegation_sentences_only_below_the_depth_ceiling(
 #[test]
 fn v2_directives_are_short_distinct_and_free_of_delegation_advice() {
     use super::ultracode::{
-        ULTRACODE_DIRECTIVE, ULTRACODE_V2_DIRECTIVE, ULTRACODE_V2_REVIEW_SENTENCE,
-        ULTRAFAST_DIRECTIVE, ULTRAFAST_V2_DIRECTIVE, ULTRASAVE_DIRECTIVE, ULTRASAVE_V2_DIRECTIVE,
+        EXPLICIT_REQUEST_OVERRIDE_SENTENCE, ULTRACODE_DIRECTIVE, ULTRACODE_V2_DIRECTIVE,
+        ULTRACODE_V2_REVIEW_SENTENCE, ULTRAFAST_DIRECTIVE, ULTRAFAST_V2_DIRECTIVE,
+        ULTRASAVE_DIRECTIVE, ULTRASAVE_V2_DIRECTIVE,
     };
     let v2 = [
         ULTRAFAST_V2_DIRECTIVE,
@@ -200,21 +214,52 @@ fn v2_directives_are_short_distinct_and_free_of_delegation_advice() {
         length(&v2),
         length(&today)
     );
+    // The explicit-request override is the one sentence the limiting modes share
+    // by design: it states a harness rule, not advice about this mode's row.
+    let body = |text: &str| text.replace(&format!(" {EXPLICIT_REQUEST_OVERRIDE_SENTENCE}"), "");
     for text in v2 {
-        let lower = text.to_lowercase();
+        let lower = body(text).to_lowercase();
         for word in ["delegat", "subagent"] {
             assert!(!lower.contains(word), "{word}: {text}");
         }
     }
-    let sentences = |text: &'static str| text.split_inclusive(". ").map(str::trim);
+    assert!(ULTRAFAST_V2_DIRECTIVE.ends_with(EXPLICIT_REQUEST_OVERRIDE_SENTENCE));
+    assert!(ULTRASAVE_V2_DIRECTIVE.ends_with(EXPLICIT_REQUEST_OVERRIDE_SENTENCE));
+    let sentences = |text: &str| text.split_inclusive(". ").map(str::trim).map(str::to_owned).collect::<Vec<_>>();
     for (index, text) in v2.into_iter().enumerate() {
         for other in v2.into_iter().skip(index + 1) {
-            for sentence in sentences(text) {
-                assert!(!other.contains(sentence), "shared: {sentence}");
+            let other = body(other);
+            for sentence in sentences(&body(text)) {
+                assert!(!other.contains(&sentence), "shared: {sentence}");
             }
         }
     }
     assert!(ULTRACODE_V2_DIRECTIVE.ends_with(ULTRACODE_V2_REVIEW_SENTENCE));
+}
+
+/// A user asking for parallel work outranks a mode's cap on it, so every
+/// directive that caps or discourages delegation names that way out.
+#[test]
+fn every_limiting_directive_states_the_explicit_request_override() {
+    use super::ultracode::{
+        EXPLICIT_REQUEST_OVERRIDE_SENTENCE, ULTRACODE_DIRECTIVE, ULTRAFAST_DIRECTIVE,
+        ULTRAFAST_V2_DIRECTIVE, ULTRASAVE_DIRECTIVE, ULTRASAVE_V2_DIRECTIVE, v2_directive,
+    };
+    use distill_tool_types::ExecutionMode;
+    let normal = v2_directive(ExecutionMode::Normal, false);
+    for (name, text) in [
+        ("ultracode", ULTRACODE_DIRECTIVE),
+        ("ultrafast", ULTRAFAST_DIRECTIVE),
+        ("ultrasave", ULTRASAVE_DIRECTIVE),
+        ("ultrafast v2", ULTRAFAST_V2_DIRECTIVE),
+        ("ultrasave v2", ULTRASAVE_V2_DIRECTIVE),
+        ("normal", normal.as_str()),
+    ] {
+        assert!(
+            text.ends_with(EXPLICIT_REQUEST_OVERRIDE_SENTENCE),
+            "{name}: {text}"
+        );
+    }
 }
 
 /// With `[modes] v2 = []` every mode states exactly the text it stated
@@ -228,16 +273,16 @@ async fn each_mode_states_its_v2_text_on_its_v2_row_and_its_old_text_with_v2_off
         ultracode_leaf_directive,
     };
     use distill_tool_types::{ExecutionMode, V2Modes};
-    // The texts the previous release sent, by length, so an edit to them shows.
+    // The texts this release sends, by length, so an edit to them shows.
     assert_eq!(
         [
             super::ultracode::ULTRACODE_DIRECTIVE.len(),
             ULTRAFAST_DIRECTIVE.len(),
             ULTRASAVE_DIRECTIVE.len(),
         ],
-        [1537, 1118, 1087]
+        [1634, 1215, 1184]
     );
-    let normal = "Normal execution mode is active. Follow the configured default execution policy.";
+    let normal = "Normal execution mode is active. Follow the configured default execution policy. An explicit user request for subagents or parallel work overrides this mode's delegation limits.";
     let all = V2Modes::default()
         .with(ExecutionMode::Ultrafast)
         .with(ExecutionMode::Ultrasave)

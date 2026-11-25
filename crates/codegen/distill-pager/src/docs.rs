@@ -303,6 +303,20 @@ mod tests {
         }
     }
 
+    /// A user who asks for parallel work gets it: the slash-command guide says
+    /// the request outranks the modes' delegation limits.
+    #[test]
+    fn slash_commands_guide_states_the_explicit_request_override() {
+        let doc = find_doc("Slash Commands").expect("slash commands guide");
+        assert!(
+            doc.content.contains(
+                "An explicit user request for subagents or parallel work overrides these modes' delegation limits."
+            ),
+            "{}",
+            doc.content
+        );
+    }
+
     #[test]
     fn user_guide_entries_have_no_duplicates() {
         let mut seen = std::collections::HashSet::new();

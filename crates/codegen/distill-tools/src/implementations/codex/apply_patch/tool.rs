@@ -11,6 +11,7 @@ use std::sync::Arc;
 use crate::computer::types::AsyncFileSystem;
 use crate::notification::types::FileWritten;
 
+use crate::types::file_read_state::{FileStamp, changed_since_seen, forget_seen, record_seen};
 use crate::types::output::{ApplyPatchFileResult, ApplyPatchOutput};
 use crate::types::requirements::Expr;
 #[allow(unused_imports)]
@@ -155,12 +156,15 @@ async fn ensure_parent_dirs(path: &std::path::Path) -> Result<(), distill_tool_r
 
 /// Compute all file changes in memory without writing anything.
 /// Returns an error string if any hunk can't be applied.
+/// Also returns the files that changed outside this session since the session last saw them.
 async fn compute_all_changes(
     cwd: &std::path::Path,
     fs: &Arc<dyn AsyncFileSystem>,
+    resources: &SharedResources,
     hunks: &[Hunk],
-) -> Result<Vec<FileChange>, String> {
+) -> Result<(Vec<FileChange>, Vec<PathBuf>), String> {
     let mut changes = Vec::new();
+    let mut changed_outside = Vec::new();
 
     for hunk in hunks {
         match hunk {
@@ -173,7 +177,7 @@ async fn compute_all_changes(
             }
             Hunk::DeleteFile { path } => {
                 let resolved = cwd.join(path);
-                let original_content = read_file_as_string(fs, &resolved)
+                let original_content = read_tracked(fs, resources, &resolved, &mut changed_outside)
                     .await
                     .map_err(|e| format!("Failed to read file: {}, {e}", resolved.display()))?;
                 changes.push(FileChange::Delete {
@@ -187,9 +191,11 @@ async fn compute_all_changes(
                 chunks,
             } => {
                 let resolved = cwd.join(path);
-                let original_content = read_file_as_string(fs, &resolved).await.map_err(|e| {
-                    format!("Failed to read file to update: {}, {e}", resolved.display())
-                })?;
+                let original_content = read_tracked(fs, resources, &resolved, &mut changed_outside)
+                    .await
+                    .map_err(|e| {
+                        format!("Failed to read file to update: {}, {e}", resolved.display())
+                    })?;
 
                 let new_content = apply::derive_new_contents(&original_content, &resolved, chunks)
                     .map_err(|e| match e {
@@ -216,7 +222,41 @@ async fn compute_all_changes(
         }
     }
 
-    Ok(changes)
+    Ok((changes, changed_outside))
+}
+
+/// Paths a patch touches, for locking: every source, destination and added file.
+fn touched_paths(cwd: &std::path::Path, hunks: &[Hunk]) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for hunk in hunks {
+        match hunk {
+            Hunk::AddFile { path, .. } | Hunk::DeleteFile { path } => paths.push(cwd.join(path)),
+            Hunk::UpdateFile {
+                path, move_path, ..
+            } => {
+                paths.push(cwd.join(path));
+                if let Some(dest) = move_path {
+                    paths.push(cwd.join(dest));
+                }
+            }
+        }
+    }
+    paths
+}
+
+/// Read a file's text and note it in `changed_outside` when it differs from what the session last saw.
+async fn read_tracked(
+    fs: &Arc<dyn AsyncFileSystem>,
+    resources: &SharedResources,
+    path: &std::path::Path,
+    changed_outside: &mut Vec<PathBuf>,
+) -> Result<String, String> {
+    let stamp = FileStamp::capture(path).await;
+    let bytes = fs.read_file(path).await.map_err(|e| format!("{e}"))?;
+    if changed_since_seen(resources, path, &bytes, stamp).await {
+        changed_outside.push(path.to_path_buf());
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// Validate every memory v2 operation before any change is applied.
@@ -291,15 +331,6 @@ async fn write_via_memory_v2(
         crate::types::memory_v2::MemoryV2Write::Written { .. } => Ok(true),
         crate::types::memory_v2::MemoryV2Write::Outside => Ok(false),
     }
-}
-
-/// Read a file via AsyncFileSystem and convert to String.
-async fn read_file_as_string(
-    fs: &Arc<dyn AsyncFileSystem>,
-    path: &std::path::Path,
-) -> Result<String, String> {
-    let bytes = fs.read_file(path).await.map_err(|e| format!("{e}"))?;
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// Build the codex-style summary string.
@@ -406,11 +437,18 @@ impl distill_tool_runtime::Tool for ApplyPatchTool {
             ));
         }
 
+        // Serialize with other mutations of these paths until the patch is fully applied.
+        let touched = touched_paths(&cwd, &parsed.hunks);
+        let touched_refs: Vec<&std::path::Path> = touched.iter().map(PathBuf::as_path).collect();
+        let _locks =
+            crate::implementations::editor_infra::lock_paths(&resources, &touched_refs).await;
+
         // ── Phase 2: Compute all changes in memory (no writes yet) ───
-        let changes = match compute_all_changes(&cwd, &fs, &parsed.hunks).await {
-            Ok(c) => c,
-            Err(msg) => return Ok(ApplyPatchOutput::ApplicationError(msg)),
-        };
+        let (changes, changed_outside) =
+            match compute_all_changes(&cwd, &fs, &resources, &parsed.hunks).await {
+                Ok(c) => c,
+                Err(msg) => return Ok(ApplyPatchOutput::ApplicationError(msg)),
+            };
         if let Err(msg) = preflight_memory_v2_changes(&resources, &changes).await {
             return Ok(ApplyPatchOutput::ApplicationError(msg));
         }
@@ -437,6 +475,13 @@ impl distill_tool_runtime::Tool for ApplyPatchTool {
                         })?;
                     }
 
+                    record_seen(
+                        &resources,
+                        path,
+                        content.as_bytes(),
+                        FileStamp::capture(path).await,
+                    )
+                    .await;
                     notification_handle.send_file_written(FileWritten {
                         tool_call_id: tool_call_id.clone(),
                         absolute_path: path.clone(),
@@ -464,6 +509,7 @@ impl distill_tool_runtime::Tool for ApplyPatchTool {
                         )
                     })?;
 
+                    forget_seen(&resources, path).await;
                     notification_handle.send_file_written(FileWritten {
                         tool_call_id: tool_call_id.clone(),
                         absolute_path: path.clone(),
@@ -501,6 +547,13 @@ impl distill_tool_runtime::Tool for ApplyPatchTool {
                             })?;
                     }
 
+                    record_seen(
+                        &resources,
+                        path,
+                        new_content.as_bytes(),
+                        FileStamp::capture(path).await,
+                    )
+                    .await;
                     notification_handle.send_file_written(FileWritten {
                         tool_call_id: tool_call_id.clone(),
                         absolute_path: path.clone(),
@@ -540,6 +593,14 @@ impl distill_tool_runtime::Tool for ApplyPatchTool {
                         )
                     })?;
 
+                    forget_seen(&resources, source_path).await;
+                    record_seen(
+                        &resources,
+                        dest_path,
+                        new_content.as_bytes(),
+                        FileStamp::capture(dest_path).await,
+                    )
+                    .await;
                     // Notify destination (new file at new location).
                     notification_handle.send_file_written(FileWritten {
                         tool_call_id: tool_call_id.clone(),
@@ -569,7 +630,18 @@ impl distill_tool_runtime::Tool for ApplyPatchTool {
         }
 
         // ── Phase 4: Build summary ───────────────────────────────
-        let tool_output_for_prompt = build_summary(&file_results);
+        let mut tool_output_for_prompt = build_summary(&file_results);
+        if !changed_outside.is_empty() {
+            let names: Vec<String> = changed_outside
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect();
+            let _ = writeln!(
+                tool_output_for_prompt,
+                "Note: changed outside this session since you last read them (the patch still applied): {}. Re-read before further edits.",
+                names.join(", ")
+            );
+        }
 
         Ok(ApplyPatchOutput::Success {
             files: file_results,
@@ -697,6 +769,140 @@ mod tests {
                 assert_eq!(content, "foo\nbaz\n");
             }
             other => panic!("Expected Success, got: {other:?}"),
+        }
+    }
+
+    // ── Concurrent work ──────────────────────────────────────────
+
+    async fn run_patch(
+        shared: &SharedResources,
+        patch: &str,
+    ) -> Result<ApplyPatchOutput, distill_tool_runtime::ToolError> {
+        distill_tool_runtime::Tool::run(
+            &ApplyPatchTool,
+            test_ctx(shared.clone()),
+            make_input(patch),
+        )
+        .await
+    }
+
+    async fn mark_read(shared: &SharedResources, path: &std::path::Path) {
+        let stamp = FileStamp::capture(path).await;
+        let bytes = std::fs::read(path).unwrap();
+        record_seen(shared, path, &bytes, stamp).await;
+    }
+
+    #[tokio::test]
+    async fn update_after_outside_change_applies_and_names_the_file() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("shared.txt");
+        std::fs::write(&file, "foo\nbar\n").unwrap();
+        let shared = test_resources(tmp.path()).into_shared();
+        mark_read(&shared, &file).await;
+
+        std::fs::write(&file, "foo\nbar\nadded by someone else\n").unwrap();
+        let patch = wrap_patch("*** Update File: shared.txt\n@@\n foo\n-bar\n+baz");
+        match run_patch(&shared, &patch).await.unwrap() {
+            ApplyPatchOutput::Success {
+                tool_output_for_prompt,
+                ..
+            } => {
+                assert!(
+                    tool_output_for_prompt.contains("changed outside this session")
+                        && tool_output_for_prompt.contains("shared.txt"),
+                    "{tool_output_for_prompt}"
+                );
+            }
+            other => panic!("Expected Success, got: {other:?}"),
+        }
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "foo\nbaz\nadded by someone else\n"
+        );
+
+        // The patch itself updated what the session knows, so a follow-up patch has no note.
+        let patch = wrap_patch("*** Update File: shared.txt\n@@\n foo\n-baz\n+qux");
+        match run_patch(&shared, &patch).await.unwrap() {
+            ApplyPatchOutput::Success {
+                tool_output_for_prompt,
+                ..
+            } => assert!(!tool_output_for_prompt.contains("changed outside")),
+            other => panic!("Expected Success, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn update_of_unchanged_file_has_no_note() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("same.txt");
+        std::fs::write(&file, "foo\nbar\n").unwrap();
+        let shared = test_resources(tmp.path()).into_shared();
+        mark_read(&shared, &file).await;
+
+        let patch = wrap_patch("*** Update File: same.txt\n@@\n foo\n-bar\n+baz");
+        match run_patch(&shared, &patch).await.unwrap() {
+            ApplyPatchOutput::Success {
+                tool_output_for_prompt,
+                ..
+            } => assert!(!tool_output_for_prompt.contains("changed outside")),
+            other => panic!("Expected Success, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn patch_waits_for_the_path_lock() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("locked.txt");
+        std::fs::write(&file, "foo\nbar\n").unwrap();
+        let shared = test_resources(tmp.path()).into_shared();
+
+        let held = crate::implementations::editor_infra::lock_paths(&shared, &[&file]).await;
+        let shared2 = shared.clone();
+        let task = tokio::spawn(async move {
+            let patch = wrap_patch("*** Update File: locked.txt\n@@\n foo\n-bar\n+baz");
+            run_patch(&shared2, &patch).await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(!task.is_finished(), "patch must wait for the held lock");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "foo\nbar\n");
+        drop(held);
+        assert!(matches!(
+            task.await.unwrap().unwrap(),
+            ApplyPatchOutput::Success { .. }
+        ));
+    }
+
+    /// Two multi-file patches naming the same files in opposite order must both finish.
+    #[tokio::test]
+    async fn overlapping_multi_file_patches_do_not_deadlock() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "a\n").unwrap();
+        std::fs::write(tmp.path().join("b.txt"), "b\n").unwrap();
+        let shared = test_resources(tmp.path()).into_shared();
+
+        let mut tasks = Vec::new();
+        for i in 0..8 {
+            let shared = shared.clone();
+            tasks.push(tokio::spawn(async move {
+                let (first, second) = if i % 2 == 0 {
+                    ("a.txt", "b.txt")
+                } else {
+                    ("b.txt", "a.txt")
+                };
+                let patch = wrap_patch(&format!(
+                    "*** Add File: n{i}-{first}\n+x\n*** Update File: {first}\n@@\n-{}\n+{}{i}\n*** Update File: {second}\n@@\n-{}\n+{}{i}",
+                    &first[..1], &first[..1], &second[..1], &second[..1]
+                ));
+                run_patch(&shared, &patch).await
+            }));
+        }
+        let all = futures::future::join_all(tasks);
+        let results = tokio::time::timeout(std::time::Duration::from_secs(10), all)
+            .await
+            .expect("patches deadlocked");
+        for r in results {
+            // Later patches may not match anymore; they must finish, not hang.
+            r.unwrap().unwrap();
         }
     }
 

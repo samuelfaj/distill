@@ -240,6 +240,10 @@ pub struct SubagentRuntimeOverrides {
     pub output_token_budget: Option<u64>,
     pub output_schema: Option<serde_json::Value>,
     pub loop_task_id: Option<String>,
+    /// Absolute paths the child declared it will edit (Task `files`).
+    pub declared_files: Vec<String>,
+    /// Live subagents sharing the workspace; the coordinator fills this when the child starts.
+    pub live_siblings: Vec<super::file_ownership::SiblingFiles>,
 }
 
 pub fn intersect_capability_modes(

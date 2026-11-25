@@ -15,6 +15,7 @@ mod agent_quotas;
 mod agent_targets;
 mod completion;
 mod graph;
+mod ownership;
 mod query;
 mod queue;
 mod root_targets;
@@ -847,7 +848,7 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
 
     fn start_child(
         &mut self,
-        request: SubagentRequest,
+        mut request: SubagentRequest,
         spawn_reply: Option<oneshot::Sender<SubagentResult>>,
         registered_tx: Option<oneshot::Sender<()>>,
         origin: StartOrigin,
@@ -857,6 +858,7 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
         wake_of: Option<DisplacedCompletedChild>,
     ) {
         let id = request.id.clone();
+        request.runtime_overrides.live_siblings = self.live_siblings_for(&request);
         let cancellation = request.cancel_token.clone();
         // `spawn_reply: None`: the caller was auto-backgrounded while queued.
         let handle_only = request.run_in_background || spawn_reply.is_none();

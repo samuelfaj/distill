@@ -416,6 +416,18 @@ impl SessionActor {
         is_replay: bool,
     ) {
         self.close_rewind_window().await;
+        if matches!(
+            update,
+            acp::SessionUpdate::ToolCall(_) | acp::SessionUpdate::ToolCallUpdate(_)
+        ) {
+            crate::session::concurrent_work::note_edits(
+                &self.session_info.id,
+                crate::session::concurrent_work::edited_paths(
+                    &update,
+                    self.tool_context.cwd.as_path(),
+                ),
+            );
+        }
         if let acp::SessionUpdate::ToolCall(tool_call) = &update
             && matches!(tool_call.kind, acp::ToolKind::Edit)
         {

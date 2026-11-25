@@ -206,6 +206,7 @@ impl distill_tool_runtime::Tool for CodexReadFileTool {
         {
             fs = resources.lock().await.require::<FileSystem>()?.0.clone();
         }
+        let stamp = crate::types::file_read_state::FileStamp::capture(&path).await;
         let file_bytes = match fs.read_file(&path).await {
             Ok(bytes) => bytes,
             Err(e) => {
@@ -215,6 +216,7 @@ impl distill_tool_runtime::Tool for CodexReadFileTool {
                 )));
             }
         };
+        crate::types::file_read_state::record_seen(&resources, &path, &file_bytes, stamp).await;
 
         // 3. Branch on mode. Out-of-range / empty-file reads return a structured
         // `FileReadError` (see note above) instead of a hard `Err`.

@@ -306,6 +306,13 @@ async fn handle_new_file_creation(
                 )
             })?;
     }
+    crate::types::file_read_state::record_seen(
+        &resources,
+        path,
+        input.new_string.as_bytes(),
+        crate::types::file_read_state::FileStamp::capture(path).await,
+    )
+    .await;
 
     // Emit FileWritten notification.
     notification_handle.send_file_written(FileWritten {
@@ -447,6 +454,13 @@ async fn handle_replacement(
                 )
             })?;
     }
+    crate::types::file_read_state::record_seen(
+        &resources,
+        path,
+        new_text.as_bytes(),
+        crate::types::file_read_state::FileStamp::capture(path).await,
+    )
+    .await;
 
     // Emit FileWritten notification.
     notification_handle.send_file_written(FileWritten {

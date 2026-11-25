@@ -57,6 +57,7 @@ schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_path_to_error = { workspace = true }
+sha2 = { workspace = true }
 distill-tool-runtime = { workspace = true }
 distill-tool-types = { workspace = true }
 distill-tool-protocol = { workspace = true }

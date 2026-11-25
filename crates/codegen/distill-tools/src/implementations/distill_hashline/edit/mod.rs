@@ -380,6 +380,16 @@ impl distill_tool_runtime::Tool for HashlineEditTool {
                                 ),
                             });
                         }
+                        if !is_memory_write {
+                            crate::types::file_read_state::record_seen(
+                                &resources,
+                                &joined_path,
+                                content.as_bytes(),
+                                crate::types::file_read_state::FileStamp::capture(&joined_path)
+                                    .await,
+                            )
+                            .await;
+                        }
                         let abs = crate::util::fs::canonicalize_with_timeout(joined_path).await;
                         let r = apply::apply_edits(content, &input.edits, &abs, &*scheme);
                         let edit_details = r.edit_details;
@@ -476,6 +486,15 @@ impl distill_tool_runtime::Tool for HashlineEditTool {
             ));
         }
 
+        if !is_memory_write && let Some(ref new_content) = apply_result.new_content {
+            crate::types::file_read_state::record_seen(
+                &resources,
+                &path,
+                new_content.as_bytes(),
+                crate::types::file_read_state::FileStamp::capture(&path).await,
+            )
+            .await;
+        }
         let edit_details = apply_result.edit_details;
         Ok(to_search_replace(
             apply_result.output,

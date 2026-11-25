@@ -7,6 +7,7 @@ pub mod context;
 pub mod definition;
 pub mod description;
 pub mod error;
+pub mod file_read_state;
 pub mod memory_backend;
 pub mod memory_v2;
 pub mod output;

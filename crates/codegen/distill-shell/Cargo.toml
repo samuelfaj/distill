@@ -157,6 +157,7 @@ distill-workspace = { workspace = true }
 distill-foreign-sessions = { workspace = true }
 distill-subagent-resolution = { path = "../distill-subagent-resolution" }
 distill-agent = { path = "../distill-agent" }
+distill-active-sessions = { workspace = true }
 distill-bundle = { workspace = true }
 distill-config = { workspace = true }
 distill-feedback = { workspace = true }

@@ -87,6 +87,11 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
                 .graph
                 .insert_root_child(&id, &request.parent_session_id),
         }
+        if let Some(conflict) = self.declared_file_conflict(&request) {
+            self.graph.remove(&id);
+            let _ = result_tx.send(rejected_spawn_result(&id, &conflict, false));
+            return;
+        }
         let running = self.session_running_count(&request.parent_session_id);
         let decision = if spawner_session_id.is_some()
             && request.runtime_overrides.execution_policy.as_ref().is_some_and(|policy| policy.is_enabled())

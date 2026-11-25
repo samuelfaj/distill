@@ -166,6 +166,38 @@ pub fn load_hooks_from_sources(
     (registry, errors)
 }
 
+/// Env var naming an absolute path to an extra hooks file (same format as a discovered `hooks.json`).
+/// The host process that launched this one sets it, so the file loads as a global (trusted) source in addition to discovered hooks.
+pub const EXTRA_HOOKS_FILE_ENV: &str = "GROK_EXTRA_HOOKS_FILE";
+
+/// Load the host-injected hooks file. A relative, missing, unreadable or invalid file is warned about and yields no hooks, so a bad host setting never blocks the session.
+pub fn load_extra_hooks_file(path: &Path) -> (Vec<HookSpec>, Vec<HookError>) {
+    if !path.is_absolute() {
+        let err = HookError::ParseFile {
+            path: path.to_path_buf(),
+            detail: format!("{EXTRA_HOOKS_FILE_ENV} must be an absolute path"),
+        };
+        tracing::warn!("hooks: {err}");
+        return (Vec::new(), vec![err]);
+    }
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(source) => {
+            let err = HookError::ReadFile {
+                path: path.to_path_buf(),
+                source,
+            };
+            tracing::warn!("hooks: extra hooks file ignored: {err}");
+            return (Vec::new(), vec![err]);
+        }
+    };
+    let (specs, errors) = config::parse_hook_file(&content, path);
+    for err in &errors {
+        tracing::warn!("hooks: extra hooks file: {err}");
+    }
+    (specs, errors)
+}
+
 /// Load hook specs from global and project sources WITHOUT deduplicating.
 /// Global specs precede project specs so a later first-wins dedup keeps the global copy of an identical duplicate.
 pub fn collect_specs_from_sources(
@@ -191,6 +223,15 @@ pub fn collect_specs_from_sources(
             count = specs.len(),
             "hooks: loaded from global source"
         );
+        all_specs.extend(specs);
+        all_errors.extend(errors);
+    }
+
+    if let Some(extra) = std::env::var_os(EXTRA_HOOKS_FILE_ENV).filter(|v| !v.is_empty()) {
+        let (mut specs, errors) = load_extra_hooks_file(Path::new(&extra));
+        for spec in &mut specs {
+            spec.name = format!("{}{}", crate::config::GLOBAL_HOOK_PREFIX, spec.name);
+        }
         all_specs.extend(specs);
         all_errors.extend(errors);
     }

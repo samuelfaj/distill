@@ -211,6 +211,7 @@ impl distill_tool_runtime::Tool for ReadTool {
             .to_lowercase();
 
         // Read the file bytes for all remaining branches.
+        let stamp = crate::types::file_read_state::FileStamp::capture(&path).await;
         let file_bytes = match fs.read_file(&path).await {
             Ok(bytes) => bytes,
             Err(e) => {
@@ -221,6 +222,7 @@ impl distill_tool_runtime::Tool for ReadTool {
                 )));
             }
         };
+        crate::types::file_read_state::record_seen(&resources, &path, &file_bytes, stamp).await;
         if let Err(error) =
             crate::types::memory_v2::record_memory_v2_read(&resources, &policy_path, &file_bytes)
                 .await

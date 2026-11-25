@@ -212,6 +212,8 @@ mod tests {
             output_token_budget: None,
             output_schema: None,
             loop_task_id: None,
+            declared_files: Vec::new(),
+            live_siblings: Vec::new(),
         }
     }
 

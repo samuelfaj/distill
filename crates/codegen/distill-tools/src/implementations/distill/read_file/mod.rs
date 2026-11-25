@@ -435,6 +435,7 @@ pub(crate) async fn run_read_file(
             )));
         }
     }
+    let stamp = crate::types::file_read_state::FileStamp::capture(&path).await;
     let mut file_bytes = match fs.read_file(&path).await {
         Ok(bytes) => bytes,
         Err(e) => {
@@ -493,6 +494,7 @@ pub(crate) async fn run_read_file(
     {
         return Ok(ReadFileOutput::FileReadError(error));
     }
+    crate::types::file_read_state::record_seen(&resources, &path, &file_bytes, stamp).await;
     if let Ok(metadata) = bytes_to_metadata(&file_bytes)
         && metadata.is_image()
     {
@@ -998,6 +1000,43 @@ mod tests {
         resources.insert(FileSystem(Arc::new(LocalFs)));
         resources.insert(NotificationHandle(ToolNotificationHandle::noop()));
         resources
+    }
+    /// A read is what arms stale-write protection: writing over a file the session read, after
+    /// another process changed it, is refused instead of destroying that change.
+    #[tokio::test]
+    async fn read_then_outside_change_then_write_is_refused() {
+        use crate::implementations::opencode::write::{WriteInput, WriteTool};
+        let tmp = TempDir::new().unwrap();
+        let file_path = tmp.path().join("doc.txt");
+        std::fs::write(&file_path, "line1\nline2\n").unwrap();
+        let shared = test_resources(tmp.path()).into_shared();
+        let read = ReadFileInput {
+            path: "doc.txt".to_string(),
+            offset: None,
+            limit: None,
+            pages: None,
+            format: None,
+        };
+        distill_tool_runtime::Tool::run(&ReadFileTool, test_ctx(shared.clone()), read)
+            .await
+            .unwrap();
+
+        std::fs::write(&file_path, "someone else rewrote this file\n").unwrap();
+        let write = WriteInput {
+            file_path: file_path.to_string_lossy().into_owned(),
+            content: "stale overwrite\n".to_string(),
+        };
+        let out = distill_tool_runtime::Tool::run(&WriteTool, test_ctx(shared), write)
+            .await
+            .unwrap();
+        assert!(
+            matches!(out, crate::types::output::SearchReplaceOutput::InvalidInput(ref m) if m.contains("changed since you last read it")),
+            "{out:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&file_path).unwrap(),
+            "someone else rewrote this file\n"
+        );
     }
     #[tokio::test]
     async fn read_file_basic() {

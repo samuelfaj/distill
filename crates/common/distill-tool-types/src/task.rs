@@ -270,55 +270,97 @@ impl SubagentCompletedOutput {
 pub const BACKGROUND_SUBAGENT_CONTINUE_PARENT_WORK: &str =
     "Do not only poll the child. Continue unfinished parent work now.";
 
+const AGENT_WORDS: &[&str] = &[
+    "agent",
+    "agents",
+    "agente",
+    "agentes",
+    "subagent",
+    "subagents",
+    "subagente",
+    "subagentes",
+];
+
+const LAUNCH_VERBS: &[&str] = &[
+    "use", "uses", "using", "usar", "usa", "utilize", "utiliza", "utilizar", "spawn", "spawns",
+    "spawning", "launch", "launches", "launching", "start", "starts", "starting", "create",
+    "creates", "creating", "criar", "crie", "cria",
+];
+
+const DELEGATE_VERBS: &[&str] = &[
+    "delegate", "delegates", "delegated", "delegating", "delegue", "delega", "delegar",
+    "deleguen", "delego", "delegas",
+];
+
 /// Whether `ask` explicitly asks for subagents, delegation, several agents or
 /// parallel work (English, Portuguese, Spanish).
 ///
-/// Phrases only: a bare "parallel" in code names ("rayon parallel iterator",
-/// `parallel()`) is not a request. Case-insensitive via ASCII lowercase.
+/// Word-based: an agent word counts only next to a launch verb, so identifiers
+/// that merely contain one (`distill-subagent-resolution`) do not lift the
+/// nesting ceiling. Parallel mentions need a phrase ("in parallel",
+/// "paralelamente"); a bare `parallel()` or "rayon parallel iterator" does not.
 pub fn asks_for_subagents(ask: &str) -> bool {
-    let t = ask.to_ascii_lowercase();
+    let t = ask.to_lowercase();
     const PHRASES: &[&str] = &[
-        // English
-        "subagent",
-        "sub-agent",
-        "spawn agent",
-        "spawn an agent",
-        "spawn several",
-        "spawn multiple",
-        "use agent",
         "in parallel",
+        "em paralelo",
+        "en paralelo",
+        "paralelamente",
         "parallel work",
         "parallel task",
         "parallel agent",
-        "parallelize",
-        "parallelise",
-        // English "delegate"; Portuguese / Spanish "delegue", "delega", "delegar"
-        "deleg",
-        // Portuguese / Spanish
-        "subagente",
-        "agente",
-        "paralel",
+        "paralleliz",
+        "parallelis",
+        "paraleliz",
     ];
-    PHRASES.iter().any(|p| t.contains(p)) || has_counted_agents(&t)
+    if PHRASES.iter().any(|p| t.contains(p)) {
+        return true;
+    }
+    let words: Vec<&str> = t
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    if words.iter().any(|w| DELEGATE_VERBS.contains(w)) || counted_agent_request(&words) {
+        return true;
+    }
+    words
+        .iter()
+        .enumerate()
+        .any(|(i, w)| LAUNCH_VERBS.contains(w) && agent_within(&words[i + 1..]))
 }
 
-/// `"use 8 agents"` / `"8 agentes"`: a number directly before an agent word.
-fn has_counted_agents(text: &str) -> bool {
-    let mut counted = false;
-    for word in text.split(|c: char| !c.is_alphanumeric()) {
-        if word.is_empty() {
-            continue;
-        }
-        if word.chars().all(|c| c.is_ascii_digit()) {
-            counted = true;
-            continue;
-        }
-        if counted && (word.starts_with("agent") || word.starts_with("subagent")) {
+/// `"use subagents"`, `"spawn the 8 agents"`: a launch verb, then at most two
+/// fillers (determiners, counts), then an agent word.
+fn agent_within(after_verb: &[&str]) -> bool {
+    const FILLERS: &[&str] = &[
+        "a", "an", "the", "some", "several", "multiple", "all", "my", "more", "os", "as", "meus",
+        "minhas", "alguns", "algumas", "varios", "um", "uma", "dois", "duas", "todos", "todas",
+    ];
+    for (fillers, word) in after_verb.iter().enumerate() {
+        if AGENT_WORDS.contains(word) {
             return true;
         }
-        counted = false;
+        if fillers == 2 || !(FILLERS.contains(word) || word.chars().all(|c| c.is_ascii_digit())) {
+            return false;
+        }
     }
-    false
+    false}
+
+/// `"use 8 agents"` / `"8 agentes"`: the agents are the object of the ask, not
+/// a modifier of a following noun (`"3 agent tests"`).
+fn counted_agent_request(words: &[&str]) -> bool {
+    const FOLLOWERS: &[&str] = &[
+        "per", "para", "for", "to", "a", "em", "en", "in", "across", "por", "one", "um", "uno",
+        "each", "cada", "and", "e", "y", "with", "com", "con",
+    ];
+    words.iter().enumerate().any(|(i, word)| {
+        let Some(agent) = words.get(i + 1) else {
+            return false;
+        };
+        word.chars().all(|c| c.is_ascii_digit())
+            && AGENT_WORDS.contains(agent)
+            && words.get(i + 2).is_none_or(|next| FOLLOWERS.contains(next))
+    })
 }
 
 /// How many asks *before* the latest one may still count as leftover parent
@@ -2159,6 +2201,13 @@ mod tests {
             "call parallel() before the join",
             "the agents_of helper returns a list",
             "what did the agent do",
+            // Identifiers and non-requests: naming an agent word must not lift
+            // the nesting ceiling for the whole turn.
+            "fix the distill-subagent-resolution bug",
+            "open DelegationService and read the trait",
+            "run 3 agent tests and report",
+            "the delegation module moved",
+            "agents_of is private",
             "",
         ] {
             assert!(!asks_for_subagents(ask), "unexpected request: {ask}");

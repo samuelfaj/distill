@@ -268,6 +268,10 @@ pub struct ExecutionPolicy {
     pub off_max_depth: u32,
     /// The modes on their v2 policy row; the row names the mode's depth.
     pub v2: distill_tool_types::V2Modes,
+    /// Ceiling an explicit user ask for subagents lifted this policy to. The
+    /// mode's own cap still applies to every other turn; `SubagentDepth::None`
+    /// never nests, so it ignores this.
+    pub explicit_nesting_ceiling: Option<u32>,
     pub capability_ceiling: Option<SubagentCapabilityMode>,
     pub allowed_subagent_types: Option<Vec<String>>,
 }
@@ -279,21 +283,23 @@ impl ExecutionPolicy {
 
     pub fn effective_max_depth(&self) -> u32 {
         use distill_tool_types::SubagentDepth;
-        match self.v2.policy(self.mode.load()).runtime.subagent_depth {
+        let mode_depth = match self.v2.policy(self.mode.load()).runtime.subagent_depth {
             SubagentDepth::Default => self.off_max_depth,
             SubagentDepth::One => self.max_depth.min(self.off_max_depth).min(1),
             SubagentDepth::Max => self.max_depth,
-            SubagentDepth::None => 0,
-        }
+            SubagentDepth::None => return 0,
+        };
+        self.explicit_nesting_ceiling
+            .map_or(mode_depth, |ceiling| mode_depth.max(ceiling))
     }
 
     /// Whether an explicit user request for subagents may admit one nesting
-    /// level below the spawner. `One` and `None` keep the mode's own cap.
+    /// level below the spawner. `None` keeps the mode's no-nesting cap.
     pub fn explicit_request_can_nest(&self) -> bool {
         use distill_tool_types::SubagentDepth;
-        matches!(
+        !matches!(
             self.v2.policy(self.mode.load()).runtime.subagent_depth,
-            SubagentDepth::Default | SubagentDepth::Max
+            SubagentDepth::None
         )
     }
 }
@@ -1281,6 +1287,42 @@ mod tests {
         let mut c = ToolConfig::from_id(id);
         c.kind = Some(kind);
         c
+    }
+
+    /// A one-level mode re-derives its cap from the policy row, so the lift an
+    /// explicit user ask allows is recorded on its own; a no-nesting mode
+    /// ignores it.
+    #[test]
+    fn an_explicit_request_lift_raises_the_one_level_cap_but_never_no_nesting() {
+        use super::ExecutionPolicy;
+        use distill_tool_types::{AtomicExecutionMode, ExecutionMode, V2Modes};
+        let depth = |mode, v2, ceiling| {
+            ExecutionPolicy {
+                mode: std::sync::Arc::new(AtomicExecutionMode::new(mode)),
+                max_depth: 1,
+                off_max_depth: 1,
+                v2,
+                explicit_nesting_ceiling: ceiling,
+                capability_ceiling: None,
+                allowed_subagent_types: None,
+            }
+            .effective_max_depth()
+        };
+        let today = V2Modes::default();
+        for mode in [
+            ExecutionMode::Normal,
+            ExecutionMode::Ultrafast,
+            ExecutionMode::Ultrasave,
+        ] {
+            assert_eq!(depth(mode, today, None), 1, "{mode:?} keeps one level");
+            assert_eq!(depth(mode, today, Some(2)), 2, "{mode:?} honors the ask");
+        }
+        let v2 = today.with(ExecutionMode::Ultrafast);
+        assert_eq!(
+            depth(ExecutionMode::Ultrafast, v2, Some(2)),
+            0,
+            "a no-nesting mode takes no subagents even on an explicit ask"
+        );
     }
 
     #[test]

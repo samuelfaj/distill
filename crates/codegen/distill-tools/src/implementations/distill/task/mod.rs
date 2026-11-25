@@ -982,6 +982,40 @@ mod tests {
         let _ = tokio::time::timeout(std::time::Duration::from_millis(500), drain).await;
     }
 
+    /// The nesting flag is derived from the latest real user ask, so a root
+    /// turn that names the code (`fix the failing tests`) never lifts it.
+    #[tokio::test]
+    async fn explicit_user_ask_marks_the_root_spawn_for_nesting() {
+        for (ask, expected) in [
+            ("use 8 subagents in parallel", true),
+            ("fix the failing tests", false),
+        ] {
+            let (backend, mut rx) = make_backend();
+            let (resources, _dir) = resources_with_parent_exec(backend, ask);
+            let drain = tokio::spawn(async move {
+                let event = rx.recv().await.expect("spawn event");
+                let mut req = unwrap_spawn(event);
+                req.notify_registered();
+                req
+            });
+            let result = distill_tool_runtime::Tool::run(
+                &TaskTool,
+                test_ctx(resources.into_shared()),
+                task_input("explore", true),
+            )
+            .await;
+            assert!(result.is_ok(), "{ask}: {result:?}");
+            let spawned = tokio::time::timeout(std::time::Duration::from_secs(1), drain)
+                .await
+                .expect("spawn observed")
+                .expect("spawn task");
+            assert_eq!(
+                spawned.runtime_overrides.explicit_parallel_request, expected,
+                "{ask}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn ultracode_task_inherits_shared_mode_and_capability_and_off_restores_depth() {
         let (backend, mut rx) = make_backend();
@@ -995,6 +1029,7 @@ mod tests {
             max_depth: 2,
             off_max_depth: 3,
             v2: Default::default(),
+            explicit_nesting_ceiling: None,
             capability_ceiling: Some(distill_tool_types::SubagentCapabilityMode::ReadOnly),
             allowed_subagent_types: None,
         });
@@ -1055,6 +1090,7 @@ mod tests {
                 max_depth: 2,
                 off_max_depth: 3,
                 v2,
+                explicit_nesting_ceiling: None,
                 capability_ceiling: None,
                 allowed_subagent_types: None,
             }

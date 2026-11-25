@@ -785,7 +785,14 @@ pub(crate) async fn run_shell_child(
         &definition,
     );
     apply_inherited_runtime_defaults(&request, &mut effective_runtime, &definition, &ctx);
-    let prompt = request.prompt.clone();
+    let prompt = if is_wake {
+        request.prompt.clone()
+    } else {
+        distill_tools::implementations::distill::task::file_ownership::prompt_with_siblings(
+            &request.prompt,
+            &request.runtime_overrides.live_siblings,
+        )
+    };
     if let Some(ref err) = effective_runtime.persona_error {
         tracing::error!(
             subagent_id = %request.id,
@@ -2748,6 +2755,30 @@ pub(crate) async fn run_shell_child(
         .await;
         let execution = super::worker_execution_evidence(&conversation);
         result.output = Arc::from(format!("{}\n\n{execution}\n\n{review}", result.output));
+    }
+    // Declared paths are relative to the parent checkout; a worktree child edits another root.
+    if !request.runtime_overrides.declared_files.is_empty() && worktree_path.is_none() {
+        let conversation = child_actor_query(
+            "declared_files_check",
+            child_handle.chat_state_handle.get_conversation(),
+            Vec::new(),
+        )
+        .await;
+        let tool_kinds = child_toolset.tool_kind_map();
+        if let Some(note) = super::files_outside_declared(
+            &conversation,
+            |name, args| {
+                matches!(
+                    tool_kinds.get(name),
+                    Some(ToolKind::Edit | ToolKind::Write | ToolKind::Delete | ToolKind::Move)
+                )
+                .then(|| child_toolset.remap_params(name, args))
+            },
+            child_handle.tool_context.cwd.as_path(),
+            &request.runtime_overrides.declared_files,
+        ) {
+            result.output = Arc::from(format!("{}\n\n{note}", result.output));
+        }
     }
     if cheap_agent && !result.success && !result.cancelled {
         crate::agent::subagent::trip_cheap_agent(&ctx.parent_session_id);

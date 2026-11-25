@@ -758,6 +758,23 @@ pub(super) fn edit_tool_paths(
         .collect()
 }
 
+/// Note listing files this child's edit tools targeted outside `declared`;
+/// `None` when nothing was declared or every edit is covered.
+pub(super) fn files_outside_declared(
+    conversation: &[ConversationItem],
+    edit_args: impl Fn(&str, serde_json::Value) -> Option<serde_json::Value>,
+    cwd: &Path,
+    declared: &[String],
+) -> Option<String> {
+    let edited: Vec<String> = edit_tool_paths(conversation, edit_args, cwd)
+        .into_iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+    distill_tools::implementations::distill::task::file_ownership::outside_declared_note(
+        declared, &edited,
+    )
+}
+
 /// Read the repository through the child's terminal, independently of its report.
 /// This lets Main review a small completed assignment without another model/tool round.
 /// The diff covers only files inside `cwd` this child changed: its `edit_paths`

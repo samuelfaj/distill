@@ -94,6 +94,14 @@ pub struct TaskToolInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
 
+    /// Paths the subagent will edit, declared so parallel siblings do not collide.
+    #[schemars(
+        description = "Optional paths (relative to the subagent's working directory) the subagent will edit. \
+            A spawn in the shared workspace whose files overlap a running sibling's is rejected; run it in sequence or use isolation=\"worktree\"."
+    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files: Option<Vec<String>>,
+
     /// Optional model slug for this subagent.
     #[schemars(
         description = "Optional model slug for this agent. If provided, it must resolve to one \
@@ -1540,6 +1548,7 @@ mod tests {
             run_in_background: false,
             capability_mode: None,
             isolation: None,
+            files: None,
             resume_from: None,
             cwd: None,
             model: None,

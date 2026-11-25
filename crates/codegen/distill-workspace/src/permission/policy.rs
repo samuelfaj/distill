@@ -1328,6 +1328,7 @@ mod tests {
             run_in_background: false,
             capability_mode: None,
             isolation: None,
+            files: None,
             resume_from: None,
             cwd: None,
             model: None,

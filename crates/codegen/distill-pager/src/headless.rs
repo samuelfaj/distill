@@ -1181,12 +1181,11 @@ pub async fn run_single_turn(
 
     let track_active = std::env::var("GROK_TRACK_HEADLESS").is_ok();
     if track_active {
-        let _ = distill_active_sessions::register(distill_active_sessions::ActiveSession {
-            session_id: session_id.clone(),
-            pid: std::process::id(),
-            cwd: cwd.display().to_string(),
-            opened_at: chrono::Utc::now(),
-        });
+        let _ = distill_active_sessions::register(distill_active_sessions::ActiveSession::new(
+            session_id.clone(),
+            std::process::id(),
+            cwd.display().to_string(),
+        ));
     }
 
     // Seed the reducer's session context BEFORE applying model/effort so a later failure carries it.

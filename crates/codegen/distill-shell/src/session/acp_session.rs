@@ -2337,6 +2337,9 @@ mod managed_gateway_tool_tests {
     }
 }
 #[cfg(test)]
+#[path = "acp_session_tests/concurrent_work_wiring_tests.rs"]
+mod concurrent_work_wiring_tests;
+#[cfg(test)]
 #[path = "acp_session_tests/goal/goal_compaction_reseed_tests.rs"]
 mod goal_compaction_reseed_tests;
 #[cfg(test)]

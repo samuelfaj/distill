@@ -2,17 +2,15 @@
 //! Runs the full session flow in one temp directory: register, clean unregister, then crash detection.
 //! Proves a clean exit removes its entry and crash detection returns only the session with a dead PID.
 
-use chrono::Utc;
-use tempfile::TempDir;
 use distill_active_sessions::*;
+use tempfile::TempDir;
 
 fn session(id: &str, pid: u32) -> ActiveSession {
-    ActiveSession {
-        session_id: agent_client_protocol::SessionId::new(id),
+    ActiveSession::new(
+        agent_client_protocol::SessionId::new(id),
         pid,
-        cwd: "/tmp/test".into(),
-        opened_at: Utc::now(),
-    }
+        "/tmp/test".into(),
+    )
 }
 
 #[test]

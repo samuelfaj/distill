@@ -190,12 +190,11 @@ pub(crate) fn execute(
         }
         Effect::RegisterActiveSession { session_id, cwd } => {
             crate::app::signal_handler::set_current_session_id(Some(session_id.clone()));
-            if let Err(e) = distill_active_sessions::register(distill_active_sessions::ActiveSession {
+            if let Err(e) = distill_active_sessions::register(distill_active_sessions::ActiveSession::new(
                 session_id,
-                pid: std::process::id(),
+                std::process::id(),
                 cwd,
-                opened_at: chrono::Utc::now(),
-            }) {
+            )) {
                 tracing::warn!(?e, "Failed to register active session");
             }
         }

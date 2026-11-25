@@ -21,6 +21,7 @@ mod agent_message_sender;
 pub mod backend;
 pub mod coordinator;
 mod coordinator_state;
+pub mod file_ownership;
 pub use coordinator_state::{cap_completion_output, completion_summary, terminal_snapshot};
 pub mod root_control;
 pub mod types;
@@ -305,7 +306,7 @@ impl crate::types::tool_metadata::ToolMetadata for TaskTool {
                 },
             );
             description.push_str(
-                " For bounded delegation, include the specific objective, relevant instructions/evidence, and file/path/handle references in prompt. When model is omitted, a fresh subagent runs on the configured worker model (the main model when none is set); plan and code-reviewer run on the main model, though Jev may route a simple one to the worker.",
+                " For bounded delegation, include the specific objective, relevant instructions/evidence, and file/path/handle references in prompt. When model is omitted, a fresh subagent runs on the configured worker model (the main model when none is set); plan and code-reviewer run on the main model, though Jev may route a simple one to the worker. When several subagents edit the shared workspace in parallel, pass files (the paths each will edit); a spawn whose files overlap a running subagent is rejected, so run it in sequence or use ${{ params.task.isolation }}=\"worktree\".",
             );
             description
         });
@@ -607,6 +608,27 @@ impl distill_tool_runtime::Tool for TaskTool {
             }
         }
 
+        let declared_files = match input.files.as_deref() {
+            Some(files) if !files.is_empty() => {
+                let res = resources.lock().await;
+                let base = cwd
+                    .as_deref()
+                    .map(std::path::PathBuf::from)
+                    .or_else(|| {
+                        res.get::<crate::types::resources::Cwd>()
+                            .map(|cwd| cwd.0.clone())
+                    })
+                    .unwrap_or_default();
+                file_ownership::normalize_declared_files(
+                    files,
+                    &base,
+                    res.get::<crate::types::resources::DisplayCwd>()
+                        .map(|display| display.0.as_path()),
+                )
+            }
+            _ => Vec::new(),
+        };
+
         // 3. Build the subagent request
         let spawn_root_span = tracing::info_span!(
             parent: None,
@@ -667,6 +689,8 @@ impl distill_tool_runtime::Tool for TaskTool {
                 output_token_budget: None,
                 output_schema: None,
                 loop_task_id: None,
+                declared_files,
+                live_siblings: Vec::new(),
             },
             run_in_background: input.run_in_background,
             // Model-spawned subagents must still appear in the idle reminder.
@@ -906,6 +930,7 @@ mod tests {
                 run_in_background: false,
                 capability_mode: None,
                 isolation: None,
+                files: None,
                 resume_from: None,
                 cwd: None,
                 model: None,
@@ -967,6 +992,7 @@ mod tests {
                 run_in_background: true,
                 capability_mode: None,
                 isolation: None,
+                files: None,
                 resume_from: None,
                 cwd: None,
                 model: None,
@@ -1131,6 +1157,7 @@ mod tests {
                 run_in_background: false,
                 capability_mode: None,
                 isolation: None,
+                files: None,
                 resume_from: None,
                 cwd: None,
                 model: None,
@@ -1162,6 +1189,7 @@ mod tests {
                 run_in_background: false,
                 capability_mode: None,
                 isolation: None,
+                files: None,
                 resume_from: None,
                 cwd: None,
                 model: None,
@@ -1221,6 +1249,7 @@ mod tests {
                 run_in_background: false,
                 capability_mode: None,
                 isolation: None,
+                files: None,
                 resume_from: None,
                 cwd: None,
                 model: None,
@@ -1287,6 +1316,7 @@ mod tests {
                 run_in_background: false,
                 capability_mode: None,
                 isolation: None,
+                files: None,
                 resume_from: None,
                 cwd: None,
                 model: None,
@@ -1330,6 +1360,7 @@ mod tests {
                 run_in_background: false,
                 capability_mode: None,
                 isolation: None,
+                files: None,
                 resume_from: None,
                 cwd: None,
                 model: None,
@@ -1438,6 +1469,7 @@ mod tests {
             run_in_background: background,
             capability_mode: None,
             isolation: None,
+            files: None,
             resume_from: None,
             cwd: None,
             model: None,
@@ -2079,6 +2111,7 @@ mod tests {
             run_in_background: true,
             capability_mode: Some(SubagentCapabilityMode::ReadOnly),
             isolation: Some(SubagentIsolationMode::Worktree),
+            files: None,
             resume_from: None,
             cwd: None,
             model: Some("test-model".into()),
@@ -2360,6 +2393,7 @@ mod tests {
             run_in_background: false,
             capability_mode: None,
             isolation: None,
+            files: None,
             resume_from: None,
             cwd: None,
             model: None,
@@ -2409,6 +2443,7 @@ mod tests {
                 run_in_background: false,
                 capability_mode: None,
                 isolation: None,
+                files: None,
                 resume_from: None,
                 cwd: None,
                 model: None,
@@ -2445,6 +2480,7 @@ mod tests {
             run_in_background: false,
             capability_mode: None,
             isolation: None,
+            files: None,
             resume_from: None,
             cwd: None,
             model: None,
@@ -2491,6 +2527,7 @@ mod tests {
                 run_in_background: false,
                 capability_mode: None,
                 isolation: None,
+                files: None,
                 resume_from: Some("prev-id".into()),
                 cwd: None,
                 model: None,
@@ -2557,6 +2594,7 @@ mod tests {
                     run_in_background: false,
                     capability_mode: None,
                     isolation: None,
+                    files: None,
                     resume_from: Some(sentinel.into()),
                     cwd: None,
                     model: None,
@@ -2603,6 +2641,7 @@ mod tests {
             run_in_background: false,
             capability_mode: None,
             isolation: None,
+            files: None,
             resume_from: None,
             cwd: None,
             model: None,
@@ -2631,6 +2670,7 @@ mod tests {
                 run_in_background: false,
                 capability_mode: None,
                 isolation: Some(SubagentIsolationMode::Worktree),
+                files: None,
                 resume_from: None,
                 cwd: Some("/tmp".into()),
                 model: None,
@@ -2685,6 +2725,7 @@ mod tests {
                 run_in_background: false,
                 capability_mode: None,
                 isolation: Some(SubagentIsolationMode::Worktree),
+                files: None,
                 resume_from: None,
                 cwd: Some("".into()),
                 model: None,
@@ -2735,6 +2776,7 @@ mod tests {
                 run_in_background: false,
                 capability_mode: None,
                 isolation: Some(SubagentIsolationMode::Worktree),
+                files: None,
                 resume_from: None,
                 cwd: Some("null".into()),
                 model: None,
@@ -2785,6 +2827,7 @@ mod tests {
                 run_in_background: false,
                 capability_mode: None,
                 isolation: Some(SubagentIsolationMode::Worktree),
+                files: None,
                 resume_from: None,
                 cwd: Some("  ".into()),
                 model: None,
@@ -2838,6 +2881,7 @@ mod tests {
                 run_in_background: false,
                 capability_mode: None,
                 isolation: Some(SubagentIsolationMode::Worktree),
+                files: None,
                 resume_from: None,
                 cwd: Some("/nonexistent/path/that/does/not/exist".into()),
                 model: None,
@@ -2872,6 +2916,7 @@ mod tests {
                 run_in_background: false,
                 capability_mode: None,
                 isolation: None,
+                files: None,
                 resume_from: None,
                 cwd: Some("/nonexistent/path/that/does/not/exist".into()),
                 model: None,
@@ -2927,6 +2972,7 @@ mod tests {
                     run_in_background: false,
                     capability_mode: None,
                     isolation: None,
+                    files: None,
                     resume_from: None,
                     cwd: Some(sentinel.into()),
                     model: None,
@@ -2980,6 +3026,7 @@ mod tests {
                 run_in_background: false,
                 capability_mode: None,
                 isolation: None,
+                files: None,
                 resume_from: None,
                 cwd: Some("/tmp".into()),
                 model: None,
@@ -3037,6 +3084,7 @@ mod tests {
                 run_in_background: false,
                 capability_mode: None,
                 isolation: None,
+                files: None,
                 resume_from: None,
                 cwd: Some("\"/tmp".into()),
                 model: None,
@@ -3089,6 +3137,7 @@ mod tests {
                 run_in_background: false,
                 capability_mode: None,
                 isolation: Some(SubagentIsolationMode::None),
+                files: None,
                 resume_from: None,
                 cwd: Some("/tmp".into()),
                 model: None,
@@ -3137,6 +3186,7 @@ mod tests {
                 run_in_background: false,
                 capability_mode: None,
                 isolation: None,
+                files: None,
                 resume_from: Some("prev-id".into()),
                 cwd: Some("/tmp/some-dir".into()),
                 model: None,
@@ -3438,6 +3488,66 @@ mod tests {
         assert!(
             spawn.request.spawn_root.take_span().is_none(),
             "slot must be single-take"
+        );
+    }
+
+    #[test]
+    fn files_defaults_to_none_and_parses() {
+        let input: TaskToolInput =
+            serde_json::from_str(r#"{"description": "d", "prompt": "p"}"#).unwrap();
+        assert_eq!(input.files, None);
+        let input: TaskToolInput = serde_json::from_str(
+            r#"{"description": "d", "prompt": "p", "files": ["src/a.rs", "src/b.rs"]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            input.files,
+            Some(vec!["src/a.rs".to_owned(), "src/b.rs".to_owned()])
+        );
+    }
+
+    #[test]
+    fn description_documents_files() {
+        use crate::types::tool_metadata::ToolMetadata as _;
+        let template = TaskTool.description_template();
+        assert!(template.contains("pass files"), "{template}");
+    }
+
+    #[tokio::test]
+    async fn files_are_normalized_against_cwd_into_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        let (backend, mut rx) = make_backend();
+        let mut resources = Resources::new();
+        resources.insert(backend);
+        resources.insert(SubagentDepthCounter(0));
+        resources.insert(SessionIdResource("parent".to_string()));
+        resources.insert(CurrentPromptIdResource("prompt-1".to_string()));
+        resources.insert(crate::types::resources::Cwd(root.clone()));
+        let shared = resources.into_shared();
+        let drain = tokio::spawn(async move {
+            let mut spawn = unwrap_spawn(rx.recv().await.unwrap());
+            spawn.notify_registered();
+            spawn
+        });
+        let mut input = task_input("explore", true);
+        input.files = Some(vec![
+            "src/a.rs".into(),
+            "./src/../src/a.rs".into(),
+            "  ".into(),
+            "null".into(),
+            "lib/b.rs".into(),
+        ]);
+        distill_tool_runtime::Tool::run(&TaskTool, test_ctx(shared), input)
+            .await
+            .expect("spawn accepted");
+        let spawn = drain.await.unwrap();
+        assert_eq!(
+            spawn.request.runtime_overrides.declared_files,
+            vec![
+                root.join("src/a.rs").to_string_lossy().into_owned(),
+                root.join("lib/b.rs").to_string_lossy().into_owned(),
+            ]
         );
     }
 }

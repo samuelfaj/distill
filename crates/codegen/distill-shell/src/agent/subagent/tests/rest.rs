@@ -2940,6 +2940,29 @@ async fn worker_repository_review_covers_only_this_childs_changes() {
     let capture = worker_repository_review(&terminal, cwd, HashMap::new(), &[], &started, 24_000).await;
     assert!(capture.contains("capture_complete=false") && capture.contains("truncated=true"), "{capture}");
 }
+/// A child that declared files is told which of its edits fell outside them,
+/// so the parent can see ownership was crossed; reads and covered edits stay out.
+#[test]
+fn completion_lists_edits_outside_declared_files() {
+    use distill_sampling_types::conversation::ToolCall;
+    let root = std::path::PathBuf::from("/repo");
+    let call = |name: &str, args: serde_json::Value| ConversationItem::assistant_tool_calls(vec![ToolCall {
+        id: Arc::from(name), name: name.into(), arguments: Arc::from(args.to_string()),
+    }]);
+    let conversation = vec![
+        call("search_replace", serde_json::json!({ "file_path": "src/a.rs" })),
+        call("search_replace", serde_json::json!({ "file_path": "src/b.rs" })),
+        call("read_file", serde_json::json!({ "target_file": "src/c.rs" })),
+    ];
+    let edit_args = |name: &str, args: serde_json::Value| (name == "search_replace").then_some(args);
+    let declared = vec!["/repo/src/a.rs".to_owned()];
+    let note = files_outside_declared(&conversation, edit_args, &root, &declared).unwrap();
+    assert!(note.contains("/repo/src/b.rs"), "{note}");
+    assert!(!note.contains("/repo/src/a.rs") && !note.contains("c.rs"), "{note}");
+    assert_eq!(files_outside_declared(&conversation, edit_args, &root, &[]), None);
+    let both = vec!["/repo/src".to_owned()];
+    assert_eq!(files_outside_declared(&conversation, edit_args, &root, &both), None);
+}
 /// Interactive (TUI) parents also get the worker review blocks, with a smaller
 /// capture; children that are not fresh, foreground worker runs get none.
 #[test]

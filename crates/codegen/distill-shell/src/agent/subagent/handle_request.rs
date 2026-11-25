@@ -302,6 +302,56 @@ impl WakePersistenceContext {
         }
     }
 }
+
+/// The depth ceiling an explicit user ask for subagents lifts to: one level
+/// below `child_depth`, so the child keeps a task tool its own call can use.
+///
+/// `None` when the ask was not explicit, the child cannot nest (a physical
+/// leaf or workflow-owned), or the mode pins its own cap (`SubagentDepth::One`
+/// / `None`). A larger configured ceiling is never lowered: callers take the max.
+fn explicit_nesting_ceiling(
+    child_depth: u32,
+    nestable: bool,
+    explicit_parallel_request: bool,
+    policy: Option<&ExecutionPolicy>,
+) -> Option<u32> {
+    (nestable
+        && explicit_parallel_request
+        && policy.is_none_or(ExecutionPolicy::explicit_request_can_nest))
+    .then(|| child_depth.saturating_add(1))
+}
+
+#[cfg(test)]
+#[test]
+fn an_explicit_request_lifts_one_nesting_level_except_for_leaves_and_pinned_modes() {
+    let policy_for = |mode: distill_tool_types::ExecutionMode| ExecutionPolicy {
+        mode: Arc::new(distill_tool_types::AtomicExecutionMode::new(mode)),
+        max_depth: 1,
+        off_max_depth: 1,
+        v2: Default::default(),
+        capability_ceiling: None,
+        allowed_subagent_types: None,
+    };
+    let normal = policy_for(distill_tool_types::ExecutionMode::Normal);
+    assert_eq!(
+        explicit_nesting_ceiling(1, true, true, Some(&normal)),
+        Some(2)
+    );
+    assert_eq!(explicit_nesting_ceiling(1, true, false, Some(&normal)), None);
+    assert_eq!(explicit_nesting_ceiling(1, false, true, Some(&normal)), None);
+    assert_eq!(explicit_nesting_ceiling(2, true, true, None), Some(3));
+    for pinned in [
+        distill_tool_types::ExecutionMode::Ultrafast,
+        distill_tool_types::ExecutionMode::Ultrasave,
+    ] {
+        assert_eq!(
+            explicit_nesting_ceiling(1, true, true, Some(&policy_for(pinned))),
+            None,
+            "{pinned:?} pins one level"
+        );
+    }
+}
+
 /// A child session's title: its spawn description (what the agent panel
 /// shows), else its agent type. No model is asked for a hidden session.
 fn subagent_title(description: &str, subagent_type: &str) -> String {
@@ -951,6 +1001,20 @@ pub(crate) async fn run_shell_child(
             && request.runtime_overrides.model_override_provenance
                 == distill::task::types::ModelOverrideProvenance::Tool
     });
+    let output_budgeted = request.runtime_overrides.output_token_budget.is_some();
+    let isolated_leaf = worktree_path.is_some();
+    let physical_leaf = isolated_leaf
+        || (output_budgeted && inherited_mode_active)
+        || (parent_mode_active && (request.owner.is_workflow() || execution_policy.is_none()));
+    // An explicit user ask for subagents adds one nesting level below this
+    // child; physical leaves, workflow-owned children and modes pinned to one
+    // or zero levels keep theirs.
+    let nested_ceiling = explicit_nesting_ceiling(
+        child_depth,
+        !physical_leaf && !request.owner.is_workflow(),
+        request.runtime_overrides.explicit_parallel_request,
+        execution_policy.as_ref(),
+    );
     if let (Some(policy), Some(root)) = (
         execution_policy.as_mut(),
         ctx.parent_execution_policy.as_ref(),
@@ -960,14 +1024,15 @@ pub(crate) async fn run_shell_child(
         policy.mode = execution_mode.clone().expect("parent execution policy checked");
         policy.max_depth = policy.max_depth.min(root.max_depth);
         policy.off_max_depth = policy.off_max_depth.min(root.off_max_depth);
+        if let Some(ceiling) = nested_ceiling {
+            policy.max_depth = policy.max_depth.max(ceiling);
+            policy.off_max_depth = policy.off_max_depth.max(ceiling);
+        }
     }
-    let output_budgeted = request.runtime_overrides.output_token_budget.is_some();
-    let isolated_leaf = worktree_path.is_some();
-    let physical_leaf = isolated_leaf
-        || (output_budgeted && inherited_mode_active)
-        || (parent_mode_active && (request.owner.is_workflow() || execution_policy.is_none()));
     let ordinary_max_depth = if physical_leaf {
         child_depth
+    } else if let Some(ceiling) = nested_ceiling {
+        ctx.subagents_max_depth.max(ceiling)
     } else {
         ctx.subagents_max_depth
     };

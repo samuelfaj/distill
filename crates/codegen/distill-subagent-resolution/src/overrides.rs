@@ -208,6 +208,7 @@ mod tests {
             harness_agent_type: None,
             completion_output_cap: None,
             spawn_depth: None,
+            explicit_parallel_request: false,
             output_token_budget: None,
             output_schema: None,
             loop_task_id: None,

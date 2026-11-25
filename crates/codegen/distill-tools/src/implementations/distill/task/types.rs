@@ -233,6 +233,10 @@ pub struct SubagentRuntimeOverrides {
     pub harness_agent_type: Option<String>,
     pub completion_output_cap: Option<usize>,
     pub spawn_depth: Option<u32>,
+    /// Host-owned: the root user ask explicitly requested subagents, delegation
+    /// or parallel work, so this turn's children may nest one level deeper.
+    /// Never accepted from model JSON.
+    pub explicit_parallel_request: bool,
     pub output_token_budget: Option<u64>,
     pub output_schema: Option<serde_json::Value>,
     pub loop_task_id: Option<String>,
@@ -281,6 +285,16 @@ impl ExecutionPolicy {
             SubagentDepth::Max => self.max_depth,
             SubagentDepth::None => 0,
         }
+    }
+
+    /// Whether an explicit user request for subagents may admit one nesting
+    /// level below the spawner. `One` and `None` keep the mode's own cap.
+    pub fn explicit_request_can_nest(&self) -> bool {
+        use distill_tool_types::SubagentDepth;
+        matches!(
+            self.v2.policy(self.mode.load()).runtime.subagent_depth,
+            SubagentDepth::Default | SubagentDepth::Max
+        )
     }
 }
 register_resource!("distill", "ExecutionPolicy", ExecutionPolicy);

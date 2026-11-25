@@ -440,6 +440,15 @@ impl distill_tool_runtime::Tool for TaskTool {
             )));
         }
 
+        // A root turn whose latest ask explicitly asks for subagents or parallel
+        // work lets this spawn nest one level deeper (the installer and
+        // coordinator re-check physical leaves and the mode's own cap).
+        let explicit_parallel_request = depth == 0 && {
+            let asks = recent_user_asks(&resources).await;
+            asks.last()
+                .is_some_and(|ask| distill_tool_types::asks_for_subagents(ask))
+        };
+
         let agent_id = input.task_id.map_or_else(
             || {
                 let generated = uuid::Uuid::now_v7().to_string();
@@ -654,6 +663,7 @@ impl distill_tool_runtime::Tool for TaskTool {
                 harness_agent_type: None,
                 completion_output_cap: None,
                 spawn_depth: None,
+                explicit_parallel_request,
                 output_token_budget: None,
                 output_schema: None,
                 loop_task_id: None,
